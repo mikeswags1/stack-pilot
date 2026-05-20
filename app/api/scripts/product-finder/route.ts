@@ -1121,13 +1121,30 @@ export async function GET(req: NextRequest) {
   // Load a large pool from the source engine. The seeded shuffle inside respondWithProducts
   // picks a different top-N from this pool on each call (different seed = different order),
   // so a bigger pool directly means more product variety across requests.
+  // When excludeAsins are supplied (refill/rotation), pass them to the DB query so the
+  // source engine itself skips already-listed/excluded items — not just client-side filtering.
+  // This is the primary mechanism that makes sequential batches genuinely different.
   const sourceEnginePoolLimit = continuousMode ? 800 : 600
+  console.info('[product-finder] sourceEngine load', JSON.stringify({
+    mode: continuousMode ? 'continuous' : 'niche',
+    niche: continuousMode ? undefined : niche,
+    limit: sourceEnginePoolLimit,
+    excludeCount: excludeAsins.size,
+    forceRefresh,
+    distributionSeed,
+  }))
   const sourceEngineProducts = await withTimeout(
-    loadProductSourceProducts({ niche: continuousMode ? undefined : niche, limit: sourceEnginePoolLimit }),
+    loadProductSourceProducts({ niche: continuousMode ? undefined : niche, limit: sourceEnginePoolLimit, excludeAsins }),
     continuousMode ? 900 : 1400,
     []
   )
   const sourceEngineAvailable = getAvailableProducts(sourceEngineProducts)
+  console.info('[product-finder] sourceEngine result', JSON.stringify({
+    totalFetched: sourceEngineProducts.length,
+    availableAfterFilter: sourceEngineAvailable.length,
+    targetCount,
+    excludeCount: excludeAsins.size,
+  }))
   // Only early-return from source engine when there are clearly enough products AND
   // either we're not forcing a refresh, OR the pool is large enough to surface variety.
   // When excludeAsins are present, always go through respondWithProducts so the

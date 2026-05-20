@@ -197,6 +197,16 @@ function mergeRefilledProducts(current: FinderProduct[] | null, incoming: Finder
     return true
   })
 
+  // If incoming added nothing new (pool completely exhausted / all duplicates),
+  // use the incoming list as a fresh replacement rather than leaving the user with
+  // an empty or stale queue. This is the self-heal: after the pool is exhausted the
+  // API returns fresh products (via live-fill / scrape) and we surface them directly.
+  if (additions.length === 0 && incoming.length > 0 && kept.length < FINDER_STOCK_TARGET) {
+    const freshAdditions = incoming.filter((product) => !listed.has(product.asin.toUpperCase()))
+    console.info('[mergeRefilled] pool exhausted — using incoming as fresh replacement', { incomingCount: freshAdditions.length })
+    return tagFinderProducts([...kept, ...freshAdditions].slice(0, FINDER_ROTATION_POOL_TARGET), sourceMode)
+  }
+
   return tagFinderProducts([...kept, ...additions].slice(0, FINDER_ROTATION_POOL_TARGET), sourceMode)
 }
 
@@ -922,7 +932,26 @@ export default function Dashboard() {
       continuousFinderState.results !== null &&
       continuousPoolSize < FINDER_STOCK_TARGET
     ) {
-      void handleFindContinuousProducts()
+      // Pass the currently queued ASINs as excludes so the auto-reseed
+      // fetches genuinely fresh products rather than the same ones.
+      const currentQueueAsins = (continuousFinderState.results || []).map((p) => p.asin)
+      console.info('[continuousAutoReseed] pool below threshold, reseeding', { poolSize: continuousPoolSize, excludeCount: currentQueueAsins.length })
+      setContinuousFinderState((prev) => ({ ...prev, loading: true, error: null }))
+      fetchFinderProducts('', true, {
+        mode: 'continuous',
+        limit: FINDER_ROTATION_POOL_TARGET,
+        excludeAsins: currentQueueAsins,
+      }).then((data) => {
+        console.info('[continuousAutoReseed] received', { count: data.results?.length ?? 0, source: (data as { source?: string }).source })
+        setContinuousFinderState((prev) => ({
+          ...prev,
+          loading: false,
+          results: mergeRefilledProducts(prev.results, data.results || [], [], 'continuous'),
+        }))
+      }).catch((err: unknown) => {
+        console.warn('[continuousAutoReseed] error', err)
+        setContinuousFinderState((prev) => ({ ...prev, loading: false }))
+      })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [continuousPoolSize, tab])
@@ -965,19 +994,28 @@ export default function Dashboard() {
       if (!nicheState.value || removeAsins.length === 0) return
 
       const listed = new Set(removeAsins.map((asin) => asin.toUpperCase()))
-      const remainingAsins = (finderState.results || [])
+      // Snapshot current results at call time (before any async gap).
+      // Using finderState.results directly here is safe since this is called
+      // synchronously after handleListAll captures the current state.
+      const currentResults = finderState.results || []
+      const remainingAsins = currentResults
         .filter((product) => !listed.has(product.asin.toUpperCase()))
         .map((product) => product.asin)
+
+      const allExcludeAsins = [...remainingAsins, ...removeAsins]
+      console.info('[refillNiche] fetching', { niche: nicheState.value, removeCount: removeAsins.length, remainingCount: remainingAsins.length, excludeCount: allExcludeAsins.length })
 
       try {
         const refreshed = await fetchFinderProducts(nicheState.value, true, {
           limit: FINDER_ROTATION_POOL_TARGET,
-          excludeAsins: [...remainingAsins, ...removeAsins],
+          excludeAsins: allExcludeAsins,
         })
-        setFinderState((prev) => ({
-          ...prev,
-          results: mergeRefilledProducts(prev.results || finderState.results, refreshed.results || [], removeAsins, 'niche'),
-        }))
+        console.info('[refillNiche] received', { count: refreshed.results?.length ?? 0, source: (refreshed as { source?: string }).source })
+        setFinderState((prev) => {
+          const merged = mergeRefilledProducts(prev.results, refreshed.results || [], removeAsins, 'niche')
+          console.info('[refillNiche] merged pool', { before: prev.results?.length ?? 0, after: merged?.length ?? 0 })
+          return { ...prev, results: merged }
+        })
       } catch {
         setFinderState((prev) => ({
           ...prev,
@@ -993,20 +1031,27 @@ export default function Dashboard() {
       if (removeAsins.length === 0) return
 
       const listed = new Set(removeAsins.map((asin) => asin.toUpperCase()))
-      const remainingAsins = (continuousFinderState.results || [])
+      // Snapshot current results at call time.
+      const currentResults = continuousFinderState.results || []
+      const remainingAsins = currentResults
         .filter((product) => !listed.has(product.asin.toUpperCase()))
         .map((product) => product.asin)
+
+      const allExcludeAsins = [...remainingAsins, ...removeAsins]
+      console.info('[refillContinuous] fetching', { removeCount: removeAsins.length, remainingCount: remainingAsins.length, excludeCount: allExcludeAsins.length })
 
       try {
         const refreshed = await fetchFinderProducts('', true, {
           mode: 'continuous',
           limit: FINDER_ROTATION_POOL_TARGET,
-          excludeAsins: [...remainingAsins, ...removeAsins],
+          excludeAsins: allExcludeAsins,
         })
-        setContinuousFinderState((prev) => ({
-          ...prev,
-          results: mergeRefilledProducts(prev.results || continuousFinderState.results, refreshed.results || [], removeAsins, 'continuous'),
-        }))
+        console.info('[refillContinuous] received', { count: refreshed.results?.length ?? 0, source: (refreshed as { source?: string }).source })
+        setContinuousFinderState((prev) => {
+          const merged = mergeRefilledProducts(prev.results, refreshed.results || [], removeAsins, 'continuous')
+          console.info('[refillContinuous] merged pool', { before: prev.results?.length ?? 0, after: merged?.length ?? 0 })
+          return { ...prev, results: merged }
+        })
       } catch {
         setContinuousFinderState((prev) => ({
           ...prev,

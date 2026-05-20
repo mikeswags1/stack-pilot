@@ -591,56 +591,115 @@ export async function refreshProductSourcePrices(options: { limit?: number; stal
   return { updated, unchanged, failed }
 }
 
-export async function loadProductSourceProducts(options: { niche?: string | null; limit?: number } = {}) {
+export async function loadProductSourceProducts(options: { niche?: string | null; limit?: number; excludeAsins?: Set<string> | string[] } = {}) {
   await ensureProductSourceTables()
   const limit = Math.max(1, Math.min(900, options.limit || 120))
   const rowLimit = Math.min(2500, Math.max(limit, limit * 3))
+  // Build a normalized exclude set from either a Set or array of ASINs.
+  // When excludeAsins are supplied we fetch extra rows (up to rowLimit + excludeCount)
+  // so the post-filter result still has at least `limit` candidates.
+  const excludeSet: Set<string> = options.excludeAsins
+    ? (options.excludeAsins instanceof Set
+        ? new Set(Array.from(options.excludeAsins).map((a) => a.toUpperCase()))
+        : new Set(options.excludeAsins.map((a) => a.toUpperCase())))
+    : new Set<string>()
+  const excludeCount = excludeSet.size
+  // Fetch enough extra rows so there are still `limit` left after excluding.
+  const fetchLimit = Math.min(2500, rowLimit + excludeCount)
   try {
     const niche = options.niche?.trim()
+    const excludeArray = excludeCount > 0 ? Array.from(excludeSet) : null
     const rows = niche
-      ? await queryRows<ProductSourceRow>`
-          SELECT psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price, psi.profit, psi.roi, psi.image_url, psi.risk,
-                 psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
-                 apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
-                 apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
-                 apc.available AS cached_available, apc.best_seller_rank AS cached_bsr,
-                 psi.ebay_competitor_count, psi.listing_outcome_score
-          FROM product_source_items psi
-          LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
-          WHERE psi.active = TRUE
-            AND psi.source_niche = ${niche}
-            AND psi.last_seen_at > NOW() - INTERVAL '21 days'
-            AND psi.profit >= 3
-            AND psi.roi >= 25
-            AND psi.risk <> 'HIGH'
-            AND psi.image_url IS NOT NULL
-            AND psi.image_url <> ''
-            AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
-            AND COALESCE(apc.available, TRUE) <> FALSE
-          ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC, psi.last_seen_at DESC
-          LIMIT ${rowLimit}
-        `
-      : await queryRows<ProductSourceRow>`
-          SELECT psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price, psi.profit, psi.roi, psi.image_url, psi.risk,
-                 psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
-                 apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
-                 apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
-                 apc.available AS cached_available, apc.best_seller_rank AS cached_bsr,
-                 psi.ebay_competitor_count, psi.listing_outcome_score
-          FROM product_source_items psi
-          LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
-          WHERE psi.active = TRUE
-            AND psi.last_seen_at > NOW() - INTERVAL '21 days'
-            AND psi.profit >= 3
-            AND psi.roi >= 25
-            AND psi.risk <> 'HIGH'
-            AND psi.image_url IS NOT NULL
-            AND psi.image_url <> ''
-            AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
-            AND COALESCE(apc.available, TRUE) <> FALSE
-          ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC, psi.last_seen_at DESC
-          LIMIT ${rowLimit}
-        `
+      ? (excludeArray
+          ? await queryRows<ProductSourceRow>`
+              SELECT psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price, psi.profit, psi.roi, psi.image_url, psi.risk,
+                     psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
+                     apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
+                     apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
+                     apc.available AS cached_available, apc.best_seller_rank AS cached_bsr,
+                     psi.ebay_competitor_count, psi.listing_outcome_score
+              FROM product_source_items psi
+              LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
+              WHERE psi.active = TRUE
+                AND psi.source_niche = ${niche}
+                AND psi.last_seen_at > NOW() - INTERVAL '21 days'
+                AND psi.profit >= 3
+                AND psi.roi >= 25
+                AND psi.risk <> 'HIGH'
+                AND psi.image_url IS NOT NULL
+                AND psi.image_url <> ''
+                AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
+                AND COALESCE(apc.available, TRUE) <> FALSE
+                AND UPPER(psi.asin) <> ALL(${excludeArray}::text[])
+              ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC, psi.last_seen_at DESC
+              LIMIT ${fetchLimit}
+            `
+          : await queryRows<ProductSourceRow>`
+              SELECT psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price, psi.profit, psi.roi, psi.image_url, psi.risk,
+                     psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
+                     apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
+                     apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
+                     apc.available AS cached_available, apc.best_seller_rank AS cached_bsr,
+                     psi.ebay_competitor_count, psi.listing_outcome_score
+              FROM product_source_items psi
+              LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
+              WHERE psi.active = TRUE
+                AND psi.source_niche = ${niche}
+                AND psi.last_seen_at > NOW() - INTERVAL '21 days'
+                AND psi.profit >= 3
+                AND psi.roi >= 25
+                AND psi.risk <> 'HIGH'
+                AND psi.image_url IS NOT NULL
+                AND psi.image_url <> ''
+                AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
+                AND COALESCE(apc.available, TRUE) <> FALSE
+              ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC, psi.last_seen_at DESC
+              LIMIT ${fetchLimit}
+            `)
+      : (excludeArray
+          ? await queryRows<ProductSourceRow>`
+              SELECT psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price, psi.profit, psi.roi, psi.image_url, psi.risk,
+                     psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
+                     apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
+                     apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
+                     apc.available AS cached_available, apc.best_seller_rank AS cached_bsr,
+                     psi.ebay_competitor_count, psi.listing_outcome_score
+              FROM product_source_items psi
+              LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
+              WHERE psi.active = TRUE
+                AND psi.last_seen_at > NOW() - INTERVAL '21 days'
+                AND psi.profit >= 3
+                AND psi.roi >= 25
+                AND psi.risk <> 'HIGH'
+                AND psi.image_url IS NOT NULL
+                AND psi.image_url <> ''
+                AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
+                AND COALESCE(apc.available, TRUE) <> FALSE
+                AND UPPER(psi.asin) <> ALL(${excludeArray}::text[])
+              ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC, psi.last_seen_at DESC
+              LIMIT ${fetchLimit}
+            `
+          : await queryRows<ProductSourceRow>`
+              SELECT psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price, psi.profit, psi.roi, psi.image_url, psi.risk,
+                     psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
+                     apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
+                     apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
+                     apc.available AS cached_available, apc.best_seller_rank AS cached_bsr,
+                     psi.ebay_competitor_count, psi.listing_outcome_score
+              FROM product_source_items psi
+              LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
+              WHERE psi.active = TRUE
+                AND psi.last_seen_at > NOW() - INTERVAL '21 days'
+                AND psi.profit >= 3
+                AND psi.roi >= 25
+                AND psi.risk <> 'HIGH'
+                AND psi.image_url IS NOT NULL
+                AND psi.image_url <> ''
+                AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
+                AND COALESCE(apc.available, TRUE) <> FALSE
+              ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC, psi.last_seen_at DESC
+              LIMIT ${fetchLimit}
+            `)
     return rows
       .map(rowToProduct)
       .filter((product) => !isWeakListingTitle(product.title))

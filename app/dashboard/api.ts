@@ -190,7 +190,10 @@ export async function fetchFinderProducts(
   if (options.limit) params.set('limit', String(options.limit))
   if (options.excludeAsins?.length) params.set('exclude', options.excludeAsins.join(','))
   if (refresh) params.set('refresh', '1')
-  return requestJson<{ ok: true; results: FinderProduct[]; available?: number; source?: string; mode?: 'niche' | 'continuous' }>(`/api/scripts/product-finder?${params.toString()}`)
+  console.info('[fetchFinderProducts]', { niche: niche || '(continuous)', refresh, mode: options.mode, limit: options.limit, excludeCount: options.excludeAsins?.length ?? 0 })
+  const result = await requestJson<{ ok: true; results: FinderProduct[]; available?: number; source?: string; mode?: 'niche' | 'continuous' }>(`/api/scripts/product-finder?${params.toString()}`)
+  console.info('[fetchFinderProducts] response', { count: result.results?.length ?? 0, available: result.available, source: result.source })
+  return result
 }
 
 export async function publishProduct(input: {
