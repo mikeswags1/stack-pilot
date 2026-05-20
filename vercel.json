@@ -9,6 +9,9 @@
     },
     "app/api/cron/auto-listing-tick/route.ts": {
       "maxDuration": 300
+    },
+    "app/api/cron/source-agent/route.ts": {
+      "maxDuration": 300
     }
   },
   "crons": [
@@ -27,6 +30,10 @@
     {
       "path": "/api/cron/auto-listing-tick?limit=12",
       "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/source-agent",
+      "schedule": "23 */2 * * *"
     }
   ]
 }

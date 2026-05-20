@@ -8,6 +8,7 @@ import { ensureListedAsinsFinancialColumns } from '@/lib/listed-asins'
 import { EBAY_DEFAULT_FEE_RATE } from '@/lib/listing-pricing'
 import { ensureProductSourceTables } from '@/lib/product-source-engine'
 import { getSourceEngineIntelligenceSummary, refreshSourceIntelligenceState, reserveSourceAutopilotRun } from '@/lib/source-intelligence'
+import { getRecentSourceAgentRuns } from '@/lib/source-agent'
 
 const ADMIN_EMAILS = ['msawaged12@gmail.com', 'mikeswags1@gmail.com']
 
@@ -191,6 +192,7 @@ export async function GET(req: NextRequest) {
     autoListingQueueSummaryRows,
     listingAvailabilitySummaryRows,
     sourceIntelligenceSummary,
+    sourceAgentRuns,
   ] = await Promise.all([
     queryRows<UserRow>`
       SELECT id, email, name, created_at FROM users ORDER BY created_at DESC
@@ -486,6 +488,7 @@ export async function GET(req: NextRequest) {
       WHERE ended_at IS NULL
     `.catch(() => []),
     getSourceEngineIntelligenceSummary().catch(() => null),
+    getRecentSourceAgentRuns(5).catch(() => []),
   ])
 
   const ebayMap = new Map(ebayRows.map((row) => [row.user_id, row]))
@@ -656,6 +659,20 @@ export async function GET(req: NextRequest) {
         products: continuousCount,
         version: toNumber(continuous.version),
         cachedAt: toIso(continuous.cached_at),
+      },
+      sourceAgent: {
+        enabled: true,
+        provider: process.env.ANTHROPIC_API_KEY ? 'anthropic' : process.env.OPENROUTER_API_KEY ? 'openrouter' : 'deterministic',
+        recentRuns: sourceAgentRuns.map((run) => ({
+          id: String(run.id),
+          provider: run.provider,
+          status: run.status,
+          plan: run.plan,
+          metrics: run.metrics,
+          error: run.error,
+          durationMs: toNumber(run.duration_ms),
+          createdAt: toIso(run.created_at),
+        })),
       },
       intelligence: sourceIntelligenceWithAutopilot,
       topNiches: sourceNicheRows.map((row) => ({

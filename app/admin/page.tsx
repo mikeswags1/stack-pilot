@@ -109,6 +109,26 @@ type SourceAutopilot = {
   updatedAt: string | null
 }
 
+type SourceAgentRun = {
+  id: string
+  provider: string
+  status: string
+  plan: {
+    newNiches?: Array<{ name: string; queries: string[]; reason?: string }>
+    repairNiches?: string[]
+    notes?: string[]
+  }
+  metrics: {
+    createdNiches?: string[]
+    repairNiches?: string[]
+    cleanedProducts?: number
+    refreshScheduled?: boolean
+  }
+  error: string | null
+  durationMs: number
+  createdAt: string | null
+}
+
 type SourceIntelligenceSummary = {
   status: 'healthy' | 'self-healing' | 'watch' | string
   lastRun: SourceRun | null
@@ -216,6 +236,11 @@ type Stats = {
       products: number
       version: number
       cachedAt: string | null
+    }
+    sourceAgent: {
+      enabled: boolean
+      provider: string
+      recentRuns: SourceAgentRun[]
     }
     intelligence: SourceIntelligenceSummary | null
     topNiches: SourceNiche[]
@@ -519,6 +544,7 @@ export default function AdminPage() {
   const cache = stats.sourceHealth.cache
   const continuous = stats.sourceHealth.continuous
   const intelligence = stats.sourceHealth.intelligence
+  const sourceAgent = stats.sourceHealth.sourceAgent
   const autopilot = intelligence?.autopilot
   const automation = stats.automation ?? EMPTY_AUTOMATION
 
@@ -683,6 +709,20 @@ export default function AdminPage() {
                 <small>Last started {formatDateTime(autopilot?.lastStartedAt || null)}</small>
                 <small>Next allowed {autopilot?.available ? 'Now' : formatDateTime(autopilot?.nextRunAfter || null)}</small>
                 {autopilot?.lastNiches?.length ? <small>Target: {autopilot.lastNiches.join(', ')}</small> : null}
+              </div>
+            </div>
+            <div className="admin-autopilot-card is-ready">
+              <div>
+                <span>Source Agent</span>
+                <strong>{sourceAgent?.provider === 'anthropic' ? 'Claude sourcing brain' : sourceAgent?.provider === 'openrouter' ? 'AI sourcing brain' : 'Rule-based sourcing brain'}</strong>
+                <p>
+                  Creates safe source niches, refreshes weak pools, and rejects bad source rows. It cannot publish listings.
+                </p>
+              </div>
+              <div>
+                <small>Runs every 2 hours</small>
+                <small>Last run {formatDateTime(sourceAgent?.recentRuns?.[0]?.createdAt || null)}</small>
+                <small>Cleaned {formatNumber(sourceAgent?.recentRuns?.[0]?.metrics?.cleanedProducts || 0)} products</small>
               </div>
             </div>
           </div>
