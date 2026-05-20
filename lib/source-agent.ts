@@ -35,6 +35,7 @@ const BLOCKED_NICHE_TERMS = [
   'shoe', 'cosmetic', 'makeup', 'perfume', 'designer', 'louis vuitton',
   'gucci', 'chanel', 'rolex', 'lego', 'weapon', 'knife', 'gun',
 ]
+const BLOCKED_SOURCE_REGEX = '(supplement|vitamin|medicine|medical|prescription|cosmetic|makeup|perfume|designer|louis vuitton|gucci|chanel|rolex|lego|weapon|gun)'
 
 function toNumber(value: unknown) {
   const parsed = typeof value === 'number' ? value : Number(value || 0)
@@ -85,7 +86,7 @@ function sanitizePlan(input: unknown): AgentPlan {
         .slice(0, 3)
     : []
   const repairNiches = Array.isArray(raw.repairNiches)
-    ? unique(raw.repairNiches.map(String), 5)
+    ? unique(raw.repairNiches.map(String), 8).filter((niche) => isAllowedNiche(niche, [])).slice(0, 5)
     : []
   const notes = Array.isArray(raw.notes)
     ? raw.notes.map((note) => normalizeText(note, 240)).filter(Boolean).slice(0, 8)
@@ -224,14 +225,18 @@ async function buildAgentPlan() {
       ? 'openrouter'
       : 'deterministic'
 
-  let plan: AgentPlan = { newNiches: [], repairNiches: context.weakNiches.slice(0, 3), notes: ['No AI provider configured; ran deterministic source cleanup and weak-niche repair selection.'] }
+  let plan: AgentPlan = {
+    newNiches: [],
+    repairNiches: context.weakNiches.filter((niche) => isAllowedNiche(niche, [])).slice(0, 3),
+    notes: ['No AI provider configured; ran deterministic source cleanup and weak-niche repair selection.'],
+  }
   if (provider !== 'deterministic') {
     const text = provider === 'anthropic'
       ? await callAnthropic(system, prompt)
       : await callOpenRouter(system, prompt)
     const parsed = JSON.parse(extractJsonObject(text || '{}'))
     plan = sanitizePlan(parsed)
-    if (!plan.repairNiches?.length) plan.repairNiches = context.weakNiches.slice(0, 3)
+    if (!plan.repairNiches?.length) plan.repairNiches = context.weakNiches.filter((niche) => isAllowedNiche(niche, [])).slice(0, 3)
   }
 
   return { provider, plan, context }
@@ -253,6 +258,7 @@ async function cleanupWeakSourceRows() {
           OR psi.image_url = ''
           OR psi.last_seen_at < NOW() - INTERVAL '60 days'
           OR apc.available = FALSE
+          OR LOWER(COALESCE(psi.source_niche, '') || ' ' || psi.title) ~ ${BLOCKED_SOURCE_REGEX}
         )
       ORDER BY psi.last_seen_at ASC
       LIMIT 500
