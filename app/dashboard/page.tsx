@@ -170,7 +170,13 @@ function getPublishReadyFinderProducts(products: FinderProduct[]) {
 function getRotatingFinderProducts(products: FinderProduct[] | null, tick: number, limit = FINDER_STOCK_TARGET) {
   if (!products) return null
   const publishReadyProducts = getPublishReadyFinderProducts(products)
-  const pool = publishReadyProducts.length > 0 ? publishReadyProducts : products
+  const readyAsins = new Set(publishReadyProducts.map((product) => product.asin.toUpperCase()))
+  const pool = publishReadyProducts.length > 0
+    ? [
+        ...publishReadyProducts,
+        ...products.filter((product) => !readyAsins.has(product.asin.toUpperCase())),
+      ]
+    : products
   if (pool.length <= 1) return pool
   if (tick === 0) return pool.slice(0, limit)
   return [...pool]

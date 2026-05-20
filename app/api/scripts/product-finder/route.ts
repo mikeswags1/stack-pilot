@@ -1297,8 +1297,8 @@ export async function GET(req: NextRequest) {
     } else {
       const enrichmentCount = targetCount
 
-      const enriched = await Promise.all(
-        results.slice(0, enrichmentCount).map(async (product) => {
+      const enriched: Array<Product | null> = await Promise.all(
+        results.slice(0, enrichmentCount).map(async (product): Promise<Product | null> => {
           const validated = await fetchAmazonProductByAsin({
             asin: product.asin,
             fallbackImage: product.imageUrl,
@@ -1318,7 +1318,7 @@ export async function GET(req: NextRequest) {
             return null
           }
 
-          return {
+          const enrichedProduct: Product = {
             ...product,
             title: validated.title || product.title,
             amazonPrice: validated.amazonPrice || product.amazonPrice,
@@ -1327,12 +1327,13 @@ export async function GET(req: NextRequest) {
             features: validated.features,
             description: validated.description,
             specs: validated.specs,
-            available: validated.available,
+            available: true,
           }
+          return enrichedProduct
         })
       )
 
-      const filteredEnriched = dedupeProducts(enriched.filter((product): product is Product => Boolean(product)))
+      const filteredEnriched = dedupeProducts(enriched.filter((product): product is Product => product !== null))
       const droppedSourceAsins = new Set(
         results
           .slice(0, enrichmentCount)
