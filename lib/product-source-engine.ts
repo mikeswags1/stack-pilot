@@ -401,7 +401,10 @@ export async function upsertProductSourceItems(inputs: SourceProductInput[]) {
         review_count = COALESCE(EXCLUDED.review_count, product_source_items.review_count),
         total_score = EXCLUDED.total_score,
         raw = product_source_items.raw || EXCLUDED.raw,
-        active = TRUE,
+        active = CASE
+          WHEN product_source_items.source_quality = 'reject' THEN FALSE
+          ELSE TRUE
+        END,
         last_seen_at = NOW(),
         last_price_checked_at = NOW()
     `
@@ -419,10 +422,20 @@ export async function rebuildProductSourceFromCache(limit = 250) {
     ORDER BY cached_at DESC
     LIMIT ${limit}
   `
+
+  // Load rejected ASINs so we never re-introduce stale/mismatched products.
+  // ASIN_MISMATCH, PRODUCT_UNAVAILABLE, and manual deactivations set source_quality='reject'.
+  const rejectedRows = await queryRows<{ asin: string }>`
+    SELECT asin FROM product_source_items
+    WHERE source_quality = 'reject' OR active = FALSE
+  `.catch(() => [])
+  const rejectedSet = new Set(rejectedRows.map((row) => String(row.asin).toUpperCase()))
+
   const products: SourceProductInput[] = []
   for (const row of rows) {
     const rowProducts = Array.isArray(row.results) ? row.results : []
     for (const product of rowProducts) {
+      if (rejectedSet.has(String(product.asin || '').toUpperCase())) continue
       products.push({
         ...product,
         sourceNiche: product.sourceNiche || row.niche,
