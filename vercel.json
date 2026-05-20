@@ -25,34 +25,47 @@
   },
   "crons": [
     {
+      "comment": "Pool maintenance: sync eBay listings, reprice, deactivate unavailable",
       "path": "/api/cron/refresh-products?sourceOnly=1&autopilot=1&repairBatch=6&auditLimit=60",
       "schedule": "*/30 * * * *"
     },
     {
-      "path": "/api/cron/refresh-products?stockWeak=1&wait=1&batch=6&auditLimit=60",
+      "comment": "Restock weak niches — 8 at a time, every hour",
+      "path": "/api/cron/refresh-products?stockWeak=1&wait=1&batch=8&auditLimit=60",
       "schedule": "17 * * * *"
     },
     {
-      "path": "/api/cron/refresh-products?backgroundCatalog=1&wait=1&auditLimit=60",
-      "schedule": "7 */6 * * *"
+      "comment": "Background catalog crawl — 3 niches every 2 hours (all 35 covered in ~24h)",
+      "path": "/api/cron/refresh-products?backgroundCatalog=1&wait=1&batch=3&auditLimit=60",
+      "schedule": "7 */2 * * *"
     },
     {
+      "comment": "Nightly full refresh — sweeps every niche to baseline 200 products at 3 AM UTC",
+      "path": "/api/cron/refresh-products?full=1&wait=1&auditLimit=60",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "comment": "Auto-listing: post products to eBay for all enabled users",
       "path": "/api/cron/auto-listing-tick?limit=12",
       "schedule": "*/15 * * * *"
     },
     {
+      "comment": "AI source agent: discover new niches, repair weak ones",
       "path": "/api/cron/source-agent",
       "schedule": "23 * * * *"
     },
     {
+      "comment": "Reprice agent: adjust eBay prices when Amazon cost drifts",
       "path": "/api/cron/reprice-agent",
       "schedule": "45 * * * *"
     },
     {
+      "comment": "Fulfillment agent: pre-stage Amazon orders for browser extension",
       "path": "/api/cron/fulfillment-agent",
       "schedule": "*/20 * * * *"
     },
     {
+      "comment": "Daily digest: AI performance summary",
       "path": "/api/cron/digest-agent",
       "schedule": "0 6 * * *"
     }

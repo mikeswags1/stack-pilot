@@ -373,7 +373,25 @@ function usePoolRefresh(onDone: () => void) {
     }
   }
 
-  return { state, msg, trigger }
+  const restockAll = async () => {
+    setState('running')
+    setMsg('Restocking ALL niches to max — running full sweep + deep catalog in background. Check back in 5 minutes.')
+    try {
+      const res = await fetch('/api/admin/restock-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      const data = await readJson(res)
+      setState('done')
+      setMsg(data.message || 'Restock triggered. All niche crawls are running in the background.')
+      onDone()
+    } catch (error) {
+      setState('error')
+      setMsg(error instanceof Error ? error.message : 'Restock failed.')
+    }
+  }
+
+  return { state, msg, trigger, restockAll }
 }
 
 export default function AdminPage() {
@@ -800,6 +818,10 @@ export default function AdminPage() {
               <button className="admin-tool" disabled={pool.state === 'running'} onClick={() => pool.trigger('catalog')}>
                 <strong>Deep Catalog Crawl</strong>
                 <span>Heavy on-demand crawl. Autopilot now repairs weak niches automatically; this is only for manual force-refresh.</span>
+              </button>
+              <button className="admin-tool" style={{ borderColor: '#4ade80', background: 'rgba(74,222,128,0.06)' }} disabled={pool.state === 'running'} onClick={() => pool.restockAll()}>
+                <strong>🚀 Restock All Niches</strong>
+                <span>Fires all 4 crawl modes at once — brings every niche to max products immediately. Runs in background (~5 min).</span>
               </button>
               <button className="admin-tool" disabled={toolState.active !== null} onClick={() => runTool('setup', 'Database setup', '/api/setup-db')}>
                 <strong>Repair Database</strong>
