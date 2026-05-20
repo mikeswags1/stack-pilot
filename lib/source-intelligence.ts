@@ -1,6 +1,7 @@
 import { queryRows, sql } from '@/lib/db'
 import { ensureAutoListingTables } from '@/lib/auto-listing/db'
 import { ensureProductSourceTables } from '@/lib/product-source-engine'
+import { enrichCompetitionData } from '@/lib/ebay-competition'
 
 export type SourceEngineRunStatus = 'success' | 'failed' | 'partial'
 
@@ -454,6 +455,23 @@ export async function applySourceIntelligenceScores(limit = 6000) {
           * CASE WHEN psi.profit >= 18 THEN 1.10 WHEN psi.profit >= 8 THEN 1.04 WHEN psi.profit >= 4 THEN 0.95 ELSE 0.70 END
           * CASE WHEN psi.roi >= 75 THEN 1.08 WHEN psi.roi >= 45 THEN 1.02 WHEN psi.roi >= 30 THEN 0.94 ELSE 0.72 END
           * CASE WHEN COALESCE(apc.available, TRUE) = FALSE THEN 0.10 ELSE 1 END
+          * CASE
+              WHEN apc.best_seller_rank IS NULL THEN 1.00
+              WHEN apc.best_seller_rank <= 500 THEN 1.25
+              WHEN apc.best_seller_rank <= 2000 THEN 1.15
+              WHEN apc.best_seller_rank <= 10000 THEN 1.07
+              WHEN apc.best_seller_rank <= 50000 THEN 1.00
+              ELSE 0.91
+            END
+          * CASE
+              WHEN psi.ebay_competitor_count IS NULL THEN 1.00
+              WHEN psi.ebay_competitor_count <= 10 THEN 1.05
+              WHEN psi.ebay_competitor_count <= 30 THEN 0.97
+              WHEN psi.ebay_competitor_count <= 75 THEN 0.88
+              WHEN psi.ebay_competitor_count <= 150 THEN 0.76
+              ELSE 0.60
+            END
+          * COALESCE(LEAST(GREATEST(psi.listing_outcome_score, 0.60), 1.25), 1.00)
         )::numeric, 2) AS intelligence_score,
         CASE
           WHEN psi.active = FALSE THEN 'inactive'
@@ -492,6 +510,35 @@ export async function applySourceIntelligenceScores(limit = 6000) {
   return toNumber(rows[0]?.count)
 }
 
+export async function applyListingOutcomeFeedback() {
+  const rows = await queryRows<{ count: string | number }>`
+    WITH outcomes AS (
+      SELECT
+        asin,
+        COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+        COUNT(*) FILTER (WHERE status = 'failed' AND attempts >= 2) AS hard_failed,
+        COUNT(*) FILTER (WHERE status = 'failed') AS failed
+      FROM auto_listing_queue
+      WHERE updated_at > NOW() - INTERVAL '60 days'
+      GROUP BY asin
+    ),
+    updated AS (
+      UPDATE product_source_items psi
+      SET listing_outcome_score = LEAST(1.25, GREATEST(0.60, CASE
+        WHEN o.completed > 0 AND o.hard_failed = 0 THEN 1.0 + (0.08 * LEAST(o.completed, 3))
+        WHEN o.completed > 0 THEN 1.0 + (0.10 * o.completed) - (0.07 * o.hard_failed)
+        WHEN o.hard_failed > 0 THEN 1.0 - (0.12 * LEAST(o.hard_failed, 3))
+        ELSE 1.0
+      END))
+      FROM outcomes o
+      WHERE psi.asin = o.asin
+      RETURNING psi.asin
+    )
+    SELECT COUNT(*)::int AS count FROM updated
+  `.catch(() => [])
+  return toNumber(rows[0]?.count)
+}
+
 export async function runSourceSelfHealing(options: { applyScores?: boolean; deactivateWeak?: boolean } = {}) {
   await ensureSourceIntelligenceTables()
   const intelligence = await refreshSourceIntelligenceState({ applyScores: options.applyScores !== false })
@@ -518,10 +565,14 @@ export async function runSourceSelfHealing(options: { applyScores?: boolean; dea
         RETURNING asin
       `.catch(() => [])
 
+  const outcomeFeedbackUpdated = await applyListingOutcomeFeedback().catch(() => 0)
+  const competitionEnriched = await enrichCompetitionData({ limit: 20 }).catch(() => ({ enriched: 0, failed: 0 }))
   const recommendations = await getSourceRecommendations(8)
   return {
     ...intelligence,
     deactivatedWeakProducts: deactivatedRows.length,
+    outcomeFeedbackUpdated,
+    competitionEnriched: competitionEnriched.enriched,
     recommendations,
   }
 }

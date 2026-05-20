@@ -26,6 +26,9 @@ export type SourceEngineProduct = {
   available?: boolean
   _rating?: number
   _numRatings?: number
+  bestSellerRank?: number
+  ebayCompetitorCount?: number
+  listingOutcomeScore?: number
 }
 
 type SourceProductInput = Partial<SourceEngineProduct> & {
@@ -60,6 +63,9 @@ type ProductSourceRow = {
   cached_description?: string | null
   cached_specs?: Array<[string, string]> | null
   cached_available?: boolean | null
+  cached_bsr?: number | null
+  ebay_competitor_count?: number | null
+  listing_outcome_score?: string | number | null
 }
 
 type ProductCacheRow = {
@@ -127,11 +133,39 @@ function scoreProduct(product: SourceEngineProduct) {
     price: product.amazonPrice,
     imageCount,
   })
+
+  // BSR multiplier — only applied when BSR is known from product page enrichment
+  const bsr = product.bestSellerRank
+  const bsrMultiplier = bsr
+    ? bsr <= 500 ? 1.25
+    : bsr <= 2000 ? 1.15
+    : bsr <= 10000 ? 1.07
+    : bsr <= 50000 ? 1.0
+    : 0.91
+    : 1.0
+
+  // eBay competition penalty — more sellers = lower priority
+  const competitors = product.ebayCompetitorCount
+  const competitionMultiplier = competitors === undefined || competitors < 0 ? 1.0
+    : competitors <= 10 ? 1.05
+    : competitors <= 30 ? 0.97
+    : competitors <= 75 ? 0.88
+    : competitors <= 150 ? 0.76
+    : 0.60
+
+  // Outcome feedback — lifted from auto_listing_queue history
+  const outcomeMult = Number.isFinite(product.listingOutcomeScore) && (product.listingOutcomeScore ?? 0) > 0
+    ? clamp(product.listingOutcomeScore!, 0.60, 1.25)
+    : 1.0
+
   const total =
     (profitScore + roiScore + marginScore + demandScore + priceSweetSpot + imageBoost + logisticsBoost) *
     riskPenalty *
     reviewTrust *
-    trendMultiplier
+    trendMultiplier *
+    bsrMultiplier *
+    competitionMultiplier *
+    outcomeMult
   return Number.isFinite(total) ? Number(total.toFixed(2)) : 0
 }
 
@@ -213,6 +247,9 @@ function rowToProduct(row: ProductSourceRow): SourceEngineProduct {
     available: row.cached_available === null ? undefined : row.cached_available,
     _rating: parseNumber(row.rating),
     _numRatings: Math.round(parseNumber(row.review_count)),
+    bestSellerRank: row.cached_bsr ?? undefined,
+    ebayCompetitorCount: row.ebay_competitor_count !== null && row.ebay_competitor_count !== undefined ? Number(row.ebay_competitor_count) : undefined,
+    listingOutcomeScore: row.listing_outcome_score !== null && row.listing_outcome_score !== undefined ? parseNumber(row.listing_outcome_score) : undefined,
   }
   product.qualityScore = parseNumber(row.intelligence_score) || scoreProduct(product)
   return product
@@ -265,6 +302,9 @@ export async function ensureProductSourceTables() {
   await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS intelligence_score NUMERIC(12,2)`.catch(() => {})
   await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS source_quality TEXT NOT NULL DEFAULT 'candidate'`.catch(() => {})
   await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS last_intelligence_at TIMESTAMPTZ`.catch(() => {})
+  await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS ebay_competitor_count INTEGER`.catch(() => {})
+  await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS listing_outcome_score NUMERIC(5,3) NOT NULL DEFAULT 1.000`.catch(() => {})
+  await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS best_seller_rank INTEGER`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS product_source_items_intelligence_idx ON product_source_items (intelligence_score DESC NULLS LAST)`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS product_source_items_quality_idx ON product_source_items (active, source_quality, intelligence_score DESC NULLS LAST)`.catch(() => {})
 }
@@ -550,7 +590,8 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                  psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
                  apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
                  apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
-                 apc.available AS cached_available
+                 apc.available AS cached_available, apc.best_seller_rank AS cached_bsr,
+                 psi.ebay_competitor_count, psi.listing_outcome_score
           FROM product_source_items psi
           LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
           WHERE psi.active = TRUE
@@ -571,7 +612,8 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                  psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
                  apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
                  apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
-                 apc.available AS cached_available
+                 apc.available AS cached_available, apc.best_seller_rank AS cached_bsr,
+                 psi.ebay_competitor_count, psi.listing_outcome_score
           FROM product_source_items psi
           LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
           WHERE psi.active = TRUE

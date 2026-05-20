@@ -21,6 +21,7 @@ export type ValidatedAmazonProduct = {
   specs: Array<[string, string]>
   brand?: string
   available: boolean
+  bestSellerRank?: number
   source: 'api' | 'search' | 'scrape' | 'cache' | 'fallback'
   usedFallbackTitle?: boolean
   usedFallbackPrice?: boolean
@@ -37,6 +38,7 @@ type CachedAmazonProduct = {
   specs: unknown
   brand: string | null
   available: boolean | null
+  best_seller_rank: number | null
 }
 
 function normalizeImageUrl(value: unknown) {
@@ -227,6 +229,7 @@ function toProduct(input: {
   specs?: unknown
   brand?: string
   available?: boolean
+  bestSellerRank?: number
   source: ValidatedAmazonProduct['source']
   fallbackTitle?: string
   fallbackPrice?: number
@@ -253,6 +256,7 @@ function toProduct(input: {
     specs,
     brand: inferBrand(title, specs, input.brand),
     available: input.available ?? amazonPrice > 0,
+    bestSellerRank: input.bestSellerRank,
     source: input.source,
     usedFallbackTitle: !sanitizeTitle(input.title) && Boolean(input.fallbackTitle),
     usedFallbackPrice: recoveredPrice <= 0 && fallbackPrice > 0,
@@ -285,7 +289,7 @@ async function ensureAmazonProductCacheTable() {
 export async function loadCachedAmazonProduct(asin: string): Promise<ValidatedAmazonProduct | null> {
   await ensureAmazonProductCacheTable()
   const rows = await queryRows<CachedAmazonProduct>`
-    SELECT asin, title, amazon_price, images, primary_image, features, description, specs, brand, available
+    SELECT asin, title, amazon_price, images, primary_image, features, description, specs, brand, available, best_seller_rank
     FROM amazon_product_cache
     WHERE asin = ${asin}
     LIMIT 1
@@ -309,14 +313,16 @@ export async function loadCachedAmazonProduct(asin: string): Promise<ValidatedAm
     specs: cached.specs,
     brand: sanitizeText(cached.brand),
     available: cached.available ?? true,
+    bestSellerRank: cached.best_seller_rank ?? undefined,
     source: 'cache',
   })
 }
 
 export async function saveCachedAmazonProduct(product: ValidatedAmazonProduct) {
   await ensureAmazonProductCacheTable()
+  await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS best_seller_rank INTEGER`.catch(() => {})
   await sql`
-    INSERT INTO amazon_product_cache (asin, title, amazon_price, primary_image, images, features, description, specs, brand, available, source, updated_at)
+    INSERT INTO amazon_product_cache (asin, title, amazon_price, primary_image, images, features, description, specs, brand, available, best_seller_rank, source, updated_at)
     VALUES (
       ${product.asin},
       ${product.title.slice(0, 500)},
@@ -328,6 +334,7 @@ export async function saveCachedAmazonProduct(product: ValidatedAmazonProduct) {
       ${JSON.stringify(product.specs)},
       ${product.brand || null},
       ${product.available},
+      ${product.bestSellerRank ?? null},
       ${product.source},
       NOW()
     )
@@ -341,6 +348,7 @@ export async function saveCachedAmazonProduct(product: ValidatedAmazonProduct) {
       specs = EXCLUDED.specs,
       brand = EXCLUDED.brand,
       available = EXCLUDED.available,
+      best_seller_rank = COALESCE(EXCLUDED.best_seller_rank, amazon_product_cache.best_seller_rank),
       source = EXCLUDED.source,
       updated_at = NOW()
   `.catch(() => {})
@@ -472,6 +480,7 @@ async function fetchProductFromScrape(asin: string, fallbackImage?: string) {
     description: scraped.description,
     specs: scraped.specs,
     available: scraped.available && scraped.price > 0,
+    bestSellerRank: scraped.bestSellerRank,
     source: 'scrape',
   })
 }

@@ -21,6 +21,7 @@ export interface AmazonProduct {
   description: string
   specs: Array<[string, string]>
   available: boolean
+  bestSellerRank?: number
 }
 
 function extractBetween(html: string, open: string, close: string): string {
@@ -266,6 +267,22 @@ export async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct |
         .map((source) => stripTags(decodeHtmlEntities(source)))
         .find((source) => source.length > 60 && !/(data-csa|aplus|module|desktop|wrapper|padding|margin|background-image|function)/i.test(source)) || ''
 
+    let bestSellerRank: number | undefined
+    const bsrJsonMatch = html.match(/"bestsellerRank"\s*:\s*\[?\s*\{[^}]*?"rank"\s*:\s*(\d+)/i)
+    if (bsrJsonMatch) {
+      bestSellerRank = parseInt(bsrJsonMatch[1], 10) || undefined
+    }
+    if (!bestSellerRank) {
+      const bsrHtmlMatch =
+        html.match(/Best\s+Sellers\s+Rank[^#]*#([\d,]+)/i) ||
+        html.match(/<li[^>]*id="SalesRank"[^>]*>[\s\S]*?#([\d,]+)/i) ||
+        html.match(/"salesRank"\s*:\s*(\d+)/i)
+      if (bsrHtmlMatch) {
+        bestSellerRank = parseInt(bsrHtmlMatch[1].replace(/,/g, ''), 10) || undefined
+      }
+    }
+    if (bestSellerRank && (bestSellerRank < 1 || bestSellerRank > 5_000_000)) bestSellerRank = undefined
+
     const availabilityText = html.toLowerCase()
     const hasUnavailableSignal =
       availabilityText.includes('currently unavailable') ||
@@ -286,6 +303,7 @@ export async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct |
       description,
       specs,
       available,
+      bestSellerRank,
     }
   } catch {
     return null
