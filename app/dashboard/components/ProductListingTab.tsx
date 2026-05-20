@@ -2,6 +2,7 @@ import type { FinderProduct, ListProgress } from '../types'
 import Image from 'next/image'
 import { dashboardDisplayImageUrl } from '@/lib/dashboard-display-image'
 import { TrialMeter } from './TrialMeter'
+import { getBulkPreflightIssue } from '../utils'
 
 const NICHE_GROUPS = [
   { group: 'Trending', emoji: '\u2728', items: ['Golf Accessories', 'Pool Products', 'Beach & Sunny Day', 'Summer Outdoor Gear', 'Backyard & Patio', 'Travel Accessories', 'Fitness Recovery', 'Home Organization', 'Pet Products', 'Viral Gadgets', 'Giftable Under $50'] },
@@ -63,6 +64,7 @@ export function ProductListingTab({
   const failedCount = listAllProgress ? Math.max(0, listAllProgress.errors - skippedCount) : 0
   const listedCount = listAllProgress ? Math.max(0, listAllProgress.total - listAllProgress.errors) : 0
   const hasResults = Boolean(finderResults?.length)
+  const publishReadyCount = finderResults?.filter((product) => !getBulkPreflightIssue(product)).length || 0
   const trialLocked = Boolean(
     trial &&
     !trial.loading &&
@@ -196,10 +198,10 @@ export function ProductListingTab({
                 <button
                   className="btn btn-solid"
                   onClick={onListAll}
-                  disabled={!connected || trialLocked}
+                  disabled={!connected || trialLocked || publishReadyCount === 0}
                   style={{ padding: '13px 22px', fontSize: '13px', fontWeight: 700, flex: '1 1 140px' }}
                 >
-                  List All ({finderResults.length})
+                  List Ready ({publishReadyCount})
                 </button>
               ) : null}
               {isListing ? (
@@ -314,6 +316,8 @@ export function FinderResults({
   const skippedCount = listAllProgress?.skipped || 0
   const failedCount = listAllProgress ? Math.max(0, listAllProgress.errors - skippedCount) : 0
   const listedCount = listAllProgress ? Math.max(0, listAllProgress.total - listAllProgress.errors) : 0
+  const publishReadyCount = results.filter((product) => !getBulkPreflightIssue(product)).length
+  const candidateCount = Math.max(0, results.length - publishReadyCount)
 
   return (
     <div>
@@ -323,7 +327,11 @@ export function FinderResults({
           <div style={{ fontSize: '9px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0, color: 'var(--plat)' }}>
             {results.length} products — {niche}
           </div>
-          {compact ? null : (
+          {compact ? (
+            <div style={{ fontSize: '10px', color: 'var(--dim)', marginTop: '3px' }}>
+              {publishReadyCount} publish-ready{candidateCount > 0 ? ` · ${candidateCount} still checking` : ''}
+            </div>
+          ) : (
             <div style={{ fontSize: '10px', color: 'var(--dim)', marginTop: '3px' }}>
               Stable queue · Use Shuffle to reshuffle · Click any card to review before publishing
             </div>
@@ -331,8 +339,8 @@ export function FinderResults({
         </div>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
           {!isListing && !listingDone ? (
-            <button className="btn btn-gold btn-sm" style={{ fontSize: '10px' }} disabled={!connected || trialLocked} onClick={onListAll}>
-              List All ({results.length})
+            <button className="btn btn-gold btn-sm" style={{ fontSize: '10px' }} disabled={!connected || trialLocked || publishReadyCount === 0} onClick={onListAll}>
+              List Ready ({publishReadyCount})
             </button>
           ) : null}
           {isListing ? (

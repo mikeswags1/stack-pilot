@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { apiError, apiOk } from '@/lib/api-response'
 import { fetchAmazonProductByAsin } from '@/lib/amazon-product'
+import { sql } from '@/lib/db'
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
@@ -22,6 +23,17 @@ export async function GET(req: NextRequest) {
       status: 404,
       code: 'ASIN_VALIDATION_FAILED',
     })
+  }
+
+  if (product.available === false) {
+    await sql`
+      UPDATE product_source_items
+      SET active = FALSE,
+          source_quality = 'reject',
+          last_intelligence_at = NOW(),
+          last_seen_at = NOW()
+      WHERE UPPER(asin) = UPPER(${product.asin})
+    `.catch(() => {})
   }
 
   return apiOk({

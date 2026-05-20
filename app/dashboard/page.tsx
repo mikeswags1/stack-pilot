@@ -307,6 +307,11 @@ export default function Dashboard() {
       const sourceMode = product.sourceMode === 'continuous' ? 'continuous' : 'niche'
 
       if (sourceMode === 'continuous') {
+        setContinuousFinderState((prev) => ({
+          ...prev,
+          results: prev.results ? prev.results.filter((entry) => !listed.has(entry.asin.toUpperCase())) : prev.results,
+        }))
+
         const remainingAsins = (continuousFinderState.results || [])
           .filter((entry) => !listed.has(entry.asin.toUpperCase()))
           .map((entry) => entry.asin)
@@ -329,6 +334,11 @@ export default function Dashboard() {
         }
         return
       }
+
+      setFinderState((prev) => ({
+        ...prev,
+        results: prev.results ? prev.results.filter((entry) => !listed.has(entry.asin.toUpperCase())) : prev.results,
+      }))
 
       if (!nicheState.value) return
       const remainingAsins = (finderState.results || [])
