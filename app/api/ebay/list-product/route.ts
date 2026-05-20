@@ -141,6 +141,8 @@ const NICHE_FALLBACK_LEAF_CATEGORY: Record<string, string> = {
 }
 
 const DEFAULT_LEAF_CATEGORY = '26677'
+const EBAY_SHIP_FROM_LOCATION = 'King City, California, United States'
+const EBAY_SHIP_FROM_POSTAL_CODE = '93930'
 
 const TITLE_FALLBACK_CATEGORY_RULES: Array<{ categoryId: string; keywords: string[] }> = [
   { categoryId: '9394', keywords: ['phone', 'iphone', 'galaxy', 'samsung', 'magsafe', 'charger', 'charging case', 'screen protector'] },
@@ -1278,8 +1280,8 @@ function buildXml(params: {
     <ConditionID>1000</ConditionID>
     <Country>US</Country>
     <Currency>USD</Currency>
-    <Location>${(process.env.EBAY_ITEM_LOCATION || 'New Jersey, United States').replace(/&/g, '&amp;')}</Location>
-    <PostalCode>${process.env.EBAY_POSTAL_CODE || '07001'}</PostalCode>
+    <Location>${EBAY_SHIP_FROM_LOCATION.replace(/&/g, '&amp;')}</Location>
+    <PostalCode>${EBAY_SHIP_FROM_POSTAL_CODE}</PostalCode>
     <DispatchTimeMax>0</DispatchTimeMax>
     <ListingDuration>GTC</ListingDuration>
     <ListingType>FixedPriceItem</ListingType>
