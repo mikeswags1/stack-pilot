@@ -62,12 +62,16 @@ function countUniqueProductImages(product: FinderProduct) {
 export function getBulkPreflightIssue(product: FinderProduct): BulkListFailure | null {
   const imageCount = countUniqueProductImages(product)
 
-  if (product.available !== true) {
+  // Only block products that are *confirmed* unavailable (available === false).
+  // available === undefined means "not yet verified" — allow through so the
+  // listing route can do the live check. Blocking undefined was causing almost
+  // all pool products to be skipped because many don't have a cache entry yet.
+  if (product.available === false) {
     return {
       asin: product.asin,
       title: product.title,
       code: 'PRODUCT_UNAVAILABLE',
-      message: 'Skipped before publish: Amazon buyability has not been verified yet.',
+      message: 'Skipped before publish: product is confirmed unavailable on Amazon.',
       skipped: true,
     }
   }

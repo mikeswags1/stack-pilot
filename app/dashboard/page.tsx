@@ -303,14 +303,16 @@ export default function Dashboard() {
   // the same deterministic first-30 slice — no variety for the user on first load).
   const [finderRotationTick, setFinderRotationTick] = useState(1)
 
-  const visibleFinderResults = useMemo(
-    () => getRotatingFinderProducts(finderState.results, finderRotationTick),
-    [finderRotationTick, finderState.results]
-  )
-  const visibleContinuousResults = useMemo(
-    () => getRotatingFinderProducts(continuousFinderState.results, finderRotationTick),
-    [continuousFinderState.results, finderRotationTick]
-  )
+  const visibleFinderResults = useMemo(() => {
+    const rotated = getRotatingFinderProducts(finderState.results, finderRotationTick)
+    // Hard cap: never show more than FINDER_STOCK_TARGET (30) products at once.
+    return rotated ? rotated.slice(0, FINDER_STOCK_TARGET) : null
+  }, [finderRotationTick, finderState.results])
+
+  const visibleContinuousResults = useMemo(() => {
+    const rotated = getRotatingFinderProducts(continuousFinderState.results, finderRotationTick)
+    return rotated ? rotated.slice(0, FINDER_STOCK_TARGET) : null
+  }, [continuousFinderState.results, finderRotationTick])
 
   const replaceUnavailableProduct = useCallback(
     async (product: FinderProduct) => {
