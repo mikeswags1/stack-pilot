@@ -99,7 +99,7 @@ function sanitizePlan(input: unknown): AgentPlan {
         .slice(0, 3)
     : []
   const repairNiches = Array.isArray(raw.repairNiches)
-    ? unique(raw.repairNiches.map(String), 8).filter((niche) => isAllowedNiche(niche, [])).slice(0, 5)
+    ? unique(raw.repairNiches.map(String), 8).filter((niche) => isAllowedNiche(niche, [])).slice(0, 8)
     : []
   const notes = Array.isArray(raw.notes)
     ? raw.notes.map((note) => normalizeText(note, 240)).filter(Boolean).slice(0, 8)

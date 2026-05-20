@@ -531,11 +531,21 @@ export async function getWeakSourceNiches(limit = 6) {
   const rows = await queryRows<{ niche: string }>`
     SELECT niche
     FROM source_niche_intelligence
-    WHERE ready_products < 30
+    WHERE (
+      ready_products < 30
        OR cache_products < 30
        OR health_score < 65
        OR last_cache_at IS NULL
        OR last_cache_at < NOW() - INTERVAL '48 hours'
+    )
+      AND lower(niche) NOT LIKE '%supplement%'
+      AND lower(niche) NOT LIKE '%vitamin%'
+      AND lower(niche) NOT LIKE '%medical%'
+      AND lower(niche) NOT LIKE '%medicine%'
+      AND lower(niche) NOT LIKE '%prescription%'
+      AND lower(niche) NOT LIKE '%cosmetic%'
+      AND lower(niche) NOT LIKE '%makeup%'
+      AND lower(niche) NOT LIKE '%perfume%'
     ORDER BY
       CASE WHEN cache_products < 30 THEN 0 ELSE 1 END,
       health_score ASC,
@@ -552,10 +562,20 @@ export async function getNicheStockRepairTargets(limit = 6) {
   const rows = await queryRows<{ niche: string }>`
     SELECT niche
     FROM source_niche_intelligence
-    WHERE ready_products < 30
+    WHERE (
+      ready_products < 30
        OR cache_products < 30
        OR last_cache_at IS NULL
        OR last_cache_at < NOW() - INTERVAL '36 hours'
+    )
+      AND lower(niche) NOT LIKE '%supplement%'
+      AND lower(niche) NOT LIKE '%vitamin%'
+      AND lower(niche) NOT LIKE '%medical%'
+      AND lower(niche) NOT LIKE '%medicine%'
+      AND lower(niche) NOT LIKE '%prescription%'
+      AND lower(niche) NOT LIKE '%cosmetic%'
+      AND lower(niche) NOT LIKE '%makeup%'
+      AND lower(niche) NOT LIKE '%perfume%'
     ORDER BY
       CASE WHEN ready_products < 30 THEN 0 ELSE 1 END,
       CASE WHEN cache_products < 30 THEN 0 ELSE 1 END,
