@@ -147,7 +147,7 @@ type ListingState = {
 }
 
 const FINDER_STOCK_TARGET = 30
-const FINDER_ROTATION_POOL_TARGET = 60
+const FINDER_ROTATION_POOL_TARGET = 90
 
 function tagFinderProducts(products: FinderProduct[], sourceMode: 'niche' | 'continuous') {
   return products.map((product) => ({ ...product, sourceMode }))
@@ -289,7 +289,9 @@ export default function Dashboard() {
   })
   const [scriptRunning, setScriptRunning] = useState<string | null>(null)
   const [scriptMessage, setScriptMessage] = useState<ScriptMessage | null>(null)
-  const [finderRotationTick, setFinderRotationTick] = useState(0)
+  // Start at 1 so the initial display is already shuffled (tick=0 would always show
+  // the same deterministic first-30 slice — no variety for the user on first load).
+  const [finderRotationTick, setFinderRotationTick] = useState(1)
 
   const visibleFinderResults = useMemo(
     () => getRotatingFinderProducts(finderState.results, finderRotationTick),
@@ -908,6 +910,23 @@ export default function Dashboard() {
     }
   }, [continuousFinderState.error, continuousFinderState.loading, continuousFinderState.results, handleFindContinuousProducts, tab])
 
+  // Auto-reseed continuous listing when the pool drops below the display threshold.
+  // This keeps it "continuous" — once the current batch is listed/removed, a fresh
+  // batch is pulled automatically so the user never hits an empty queue.
+  const continuousPoolSize = continuousFinderState.results?.length ?? 0
+  useEffect(() => {
+    if (
+      tab === 'continuous' &&
+      !continuousFinderState.loading &&
+      !continuousFinderState.error &&
+      continuousFinderState.results !== null &&
+      continuousPoolSize < FINDER_STOCK_TARGET
+    ) {
+      void handleFindContinuousProducts()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [continuousPoolSize, tab])
+
   const publishFinderProduct = useCallback(
     async (product: FinderProduct, opts?: { trusted?: boolean; categoryId?: string }) => {
       const productNiche = product.sourceMode === 'continuous' ? product.sourceNiche || null : nicheState.value
@@ -1049,6 +1068,9 @@ export default function Dashboard() {
     }
 
     const terminalAsins = [...result.listedAsins, ...result.failedAsins, ...result.skippedAsins]
+    // Advance the rotation tick so the next visible batch shows different products
+    // from the pool rather than the same re-ranked slice every time.
+    setFinderRotationTick((t) => t + 1)
     if (result.errors > 0) {
       await refillNicheFinderProducts(terminalAsins)
       await refreshSubscriptionStatus().catch(() => {})
@@ -1118,6 +1140,7 @@ export default function Dashboard() {
     }
 
     const terminalAsins = [...result.listedAsins, ...result.failedAsins, ...result.skippedAsins]
+    setFinderRotationTick((t) => t + 1)
     if (result.errors > 0) {
       await refillContinuousProducts(terminalAsins)
       await refreshSubscriptionStatus().catch(() => {})

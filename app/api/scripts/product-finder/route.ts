@@ -196,7 +196,22 @@ function seededShuffle<T>(values: T[], seed: string) {
 }
 
 function getRotationBucket() {
-  return Math.floor(Date.now() / (6 * 60 * 60 * 1000))
+  // 30-minute buckets so the ranking rotates more often and users see fresh products
+  // within the same session rather than waiting 6 hours for a new ordering.
+  return Math.floor(Date.now() / (30 * 60 * 1000))
+}
+
+function hashExcludeAsins(excludeAsins: Set<string>): string {
+  if (excludeAsins.size === 0) return ''
+  // Sort for determinism, take a short fingerprint so the seed is stable
+  // but different for each unique set of excluded products.
+  const joined = Array.from(excludeAsins).sort().join(',')
+  let hash = 2166136261
+  for (let i = 0; i < joined.length; i++) {
+    hash ^= joined.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return String(hash >>> 0)
 }
 
 function nicheKey(value?: string | null) {
@@ -643,7 +658,7 @@ export async function GET(req: NextRequest) {
   const continuousMode = mode === 'continuous'
   const requestedNiche = req.nextUrl.searchParams.get('niche')
   const niche = continuousMode ? CONTINUOUS_CACHE_KEY : requestedNiche
-  const targetCount = Math.max(1, Math.min(60, Number(req.nextUrl.searchParams.get('limit') || TARGET_STOCK) || TARGET_STOCK))
+  const targetCount = Math.max(1, Math.min(90, Number(req.nextUrl.searchParams.get('limit') || TARGET_STOCK) || TARGET_STOCK))
   const excludeAsins = new Set(
     (req.nextUrl.searchParams.get('exclude') || '')
       .split(',')
@@ -662,7 +677,12 @@ export async function GET(req: NextRequest) {
     ...await withTimeout(loadActiveCustomSourceNicheQueries(), 700, {}),
   }
   const requestSeed = forceRefresh ? `${Date.now()}:${Math.random()}` : String(getRotationBucket())
-  const distributionSeed = `${userId}:${continuousMode ? 'continuous' : niche}:${requestSeed}`
+  // Incorporate the excluded ASINs into the seed so each refill batch produces a
+  // genuinely different ranking — not just the same ordering with excluded items removed.
+  // Without this, after listing 30 products the next 30 are drawn from the same ranked
+  // position in the pool, often returning near-identical items.
+  const excludeSeedFragment = hashExcludeAsins(excludeAsins)
+  const distributionSeed = `${userId}:${continuousMode ? 'continuous' : niche}:${requestSeed}:${excludeSeedFragment}`
   // Defer niche weights until after cache check — avoids eBay API call when cache is warm
   let nicheWeights = new Map<string, number>()
 
@@ -1098,14 +1118,29 @@ export async function GET(req: NextRequest) {
     })
   }
 
+  // Load a large pool from the source engine. The seeded shuffle inside respondWithProducts
+  // picks a different top-N from this pool on each call (different seed = different order),
+  // so a bigger pool directly means more product variety across requests.
+  const sourceEnginePoolLimit = continuousMode ? 800 : 600
   const sourceEngineProducts = await withTimeout(
-    loadProductSourceProducts({ niche: continuousMode ? undefined : niche, limit: 600 }),
-    continuousMode ? 700 : 1200,
+    loadProductSourceProducts({ niche: continuousMode ? undefined : niche, limit: sourceEnginePoolLimit }),
+    continuousMode ? 900 : 1400,
     []
   )
   const sourceEngineAvailable = getAvailableProducts(sourceEngineProducts)
-  if (sourceEngineAvailable.length >= targetCount && (!forceRefresh || sourceEngineProducts.length > targetCount)) {
+  // Only early-return from source engine when there are clearly enough products AND
+  // either we're not forcing a refresh, OR the pool is large enough to surface variety.
+  // When excludeAsins are present, always go through respondWithProducts so the
+  // exclude-aware seed produces a genuinely fresh ranking.
+  if (
+    sourceEngineAvailable.length >= targetCount &&
+    excludeAsins.size === 0 &&
+    (!forceRefresh || sourceEngineProducts.length > targetCount * 3)
+  ) {
     return respondWithProducts(sourceEngineProducts, continuousMode ? 'source-engine' : 'source-engine-niche')
+  }
+  if (sourceEngineAvailable.length >= targetCount) {
+    return respondWithProducts(sourceEngineProducts, continuousMode ? 'source-engine-fresh' : 'source-engine-niche-fresh')
   }
 
   // ── Check cache ──────────────────────────────────────────────────────────────
