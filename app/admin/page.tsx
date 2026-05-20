@@ -245,6 +245,11 @@ type Stats = {
     intelligence: SourceIntelligenceSummary | null
     topNiches: SourceNiche[]
     trendingNiches: TrendingNiche[]
+    agentStatus?: {
+      reprice: { last_run: string | null; runs_24h: number; revised_24h?: number } | null
+      fulfillment: { last_run: string | null; runs_24h: number } | null
+      digest: { last_run: string | null; runs_24h: number } | null
+    }
   }
   automation?: AutomationSummary
   recentListings: RecentListing[]
@@ -668,6 +673,38 @@ export default function AdminPage() {
           </div>
           <div className="admin-subtle-line">
             This is the launch safety view: clients can use the dashboard normally while these background jobs keep product pools stocked, queues rotating, and stale Amazon listings under review.
+          </div>
+        </section>
+
+        {/* 24/7 Agent Status */}
+        <section className="admin-panel" style={{ marginBottom: '20px' }}>
+          <div className="admin-panel-head">
+            <div>
+              <span>24/7 Agents</span>
+              <h2>Always-running backend agents</h2>
+            </div>
+            <span className="admin-pill admin-pill-good">All Active</span>
+          </div>
+          <div className="admin-automation-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '10px', marginTop: '12px' }}>
+            {[
+              { label: 'Pool Maintenance', freq: 'Every 15 min', desc: 'Sync eBay, reprice pool' },
+              { label: 'Stock Weak Niches', freq: 'Every 20 min ×10', desc: 'All 35 niches in ~70 min' },
+              { label: 'Background Catalog', freq: 'Every hour ×4', desc: 'Deep 780-product stock' },
+              { label: 'Full Sweep', freq: 'Every 8 hours', desc: 'Baseline all niches to 200' },
+              { label: 'Auto-Listing', freq: 'Every 10 min', desc: 'Posts to eBay for all users' },
+              { label: 'AI Source Agent', freq: 'Every hour', desc: 'Discover & repair niches' },
+              { label: 'Reprice Agent', freq: 'Every hour', lastRun: stats.sourceHealth.agentStatus?.reprice?.last_run, runs24h: stats.sourceHealth.agentStatus?.reprice?.runs_24h },
+              { label: 'Fulfillment Agent', freq: 'Every 10 min', lastRun: stats.sourceHealth.agentStatus?.fulfillment?.last_run, runs24h: stats.sourceHealth.agentStatus?.fulfillment?.runs_24h },
+              { label: 'Daily Digest', freq: 'Daily 6 AM UTC', lastRun: stats.sourceHealth.agentStatus?.digest?.last_run, runs24h: stats.sourceHealth.agentStatus?.digest?.runs_24h },
+            ].map((agent) => (
+              <div key={agent.label} style={{ background: 'rgba(255,255,255,0.04)', borderRadius: '8px', padding: '10px 12px', borderLeft: '3px solid #4ade80' }}>
+                <div style={{ fontWeight: 700, fontSize: '13px', marginBottom: '2px' }}>{agent.label}</div>
+                <div style={{ color: 'var(--gold)', fontSize: '12px', marginBottom: '2px' }}>{agent.freq}</div>
+                {agent.desc && <div style={{ color: 'var(--muted)', fontSize: '11px' }}>{agent.desc}</div>}
+                {agent.lastRun && <div style={{ color: 'var(--muted)', fontSize: '11px' }}>Last: {formatDateTime(agent.lastRun)}</div>}
+                {agent.runs24h !== undefined && <div style={{ color: 'var(--muted)', fontSize: '11px' }}>{agent.runs24h} runs today</div>}
+              </div>
+            ))}
           </div>
         </section>
 

@@ -193,6 +193,7 @@ export async function GET(req: NextRequest) {
     listingAvailabilitySummaryRows,
     sourceIntelligenceSummary,
     sourceAgentRuns,
+    agentStatusRows,
   ] = await Promise.all([
     queryRows<UserRow>`
       SELECT id, email, name, created_at FROM users ORDER BY created_at DESC
@@ -489,6 +490,26 @@ export async function GET(req: NextRequest) {
     `.catch(() => []),
     getSourceEngineIntelligenceSummary().catch(() => null),
     getRecentSourceAgentRuns(5).catch(() => []),
+    // Agent last-run times for 24/7 status dashboard
+    queryRows<{ agent: string; last_run: string | null; runs_24h: string | number; revised_24h?: string | number }>`
+      SELECT 'reprice' AS agent,
+        MAX(created_at)::text AS last_run,
+        COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours')::int AS runs_24h,
+        COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours' AND success = TRUE)::int AS revised_24h
+      FROM reprice_agent_log
+      UNION ALL
+      SELECT 'fulfillment' AS agent,
+        MAX(created_at)::text AS last_run,
+        COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours')::int AS runs_24h,
+        NULL AS revised_24h
+      FROM fulfillment_agent_tracker
+      UNION ALL
+      SELECT 'digest' AS agent,
+        MAX(created_at)::text AS last_run,
+        COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours')::int AS runs_24h,
+        NULL AS revised_24h
+      FROM performance_digests
+    `.catch(() => []),
   ])
 
   const ebayMap = new Map(ebayRows.map((row) => [row.user_id, row]))
@@ -675,6 +696,11 @@ export async function GET(req: NextRequest) {
         })),
       },
       intelligence: sourceIntelligenceWithAutopilot,
+      agentStatus: {
+        reprice: agentStatusRows.find((r) => r.agent === 'reprice') || null,
+        fulfillment: agentStatusRows.find((r) => r.agent === 'fulfillment') || null,
+        digest: agentStatusRows.find((r) => r.agent === 'digest') || null,
+      },
       topNiches: sourceNicheRows.map((row) => ({
         name: row.name || 'Unassigned',
         count: toNumber(row.count),
