@@ -1360,16 +1360,22 @@ export async function POST(req: NextRequest) {
     return apiError('Enter a valid eBay price before publishing.', { status: 400, code: 'INVALID_LISTING_PRICE' })
   }
 
-  // Reject if this ASIN is already active in the user's listings — prevents duplicate eBay listings
-  // from appearing when the same product shows up in both the niche tab and continuous tab.
-  const existingListing = await queryRows<{ ebay_listing_id: string }>`
-    SELECT ebay_listing_id FROM listed_asins
-    WHERE user_id = ${effectiveUserId} AND asin = ${String(asin).toUpperCase()} AND ended_at IS NULL
+  // Reject if this ASIN is already active anywhere on StackPilot. Product Finder
+  // filters cross-user duplicates, but publish is the final gate for stale tabs,
+  // direct API calls, and background listing paths.
+  const existingListing = await queryRows<{ ebay_listing_id: string; is_mine: boolean }>`
+    SELECT ebay_listing_id, (user_id = ${effectiveUserId}) AS is_mine
+    FROM listed_asins
+    WHERE asin = ${String(asin).toUpperCase()} AND ended_at IS NULL
     LIMIT 1
   `.catch(() => [])
   if (existingListing.length > 0) {
+    const listingId = existingListing[0].ebay_listing_id
+    const message = existingListing[0].is_mine
+      ? `This product (ASIN ${asin}) is already listed on your eBay store (listing #${listingId}). Duplicate listings are blocked to protect your account.`
+      : `This product (ASIN ${asin}) is already active on another StackPilot listing. Duplicate platform listings are blocked so sellers do not compete with the same Amazon source.`
     return apiError(
-      `This product (ASIN ${asin}) is already listed on your eBay store (listing #${existingListing[0].ebay_listing_id}). Duplicate listings are blocked to protect your account.`,
+      message,
       { status: 409, code: 'ALREADY_LISTED' }
     )
   }
@@ -1394,6 +1400,17 @@ export async function POST(req: NextRequest) {
   const appId = process.env.EBAY_APP_ID || ''
 
   const fallbackAmazonPrice = Number.isFinite(Number(amazonPrice)) ? Number(amazonPrice) : undefined
+  const sourceAsin = String(asin).toUpperCase()
+  const markSourceAsinRejected = async () => {
+    await sql`
+      UPDATE product_source_items
+      SET active = FALSE,
+          source_quality = 'reject',
+          last_seen_at = NOW(),
+          last_intelligence_at = NOW()
+      WHERE asin = ${sourceAsin}
+    `.catch(() => {})
+  }
 
   let validatedAmazon: NonNullable<Awaited<ReturnType<typeof fetchAmazonProductByAsin>>>
   if (trusted && fallbackAmazonPrice && title && (imageUrl || (Array.isArray(images) && images.length > 0))) {
@@ -1442,6 +1459,7 @@ export async function POST(req: NextRequest) {
       // 0.55 threshold: strict enough to catch "keyboard" vs "eye mask" (0% overlap),
       // loose enough to allow for shortened/variant titles ("TKL Keyboard" vs "87-Key TKL Keyboard")
       if (similarity < 0.55) {
+        await markSourceAsinRejected()
         return apiError(
           `ASIN ${asin} now maps to a different product on Amazon ("${validatedAmazon.title.slice(0, 60)}"). Remove this from your queue and reload for fresh products.`,
           { status: 400, code: 'ASIN_MISMATCH' }
@@ -1478,6 +1496,7 @@ export async function POST(req: NextRequest) {
           for (const word of poolWords) { if (cacheWords.has(word)) overlap++ }
           const similarity = poolWords.size > 0 ? overlap / poolWords.size : 1
           if (similarity < 0.45) {
+            await markSourceAsinRejected()
             return apiError(
               `ASIN ${asin} now maps to a different product ("${cached.title.slice(0, 60)}"). Queue entry is stale — remove it and reload for fresh products.`,
               { status: 400, code: 'ASIN_MISMATCH' }
@@ -1540,11 +1559,7 @@ export async function POST(req: NextRequest) {
   if (!liveAvailability.ok) {
     const confirmedUnavailable = liveAvailability.reason !== 'CHECK_FAILED'
     if (confirmedUnavailable) {
-      await sql`
-        UPDATE product_source_items
-        SET active = FALSE, last_seen_at = NOW()
-        WHERE asin = ${String(asin).toUpperCase()}
-      `.catch(() => {})
+      await markSourceAsinRejected()
     }
 
     return apiError(
@@ -1569,6 +1584,7 @@ export async function POST(req: NextRequest) {
     for (const word of queuedWords) { if (liveWords.has(word)) overlap++ }
     const similarity = queuedWords.size > 0 ? overlap / queuedWords.size : 1
     if (similarity < 0.45) {
+      await markSourceAsinRejected()
       return apiError(
         `ASIN ${asin} now maps to a different product on Amazon ("${liveAvailability.title.slice(0, 60)}"). Remove it from your queue and reload for fresh products.`,
         { status: 400, code: 'ASIN_MISMATCH' }
@@ -1595,11 +1611,7 @@ export async function POST(req: NextRequest) {
   // Block listings where Amazon shows the product as unavailable (out of stock, no price).
   // Applies to both live-validated (non-trusted) and cache-supplemented (trusted) paths.
   if (!validatedAmazon.available) {
-    await sql`
-      UPDATE product_source_items
-      SET active = FALSE, last_seen_at = NOW()
-      WHERE asin = ${String(asin).toUpperCase()}
-    `.catch(() => {})
+    await markSourceAsinRejected()
     saveCachedAmazonProduct({ ...validatedAmazon, available: false }).catch(() => {})
 
     return apiError(

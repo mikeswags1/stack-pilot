@@ -47,7 +47,7 @@ type Product = {
   asin: string; title: string; amazonPrice: number; ebayPrice: number
   profit: number; roi: number; imageUrl?: string; risk: string; salesVolume?: string
   images?: string[]; features?: string[]; description?: string; specs?: Array<[string, string]>
-  sourceNiche?: string; qualityScore?: number
+  sourceNiche?: string; sourceQuality?: string; qualityScore?: number
   distributionScore?: number
   available?: boolean
   _rating?: number; _numRatings?: number
@@ -225,6 +225,7 @@ function getProductScore(product: Product) {
   const reviews = product._numRatings ?? 0
   const margin = product.ebayPrice > 0 ? product.profit / product.ebayPrice : 0
   const roi = product.roi / 100
+  const imageCount = getProductImageCount(product)
   const demandWeight = Math.log10(sales + 10)
   const ratingWeight = Math.max(0.55, Math.min(1.1, rating / 4.55))
   const reviewWeight = Math.log10(reviews + 25)
@@ -233,8 +234,9 @@ function getProductScore(product: Product) {
   const reviewTrust = reviews >= 80 ? 1.06 : reviews >= 35 ? 1.03 : reviews < 8 ? 0.93 : 1
   const priceSweetSpot = product.amazonPrice >= 12 && product.amazonPrice <= 120 ? 1.08 : product.amazonPrice > 180 ? 0.78 : 0.95
   const riskPenalty = product.risk === 'HIGH' ? 0.68 : product.risk === 'MEDIUM' ? 0.88 : 1
-  const imageCount = Math.max(product.images?.length || 0, product.imageUrl ? 1 : 0)
   const imageWeight = imageCount >= 4 ? 1.1 : imageCount >= 2 ? 1.04 : product.imageUrl ? 0.95 : 0.72
+  const contentWeight = getContentReadinessMultiplier(product)
+  const sourceQualityWeight = getSourceQualityMultiplier(product.sourceQuality)
   const trendMultiplier = getSourcingTrendMultiplier({
     title: product.title,
     sourceNiche: product.sourceNiche,
@@ -251,9 +253,48 @@ function getProductScore(product: Product) {
     priceSweetSpot *
     riskPenalty *
     imageWeight *
+    contentWeight *
+    sourceQualityWeight *
     reviewTrust *
     trendMultiplier
   return Number.isFinite(score) ? parseFloat(score.toFixed(2)) : 0
+}
+
+function getProductImageCount(product: Pick<Product, 'images' | 'imageUrl'>) {
+  return Array.from(new Set([
+    ...(Array.isArray(product.images) ? product.images : []),
+    product.imageUrl,
+  ].filter((url): url is string => typeof url === 'string' && url.startsWith('http')))).length
+}
+
+function getContentReadinessMultiplier(product: Pick<Product, 'features' | 'description' | 'specs' | 'images' | 'imageUrl'>) {
+  const imageCount = getProductImageCount(product)
+  const featureCount = Array.isArray(product.features) ? product.features.length : 0
+  const specCount = Array.isArray(product.specs) ? product.specs.length : 0
+  const hasDescription = String(product.description || '').length >= 100
+  let multiplier = imageCount >= 4 ? 1.09 : imageCount >= 2 ? 1.04 : imageCount === 1 ? 0.78 : 0.55
+  if (featureCount >= 3) multiplier += 0.04
+  if (specCount >= 4) multiplier += 0.03
+  if (hasDescription) multiplier += 0.03
+  return Math.max(0.5, Math.min(1.18, multiplier))
+}
+
+function getSourceQualityMultiplier(sourceQuality?: string) {
+  switch (sourceQuality) {
+    case 'ready':
+      return 1.12
+    case 'candidate':
+      return 1
+    case 'stale':
+      return 0.82
+    case 'needs_images':
+      return 0.7
+    case 'reject':
+    case 'inactive':
+      return 0.12
+    default:
+      return 0.96
+  }
 }
 
 function spreadProductsAcrossNiches(products: Product[]) {
@@ -667,6 +708,30 @@ export async function GET(req: NextRequest) {
       spreadNiches: continuousMode,
     })
 
+  const isPublishReadyProduct = (product: Product) =>
+    !shouldBlockProduct(product) &&
+    getProductImageCount(product) >= 2 &&
+    product.profit >= MIN_STOCK_PROFIT &&
+    product.roi >= MIN_STOCK_ROI &&
+    product.risk !== 'HIGH' &&
+    product.sourceQuality !== 'needs_images' &&
+    product.sourceQuality !== 'stale'
+
+  const prioritizePublishReadyProducts = (products: Product[]) => {
+    const reranked = rankProducts(products.filter((product) => !shouldBlockProduct(product)), {
+      randomize: true,
+      seed: `${distributionSeed}:publish-ready`,
+      nicheWeights,
+      spreadNiches: continuousMode,
+    })
+    const ready = reranked.filter(isPublishReadyProduct)
+    const fallback = reranked.filter((product) => !isPublishReadyProduct(product))
+
+    return ready.length > 0
+      ? ready
+      : fallback
+  }
+
   const respondWithProducts = async (products: Product[], source: string) => {
     let ranked = getAvailableProducts(products)
 
@@ -687,6 +752,7 @@ export async function GET(req: NextRequest) {
       try {
         const cachedRows = await queryRows<{
           asin: string
+          title: string | null
           primary_image: string | null
           images: string[]
           features: string[]
@@ -694,7 +760,7 @@ export async function GET(req: NextRequest) {
           specs: Array<[string, string]>
           available: boolean | null
         }>`
-          SELECT asin, primary_image, images, features, description, specs, available
+          SELECT asin, title, primary_image, images, features, description, specs, available
           FROM amazon_product_cache
           WHERE asin = ANY(${cacheLookupAsins}::text[])
         `
@@ -712,6 +778,28 @@ export async function GET(req: NextRequest) {
                 UPDATE product_source_items
                 SET active = FALSE, last_seen_at = NOW()
                 WHERE asin = ANY(${Array.from(unavailableAsins)}::text[])
+              `.catch(() => {})
+            })
+          }
+
+          const staleMappedAsins = new Set(
+            ranked
+              .filter((product) => {
+                const cached = cacheMap.get(product.asin.toUpperCase())
+                return Boolean(cached?.title && getTitleScore(product.title, cached.title) < 0.45)
+              })
+              .map((product) => product.asin.toUpperCase())
+          )
+          if (staleMappedAsins.size > 0) {
+            ranked = ranked.filter(product => !staleMappedAsins.has(product.asin.toUpperCase()))
+            after(async () => {
+              await sql`
+                UPDATE product_source_items
+                SET active = FALSE,
+                    source_quality = 'reject',
+                    last_seen_at = NOW(),
+                    last_intelligence_at = NOW()
+                WHERE asin = ANY(${Array.from(staleMappedAsins)}::text[])
               `.catch(() => {})
             })
           }
@@ -746,6 +834,8 @@ export async function GET(req: NextRequest) {
         }
       } catch { /* best-effort — never block on cache lookup failure */ }
     }
+
+    ranked = prioritizePublishReadyProducts(ranked)
 
     // For products still sparse after the cache lookup, schedule background enrichment
     // so the NEXT time the user loads products they'll already have full images/features.
