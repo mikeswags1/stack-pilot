@@ -1553,10 +1553,45 @@ export async function POST(req: NextRequest) {
     } catch { /* cache lookup is best-effort — never block on failure */ }
   }
 
-  const liveAvailability = await checkAmazonLiveAvailability(asin, {
-    fallbackTitle: validatedAmazon.title || title,
-    fallbackImage: validatedAmazon.imageUrl || imageUrl,
-  })
+  // Trusted mode (bulk List All): the product came from the source pool, which is
+  // already validated by the 30-min cron (availability checks, price refresh, etc.).
+  // The cache lookup above already confirmed ASIN title match, pulled the latest price,
+  // and marked validatedAmazon.available = false if cache confirms out-of-stock.
+  // Scraping Amazon live for every product in a 30-item bulk run triggers rate-limiting
+  // (api-services-support page) which causes CHECK_FAILED for every item in the batch.
+  // Non-trusted (single listing from the modal) still gets a live scrape — it's one call.
+  let liveAvailability: Awaited<ReturnType<typeof checkAmazonLiveAvailability>>
+
+  if (trusted) {
+    // Use the already-validated cache/pool data as the availability result
+    if (!validatedAmazon.available) {
+      liveAvailability = {
+        ok: false,
+        asin,
+        reason: 'UNAVAILABLE' as const,
+        title: validatedAmazon.title,
+        amazonPrice: validatedAmazon.amazonPrice,
+        imageUrl: validatedAmazon.imageUrl,
+        images: validatedAmazon.images,
+        checkedAt: new Date().toISOString(),
+      }
+    } else {
+      liveAvailability = {
+        ok: true,
+        asin,
+        title: validatedAmazon.title,
+        amazonPrice: validatedAmazon.amazonPrice,
+        imageUrl: validatedAmazon.imageUrl,
+        images: validatedAmazon.images,
+        checkedAt: new Date().toISOString(),
+      }
+    }
+  } else {
+    liveAvailability = await checkAmazonLiveAvailability(asin, {
+      fallbackTitle: validatedAmazon.title || title,
+      fallbackImage: validatedAmazon.imageUrl || imageUrl,
+    })
+  }
 
   if (!liveAvailability.ok) {
     const confirmedUnavailable = liveAvailability.reason !== 'CHECK_FAILED'
