@@ -12,6 +12,15 @@
     },
     "app/api/cron/source-agent/route.ts": {
       "maxDuration": 300
+    },
+    "app/api/cron/reprice-agent/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/cron/fulfillment-agent/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/cron/digest-agent/route.ts": {
+      "maxDuration": 120
     }
   },
   "crons": [
@@ -34,6 +43,18 @@
     {
       "path": "/api/cron/source-agent",
       "schedule": "23 * * * *"
+    },
+    {
+      "path": "/api/cron/reprice-agent",
+      "schedule": "45 * * * *"
+    },
+    {
+      "path": "/api/cron/fulfillment-agent",
+      "schedule": "*/20 * * * *"
+    },
+    {
+      "path": "/api/cron/digest-agent",
+      "schedule": "0 6 * * *"
     }
   ]
 }
