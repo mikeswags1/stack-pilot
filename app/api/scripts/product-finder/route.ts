@@ -22,7 +22,7 @@ const MAX_POOL_SIZE = 160
 const CONTINUOUS_CACHE_KEY = '__continuous_listing__'
 const CONTINUOUS_QUERY_LIMIT = 28
 const CONTINUOUS_LIVE_FETCH_BUDGET_MS = 4_500
-const NICHE_LIVE_FETCH_BUDGET_MS = 16_000
+const NICHE_LIVE_FETCH_BUDGET_MS = 34_000
 const CONTINUOUS_MIN_FAST_RETURN = 24
 const MIN_STOCK_PROFIT = 8
 const MIN_STOCK_ROI = 30
@@ -710,6 +710,7 @@ export async function GET(req: NextRequest) {
 
   const isPublishReadyProduct = (product: Product) =>
     !shouldBlockProduct(product) &&
+    product.available === true &&
     getProductImageCount(product) >= 2 &&
     product.profit >= MIN_STOCK_PROFIT &&
     product.roi >= MIN_STOCK_ROI &&
@@ -730,6 +731,109 @@ export async function GET(req: NextRequest) {
     return ready.length > 0
       ? ready
       : fallback
+  }
+
+  const liveFillPublishReadyProducts = async (products: Product[]) => {
+    if (continuousMode || isOutOfLiveFetchTime()) return products
+
+    const current = [...products]
+    const seen = new Set(current.map((product) => product.asin.toUpperCase()))
+    const readyCount = () => current.filter(isPublishReadyProduct).length
+    if (readyCount() >= targetCount) return current
+
+    const entries = buildNicheQueryEntries(niche, sourceNicheQueries).slice(0, 14)
+    const parallel = 3
+
+    for (let index = 0; index < entries.length; index += parallel) {
+      if (isOutOfLiveFetchTime() || readyCount() >= targetCount) break
+      const batch = entries.slice(index, index + parallel)
+      const settled = await Promise.allSettled(
+        batch.map(async ({ query, sourceNiche }) => {
+          const scraped = await scrapeAmazonSearch(query, 1, 5200).catch(() => [])
+          const candidates: Product[] = []
+
+          for (const item of scraped) {
+            if (isOutOfLiveFetchTime() || candidates.length >= 3) break
+            const asin = String(item.asin || '').toUpperCase()
+            const title = String(item.title || '')
+            const price = item.price
+            if (!asin || seen.has(asin) || !title || !price || price <= 0 || price > MAX_COST) continue
+            const { ebayPrice, profit, roi } = calcMetrics(price)
+            const risk = getRisk(price, roi)
+            const seedProduct: Product = {
+              asin,
+              title,
+              amazonPrice: price,
+              ebayPrice,
+              profit,
+              roi,
+              imageUrl: item.imageUrl,
+              risk,
+              sourceNiche,
+              _rating: item.rating,
+              _numRatings: item.reviewCount,
+            }
+            if (shouldBlockProduct(seedProduct) || !isHealthyListing(price, ebayPrice, EBAY_DEFAULT_FEE_RATE)) continue
+
+            seen.add(asin)
+            const validated = await fetchAmazonProductByAsin({
+              asin,
+              fallbackImage: item.imageUrl,
+              fallbackTitle: title,
+              fallbackPrice: price,
+              strictAsin: true,
+            }).catch(() => null)
+            if (!validated || validated.available !== true) continue
+
+            const titleScore = getTitleScore(title, validated.title)
+            const sameBrand =
+              title.split(/\s+/)[0]?.toLowerCase() &&
+              validated.title.split(/\s+/)[0]?.toLowerCase() &&
+              title.split(/\s+/)[0].toLowerCase() === validated.title.split(/\s+/)[0].toLowerCase()
+            if (titleScore < 0.42 && !sameBrand) continue
+
+            const mergedImages = Array.from(new Set([
+              ...(Array.isArray(validated.images) ? validated.images : []),
+              validated.imageUrl,
+              item.imageUrl,
+            ].filter((url): url is string => typeof url === 'string' && url.startsWith('http'))))
+            const liveProduct: Product = {
+              ...seedProduct,
+              title: validated.title || title,
+              amazonPrice: validated.amazonPrice || price,
+              imageUrl: mergedImages[0] || item.imageUrl,
+              images: mergedImages,
+              features: validated.features,
+              description: validated.description,
+              specs: validated.specs,
+              available: validated.available,
+              sourceQuality: mergedImages.length >= 2 ? 'ready' : 'candidate',
+            }
+            const repriced = repriceProduct(liveProduct)
+            if (isPublishReadyProduct(repriced)) candidates.push(repriced)
+          }
+
+          return candidates
+        })
+      )
+
+      for (const outcome of settled) {
+        if (outcome.status !== 'fulfilled') continue
+        for (const product of outcome.value) {
+          if (readyCount() >= targetCount) break
+          current.push(product)
+        }
+      }
+    }
+
+    if (current.length > products.length) {
+      after(() => upsertProductSourceItems(current.slice(products.length).map((product) => ({
+        ...product,
+        sourceProvider: 'finder-live-fill',
+      }))).catch(() => 0))
+    }
+
+    return current
   }
 
   const scheduleNicheSourceRepair = (reason: string, availableCount: number, readyCount: number) => {
@@ -945,7 +1049,7 @@ export async function GET(req: NextRequest) {
       } catch { /* best-effort — never block on cache lookup failure */ }
     }
 
-    ranked = prioritizePublishReadyProducts(await enrichSparseTopProducts(ranked))
+    ranked = prioritizePublishReadyProducts(await liveFillPublishReadyProducts(await enrichSparseTopProducts(ranked)))
     const readyCount = ranked.filter(isPublishReadyProduct).length
     if (readyCount < Math.min(targetCount, 8)) {
       scheduleNicheSourceRepair('low-publish-ready-count', ranked.length, readyCount)
@@ -1203,7 +1307,7 @@ export async function GET(req: NextRequest) {
             strictAsin: true,
           }).catch(() => null)
 
-          if (!validated) return product
+          if (!validated || validated.available !== true) return null
           const titleScore = getTitleScore(product.title, validated.title)
           const sameBrand =
             product.title.split(/\s+/)[0]?.toLowerCase() &&
