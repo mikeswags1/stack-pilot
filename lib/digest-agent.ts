@@ -208,8 +208,7 @@ export async function runDigestAgent(options: { force?: boolean } = {}) {
     `.catch(() => [])
     if (existingRows.length > 0) {
       return {
-        ok: true,
-        skipped: 'already_generated_today',
+        skipped: 'already_generated_today' as const,
         durationMs: Date.now() - startedAt,
       }
     }
@@ -242,7 +241,6 @@ export async function runDigestAgent(options: { force?: boolean } = {}) {
   `.catch(() => {})
 
   return {
-    ok: true,
     insights,
     provider,
     context,
