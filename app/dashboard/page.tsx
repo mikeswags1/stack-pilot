@@ -163,12 +163,17 @@ function getStableShuffleScore(product: FinderProduct, tick: number, index: numb
   return hash >>> 0
 }
 
+function getPublishReadyFinderProducts(products: FinderProduct[]) {
+  return products.filter((product) => !getBulkPreflightIssue(product))
+}
+
 function getRotatingFinderProducts(products: FinderProduct[] | null, tick: number, limit = FINDER_STOCK_TARGET) {
   if (!products) return null
-  const publishReadyProducts = products.filter((product) => !getBulkPreflightIssue(product))
-  if (publishReadyProducts.length <= 1) return publishReadyProducts
-  if (tick === 0) return publishReadyProducts.slice(0, limit)
-  return [...publishReadyProducts]
+  const publishReadyProducts = getPublishReadyFinderProducts(products)
+  const pool = publishReadyProducts.length > 0 ? publishReadyProducts : products
+  if (pool.length <= 1) return pool
+  if (tick === 0) return pool.slice(0, limit)
+  return [...pool]
     .map((product, index) => ({ product, score: getStableShuffleScore(product, tick, index) }))
     .sort((a, b) => a.score - b.score)
     .slice(0, limit)
@@ -987,11 +992,20 @@ export default function Dashboard() {
       return
     }
 
-    let products = visibleFinderResults || []
+    const visibleProducts = visibleFinderResults || []
+    let products = getPublishReadyFinderProducts(visibleProducts)
     if (subscriptionState.plan === 'trial') {
       products = products.slice(0, Math.max(0, subscriptionState.trialRemaining))
     }
-    if (products.length === 0) return
+    if (products.length === 0) {
+      setBanner({
+        tone: 'error',
+        text: visibleProducts.length > 0
+          ? 'These products are still being enriched. Hit Find Products again in a moment for publish-ready items.'
+          : 'No publish-ready products were found for this niche yet. StackPilot is repairing the source pool in the background.',
+      })
+      return
+    }
 
     const result = await listProductsInBatches({
       products,
@@ -1048,11 +1062,20 @@ export default function Dashboard() {
       return
     }
 
-    let products = tagFinderProducts(visibleContinuousResults || [], 'continuous')
+    const visibleProducts = tagFinderProducts(visibleContinuousResults || [], 'continuous')
+    let products = getPublishReadyFinderProducts(visibleProducts)
     if (subscriptionState.plan === 'trial') {
       products = products.slice(0, Math.max(0, subscriptionState.trialRemaining))
     }
-    if (products.length === 0) return
+    if (products.length === 0) {
+      setBanner({
+        tone: 'error',
+        text: visibleProducts.length > 0
+          ? 'These products are still being enriched. Hit Find Products again in a moment for publish-ready items.'
+          : 'No publish-ready continuous products are available yet. StackPilot is repairing the source pool in the background.',
+      })
+      return
+    }
 
     const result = await listProductsInBatches({
       products,

@@ -732,6 +732,24 @@ export async function GET(req: NextRequest) {
       : fallback
   }
 
+  const scheduleNicheSourceRepair = (reason: string, availableCount: number, readyCount: number) => {
+    if (continuousMode) return
+    after(async () => {
+      try {
+        const cronSecret = process.env.CRON_SECRET || ''
+        const host = req.nextUrl.origin
+        const url = `${host}/api/cron/refresh-products?stockWeak=1&wait=1&batch=1&niche=${encodeURIComponent(niche)}&source=product-finder-repair`
+        await fetch(url, {
+          headers: cronSecret ? { Authorization: `Bearer ${cronSecret}` } : { 'x-vercel-cron': '1' },
+          signal: AbortSignal.timeout(280000),
+        }).catch(() => null)
+        console.info('[product-finder-repair]', JSON.stringify({ niche, reason, availableCount, readyCount }))
+      } catch {
+        // Source repair is opportunistic; the request should never fail because repair did.
+      }
+    })
+  }
+
   const enrichSparseTopProducts = async (products: Product[]) => {
     const publishReadyCount = products.filter(isPublishReadyProduct).length
     if (publishReadyCount >= targetCount || isOutOfLiveFetchTime()) return products
@@ -928,6 +946,10 @@ export async function GET(req: NextRequest) {
     }
 
     ranked = prioritizePublishReadyProducts(await enrichSparseTopProducts(ranked))
+    const readyCount = ranked.filter(isPublishReadyProduct).length
+    if (readyCount < Math.min(targetCount, 8)) {
+      scheduleNicheSourceRepair('low-publish-ready-count', ranked.length, readyCount)
+    }
 
     // For products still sparse after the cache lookup, schedule background enrichment
     // so the NEXT time the user loads products they'll already have full images/features.
