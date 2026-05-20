@@ -256,13 +256,16 @@ export async function refreshSourceIntelligenceState(options: { applyScores?: bo
         COUNT(*) FILTER (WHERE psi.active = TRUE)::int AS active_products,
         COUNT(*) FILTER (
           WHERE psi.active = TRUE
+            AND apc.asin IS NOT NULL
+            AND apc.available = TRUE
             AND psi.last_seen_at > NOW() - INTERVAL '21 days'
             AND psi.profit >= 4
             AND psi.roi >= 30
             AND psi.risk <> 'HIGH'
             AND psi.image_url IS NOT NULL
             AND psi.image_url <> ''
-            AND COALESCE(apc.available, TRUE) <> FALSE
+            AND jsonb_typeof(apc.images) = 'array'
+            AND jsonb_array_length(apc.images) >= 2
         )::int AS ready_products,
         COUNT(*) FILTER (WHERE psi.active = TRUE AND psi.last_seen_at < NOW() - INTERVAL '7 days')::int AS stale_products,
         COUNT(*) FILTER (WHERE COALESCE(apc.available, TRUE) = FALSE)::int AS unavailable_products,
@@ -458,7 +461,14 @@ export async function applySourceIntelligenceScores(limit = 6000) {
           WHEN psi.risk = 'HIGH' OR psi.profit < 1 OR psi.roi < 15 THEN 'reject'
           WHEN psi.image_url IS NULL OR psi.image_url = '' THEN 'needs_images'
           WHEN psi.last_seen_at < NOW() - INTERVAL '21 days' THEN 'stale'
-          WHEN psi.profit >= 8 AND psi.roi >= 35 AND psi.risk <> 'HIGH' THEN 'ready'
+          WHEN apc.asin IS NOT NULL
+            AND apc.available = TRUE
+            AND jsonb_typeof(apc.images) = 'array'
+            AND jsonb_array_length(apc.images) >= 2
+            AND psi.profit >= 8
+            AND psi.roi >= 35
+            AND psi.risk <> 'HIGH'
+          THEN 'ready'
           ELSE 'candidate'
         END AS source_quality
       FROM product_source_items psi
@@ -542,15 +552,17 @@ export async function getNicheStockRepairTargets(limit = 6) {
   const rows = await queryRows<{ niche: string }>`
     SELECT niche
     FROM source_niche_intelligence
-    WHERE cache_products < 30
+    WHERE ready_products < 30
+       OR cache_products < 30
        OR last_cache_at IS NULL
        OR last_cache_at < NOW() - INTERVAL '36 hours'
     ORDER BY
+      CASE WHEN ready_products < 30 THEN 0 ELSE 1 END,
       CASE WHEN cache_products < 30 THEN 0 ELSE 1 END,
+      ready_products ASC,
       cache_products ASC,
       last_cache_at ASC NULLS FIRST,
       health_score ASC,
-      ready_products DESC,
       updated_at ASC
     LIMIT ${Math.max(1, Math.min(20, limit))}
   `.catch(() => [])

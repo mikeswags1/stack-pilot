@@ -27,7 +27,7 @@ const CATALOG_NICHE_BATCH_SIZE = 3
 const BACKGROUND_CATALOG_TARGET = 780
 const BACKGROUND_CATALOG_BATCH = 1
 const NICHE_STOCK_TARGET = 220
-const NICHE_STOCK_BATCH = 3
+const NICHE_STOCK_BATCH = 6
 
 const REJECT_KEYWORDS = [
   'rc plane','rc airplane','drone','laptop','tablet','ipad','iphone','macbook',
@@ -1108,6 +1108,7 @@ export async function GET(req: NextRequest) {
     backgroundCatalog
   const fullRefresh = req.nextUrl.searchParams.get('full') === '1' || (!rollingRefresh && !catalogRefresh)
   const requestedBatchSize = Number(req.nextUrl.searchParams.get('batch') || '')
+  const requestedRepairBatchSize = Math.max(1, Math.min(Number(req.nextUrl.searchParams.get('repairBatch') || '6') || 6, 12))
   const requestedAuditLimit = Math.max(1, Math.min(Number(req.nextUrl.searchParams.get('auditLimit') || '60') || 60, 60))
   const hasExplicitStart = req.nextUrl.searchParams.has('start')
   const requestedStartIndex = hasExplicitStart ? Number(req.nextUrl.searchParams.get('start')) : NaN
@@ -1163,6 +1164,22 @@ export async function GET(req: NextRequest) {
     report.closedUnavailableLocalOnlyListings = await closeUnavailableLocalOnlyListings().catch(() => 0)
     report.unavailableSync = await syncUnavailableListings().catch(() => 'error')
     report.amazonListingAudit = await auditActiveAmazonListings(requestedAuditLimit).catch(() => 'error')
+    if (autopilotRepair) {
+      const repairTargets = await getNicheStockRepairTargets(requestedRepairBatchSize).catch(() => [])
+      report.autopilotRepairTargets = repairTargets
+      if (repairTargets.length > 0) {
+        after(async () => {
+          const headers: Record<string, string> = cronSecret
+            ? { Authorization: `Bearer ${cronSecret}` }
+            : { 'x-vercel-cron': '1' }
+          const repairUrl = `${req.nextUrl.origin}/api/cron/refresh-products?stockWeak=1&wait=1&batch=${repairTargets.length}&niche=${encodeURIComponent(repairTargets.join(','))}&source=sourceOnly-autopilot`
+          await fetch(repairUrl, {
+            headers,
+            signal: AbortSignal.timeout(285000),
+          }).catch(() => null)
+        })
+      }
+    }
     return finalizeReport([])
   }
 

@@ -376,7 +376,7 @@ export async function runSourceAgent(input: AgentRunInput) {
     }
 
     const cleanedProducts = input.dryRun ? 0 : await cleanupWeakSourceRows()
-    const repairNiches = unique([...(plan.repairNiches || []), ...createdNiches], 5)
+    const repairNiches = unique([...(plan.repairNiches || []), ...createdNiches], 8)
     if (!input.dryRun) {
       for (const niche of repairNiches) {
         if (!isAllowedNiche(niche, [])) continue

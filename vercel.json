@@ -16,11 +16,11 @@
   },
   "crons": [
     {
-      "path": "/api/cron/refresh-products?sourceOnly=1&auditLimit=60",
+      "path": "/api/cron/refresh-products?sourceOnly=1&autopilot=1&repairBatch=6&auditLimit=60",
       "schedule": "*/30 * * * *"
     },
     {
-      "path": "/api/cron/refresh-products?stockWeak=1&wait=1&batch=3&auditLimit=60",
+      "path": "/api/cron/refresh-products?stockWeak=1&wait=1&batch=6&auditLimit=60",
       "schedule": "17 * * * *"
     },
     {
@@ -33,7 +33,7 @@
     },
     {
       "path": "/api/cron/source-agent",
-      "schedule": "23 */2 * * *"
+      "schedule": "23 * * * *"
     }
   ]
 }
