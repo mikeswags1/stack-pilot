@@ -2,6 +2,7 @@ import type { FinderProduct, ListProgress } from '../types'
 import { FinderResults } from './ProductListingTab'
 import { SectionIntro } from './shared'
 import { TrialMeter } from './TrialMeter'
+import { getBulkPreflightIssue } from '../utils'
 
 export function ContinuousListingTab({
   finderLoading,
@@ -31,6 +32,8 @@ export function ContinuousListingTab({
   trial?: { loading: boolean; plan: string; listed: number; trialLimit: number; trialRemaining?: number }
 }) {
   const hasResults = Boolean(finderResults?.length)
+  const isListing = !!listAllProgress && listAllProgress.done < listAllProgress.total
+  const publishReadyCount = finderResults?.filter((product) => !getBulkPreflightIssue(product)).length || 0
   const trialLocked = Boolean(
     trial &&
     !trial.loading &&
@@ -87,10 +90,10 @@ export function ContinuousListingTab({
             <button
               className="btn btn-solid"
               style={{ padding: '14px', fontSize: '13px', fontWeight: 700 }}
-              disabled={!connected || trialLocked || (!!listAllProgress && listAllProgress.done < listAllProgress.total)}
+              disabled={!connected || trialLocked || isListing || publishReadyCount === 0}
               onClick={onListAll}
             >
-              {listAllProgress && listAllProgress.done < listAllProgress.total ? `Listing ${listAllProgress.done + 1}/${listAllProgress.total}...` : `List All (${finderResults.length})`}
+              {isListing ? `Listing ${listAllProgress!.done + 1}/${listAllProgress!.total}...` : `List Ready (${publishReadyCount})`}
             </button>
           ) : null}
         </div>

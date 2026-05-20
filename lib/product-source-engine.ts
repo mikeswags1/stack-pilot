@@ -208,7 +208,8 @@ function rowToProduct(row: ProductSourceRow): SourceEngineProduct {
     description: row.cached_description || (typeof raw.description === 'string' ? raw.description : undefined),
     specs: (row.cached_specs?.length || 0) > 0 ? row.cached_specs || undefined : rawSpecs,
     sourceNiche: row.source_niche || undefined,
-    sourceQuality: images.length >= 2 && row.source_quality !== 'reject' ? 'ready' : row.source_quality || undefined,
+    sourceQuality: row.cached_available === true && images.length >= 2 && row.source_quality !== 'reject' ? 'ready' : row.source_quality || undefined,
+    available: row.cached_available === null ? undefined : row.cached_available,
     _rating: parseNumber(row.rating),
     _numRatings: Math.round(parseNumber(row.review_count)),
   }
