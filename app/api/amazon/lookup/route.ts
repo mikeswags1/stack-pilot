@@ -5,6 +5,17 @@ import { apiError, apiOk } from '@/lib/api-response'
 import { fetchAmazonProductByAsin } from '@/lib/amazon-product'
 import { sql } from '@/lib/db'
 
+async function rejectSourceAsin(asin: string) {
+  await sql`
+    UPDATE product_source_items
+    SET active = FALSE,
+        source_quality = 'reject',
+        last_intelligence_at = NOW(),
+        last_seen_at = NOW()
+    WHERE UPPER(asin) = UPPER(${asin})
+  `.catch(() => {})
+}
+
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session?.user) return apiError('Unauthorized', { status: 401, code: 'UNAUTHORIZED' })
@@ -19,6 +30,7 @@ export async function GET(req: NextRequest) {
 
   const product = await fetchAmazonProductByAsin({ asin, strictAsin: true })
   if (!product) {
+    await rejectSourceAsin(asin)
     return apiError('ASIN validation failed. The Amazon product is missing a valid title, price, or primary image.', {
       status: 404,
       code: 'ASIN_VALIDATION_FAILED',
@@ -26,14 +38,7 @@ export async function GET(req: NextRequest) {
   }
 
   if (product.available === false) {
-    await sql`
-      UPDATE product_source_items
-      SET active = FALSE,
-          source_quality = 'reject',
-          last_intelligence_at = NOW(),
-          last_seen_at = NOW()
-      WHERE UPPER(asin) = UPPER(${product.asin})
-    `.catch(() => {})
+    await rejectSourceAsin(product.asin)
   }
 
   return apiOk({

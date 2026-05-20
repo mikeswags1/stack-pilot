@@ -452,15 +452,19 @@ export default function Dashboard() {
       }
     }
 
+    const message = 'Amazon validation did not finish cleanly, so StackPilot removed this product from the queue and is pulling a replacement.'
     setListingState((prev) => {
       if (!prev.modal || prev.modal.asin !== product.asin) return prev
       return {
         ...prev,
+        modal: { ...product, available: false },
         validating: false,
         validated: false,
-        error: null,
+        error: message,
       }
     })
+    setBanner({ tone: 'error', text: message })
+    void replaceUnavailableProduct(product)
 
     return { validated: false as const, product }
   }, [replaceUnavailableProduct])
