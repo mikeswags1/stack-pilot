@@ -732,6 +732,98 @@ export async function GET(req: NextRequest) {
       : fallback
   }
 
+  const enrichSparseTopProducts = async (products: Product[]) => {
+    const publishReadyCount = products.filter(isPublishReadyProduct).length
+    if (publishReadyCount >= targetCount || isOutOfLiveFetchTime()) return products
+
+    const checkedAsins = new Set<string>()
+    const enrichedByAsin = new Map<string, Product>()
+    const rejectedAsins = new Set<string>()
+    const candidates = products
+      .filter((product) => !isPublishReadyProduct(product))
+      .filter((product) => getProductImageCount(product) < 2 || product.available !== true)
+      .slice(0, continuousMode ? 8 : Math.max(targetCount, 24))
+
+    const batchSize = continuousMode ? 2 : 3
+    for (let index = 0; index < candidates.length; index += batchSize) {
+      if (isOutOfLiveFetchTime()) break
+      const batch = candidates.slice(index, index + batchSize)
+      await Promise.allSettled(batch.map(async (product) => {
+        checkedAsins.add(product.asin.toUpperCase())
+        const validated = await fetchAmazonProductByAsin({
+          asin: product.asin,
+          fallbackImage: product.imageUrl,
+          fallbackTitle: product.title,
+          fallbackPrice: product.amazonPrice,
+          strictAsin: true,
+        }).catch(() => null)
+
+        if (!validated || validated.available === false) {
+          rejectedAsins.add(product.asin.toUpperCase())
+          return null
+        }
+
+        const titleScore = getTitleScore(product.title, validated.title)
+        const sourceBrand = product.title.split(/\s+/)[0]?.toLowerCase()
+        const validatedBrand = validated.title.split(/\s+/)[0]?.toLowerCase()
+        const sameBrand = Boolean(sourceBrand && validatedBrand && sourceBrand === validatedBrand)
+
+        if (titleScore < 0.42 && !sameBrand) {
+          rejectedAsins.add(product.asin.toUpperCase())
+          return null
+        }
+
+        const mergedImages = Array.from(new Set([
+          ...(Array.isArray(validated.images) ? validated.images : []),
+          validated.imageUrl,
+          ...(Array.isArray(product.images) ? product.images : []),
+          product.imageUrl,
+        ].filter((url): url is string => typeof url === 'string' && url.startsWith('http'))))
+
+        const enriched: Product = {
+          ...product,
+          title: validated.title || product.title,
+          amazonPrice: validated.amazonPrice || product.amazonPrice,
+          imageUrl: mergedImages[0] || product.imageUrl,
+          images: mergedImages,
+          features: validated.features?.length ? validated.features : product.features,
+          description: validated.description || product.description,
+          specs: validated.specs?.length ? validated.specs : product.specs,
+          available: validated.available,
+          sourceQuality: mergedImages.length >= 2 ? 'ready' : product.sourceQuality,
+        }
+
+        if (!isPublishReadyProduct(enriched)) return null
+        enrichedByAsin.set(product.asin.toUpperCase(), enriched)
+        return enriched
+      }))
+
+      const readyCount = products.filter((product) => {
+        const enriched = enrichedByAsin.get(product.asin.toUpperCase())
+        return isPublishReadyProduct(enriched || product)
+      }).length
+      if (readyCount >= targetCount) break
+    }
+
+    if (rejectedAsins.size > 0) {
+      after(async () => {
+        await sql`
+          UPDATE product_source_items
+          SET active = FALSE,
+              source_quality = 'reject',
+              last_seen_at = NOW(),
+              last_intelligence_at = NOW()
+          WHERE asin = ANY(${Array.from(rejectedAsins)}::text[])
+        `.catch(() => {})
+      })
+    }
+
+    if (checkedAsins.size === 0) return products
+    return products
+      .filter((product) => !rejectedAsins.has(product.asin.toUpperCase()))
+      .map((product) => enrichedByAsin.get(product.asin.toUpperCase()) || product)
+  }
+
   const respondWithProducts = async (products: Product[], source: string) => {
     let ranked = getAvailableProducts(products)
 
@@ -835,7 +927,7 @@ export async function GET(req: NextRequest) {
       } catch { /* best-effort — never block on cache lookup failure */ }
     }
 
-    ranked = prioritizePublishReadyProducts(ranked)
+    ranked = prioritizePublishReadyProducts(await enrichSparseTopProducts(ranked))
 
     // For products still sparse after the cache lookup, schedule background enrichment
     // so the NEXT time the user loads products they'll already have full images/features.

@@ -164,9 +164,11 @@ function getStableShuffleScore(product: FinderProduct, tick: number, index: numb
 }
 
 function getRotatingFinderProducts(products: FinderProduct[] | null, tick: number, limit = FINDER_STOCK_TARGET) {
-  if (!products || products.length <= 1) return products || null
-  if (tick === 0) return products.slice(0, limit)
-  return [...products]
+  if (!products) return null
+  const publishReadyProducts = products.filter((product) => !getBulkPreflightIssue(product))
+  if (publishReadyProducts.length <= 1) return publishReadyProducts
+  if (tick === 0) return publishReadyProducts.slice(0, limit)
+  return [...publishReadyProducts]
     .map((product, index) => ({ product, score: getStableShuffleScore(product, tick, index) }))
     .sort((a, b) => a.score - b.score)
     .slice(0, limit)

@@ -52,6 +52,13 @@ type ProductSourceRow = {
   intelligence_score: string | number | null
   source_quality: string | null
   raw: Record<string, unknown> | null
+  cached_title?: string | null
+  cached_primary_image?: string | null
+  cached_images?: string[] | null
+  cached_features?: string[] | null
+  cached_description?: string | null
+  cached_specs?: Array<[string, string]> | null
+  cached_available?: boolean | null
 }
 
 type ProductCacheRow = {
@@ -176,6 +183,16 @@ function rowToProduct(row: ProductSourceRow): SourceEngineProduct {
   const amazonPrice = parseNumber(row.amazon_price)
   const ebayPrice = getRecommendedEbayPrice(amazonPrice, EBAY_DEFAULT_FEE_RATE)
   const metrics = getListingMetrics(amazonPrice, ebayPrice, EBAY_DEFAULT_FEE_RATE)
+  const rawImages = Array.isArray(raw.images) ? raw.images as string[] : []
+  const cachedImages = Array.isArray(row.cached_images) ? row.cached_images : []
+  const images = Array.from(new Set([
+    row.cached_primary_image,
+    ...cachedImages,
+    ...rawImages,
+    row.image_url,
+  ].filter((url): url is string => typeof url === 'string' && url.startsWith('http'))))
+  const rawFeatures = Array.isArray(raw.features) ? raw.features as string[] : undefined
+  const rawSpecs = Array.isArray(raw.specs) ? raw.specs as Array<[string, string]> : undefined
   const product: SourceEngineProduct = {
     asin: row.asin,
     title: row.title,
@@ -183,15 +200,15 @@ function rowToProduct(row: ProductSourceRow): SourceEngineProduct {
     ebayPrice,
     profit: metrics.profit,
     roi: metrics.roi,
-    imageUrl: row.image_url || undefined,
+    imageUrl: images[0] || row.image_url || undefined,
     risk: getRisk(amazonPrice, metrics.roi),
     salesVolume: row.sales_volume || undefined,
-    images: Array.isArray(raw.images) ? raw.images as string[] : undefined,
-    features: Array.isArray(raw.features) ? raw.features as string[] : undefined,
-    description: typeof raw.description === 'string' ? raw.description : undefined,
-    specs: Array.isArray(raw.specs) ? raw.specs as Array<[string, string]> : undefined,
+    images: images.length > 0 ? images : undefined,
+    features: (row.cached_features?.length || 0) > 0 ? row.cached_features || undefined : rawFeatures,
+    description: row.cached_description || (typeof raw.description === 'string' ? raw.description : undefined),
+    specs: (row.cached_specs?.length || 0) > 0 ? row.cached_specs || undefined : rawSpecs,
     sourceNiche: row.source_niche || undefined,
-    sourceQuality: row.source_quality || undefined,
+    sourceQuality: images.length >= 2 && row.source_quality !== 'reject' ? 'ready' : row.source_quality || undefined,
     _rating: parseNumber(row.rating),
     _numRatings: Math.round(parseNumber(row.review_count)),
   }
@@ -528,7 +545,10 @@ export async function loadProductSourceProducts(options: { niche?: string | null
     const rows = niche
       ? await queryRows<ProductSourceRow>`
           SELECT psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price, psi.profit, psi.roi, psi.image_url, psi.risk,
-                 psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw
+                 psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
+                 apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
+                 apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
+                 apc.available AS cached_available
           FROM product_source_items psi
           LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
           WHERE psi.active = TRUE
@@ -546,7 +566,10 @@ export async function loadProductSourceProducts(options: { niche?: string | null
         `
       : await queryRows<ProductSourceRow>`
           SELECT psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price, psi.profit, psi.roi, psi.image_url, psi.risk,
-                 psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw
+                 psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
+                 apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
+                 apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
+                 apc.available AS cached_available
           FROM product_source_items psi
           LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
           WHERE psi.active = TRUE
