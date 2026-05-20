@@ -65,6 +65,19 @@ function isAllowedNiche(name: string, queries: string[]) {
   return !BLOCKED_NICHE_TERMS.some((term) => text.includes(term))
 }
 
+function defaultRepairQueries(niche: string) {
+  return unique([
+    `${niche} accessories`,
+    `${niche} under 50`,
+    `trending ${niche}`,
+    `${niche} best seller`,
+    `${niche} replacement parts`,
+    `${niche} organizer`,
+    `${niche} gift`,
+    `${niche} essentials`,
+  ], 12)
+}
+
 function extractJsonObject(text: string) {
   const trimmed = text.trim()
   if (trimmed.startsWith('{') && trimmed.endsWith('}')) return trimmed
@@ -352,18 +365,29 @@ export async function runSourceAgent(input: AgentRunInput) {
 
     if (!input.dryRun) {
       for (const niche of plan.newNiches || []) {
-        await upsertCustomSourceNiche({
+        const saved = await upsertCustomSourceNiche({
           name: niche.name,
           queries: niche.queries,
           active: true,
           notes: `Source Agent: ${niche.reason || 'AI-selected sourcing niche.'}`,
         }).catch(() => null)
-        createdNiches.push(niche.name)
+        if (saved) createdNiches.push(niche.name)
       }
     }
 
     const cleanedProducts = input.dryRun ? 0 : await cleanupWeakSourceRows()
     const repairNiches = unique([...(plan.repairNiches || []), ...createdNiches], 5)
+    if (!input.dryRun) {
+      for (const niche of repairNiches) {
+        if (!isAllowedNiche(niche, [])) continue
+        await upsertCustomSourceNiche({
+          name: niche,
+          queries: defaultRepairQueries(niche),
+          active: true,
+          notes: 'Source Agent repair target: keeps this product pool refreshable by cron.',
+        }).catch(() => null)
+      }
+    }
     const refreshUrl = repairNiches.length > 0
       ? `${input.origin}/api/cron/refresh-products?stockWeak=1&wait=1&batch=${repairNiches.length}&niche=${encodeURIComponent(repairNiches.join(','))}&source=source-agent`
       : `${input.origin}/api/cron/refresh-products?sourceOnly=1&source=source-agent`
