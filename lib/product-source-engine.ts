@@ -23,6 +23,7 @@ export type SourceEngineProduct = {
   sourceNiche?: string
   sourceQuality?: string
   qualityScore?: number
+  available?: boolean
   _rating?: number
   _numRatings?: number
 }
