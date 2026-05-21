@@ -106,12 +106,17 @@ export function getBulkPreflightIssue(product: FinderProduct): BulkListFailure |
     }
   }
 
-  if (imageCount < 2) {
+  // Require at least 1 image (not 2) at the preflight stage. Products with exactly
+  // 1 image are sent through non-trusted mode at publish time, which fetches fresh
+  // Amazon data and picks up the full image gallery before listing. Requiring 2 here
+  // was blocking the entire pool because pool products without a cache entry only
+  // carry imageUrl (1 image) — the gallery is added during listing enrichment.
+  if (imageCount < 1) {
     return {
       asin: product.asin,
       title: product.title,
       code: 'NEEDS_IMAGE_ENRICHMENT',
-      message: `Skipped before publish: only ${imageCount} product image${imageCount === 1 ? '' : 's'} ready; reload the queue after enrichment.`,
+      message: 'Skipped before publish: no product images available.',
       skipped: true,
     }
   }
