@@ -15,21 +15,9 @@ import { chooseBestListingTitle, isWeakListingTitle } from '@/lib/listing-qualit
 import { getRapidApiKey } from '@/lib/rapidapi'
 
 // ── VeRO Protection ──────────────────────────────────────────────────────────
-const VERO_BRANDS = [
-  'louis vuitton','lv bag','gucci','chanel','prada','burberry','versace','fendi',
-  'christian dior','yves saint laurent','hermes','hermès','balenciaga','givenchy',
-  'bottega veneta','celine','valentino','off-white','supreme box logo',
-  'rolex','omega watch','patek philippe','audemars piguet','hublot','cartier watch',
-  'breitling','tag heuer','iwc schaffhausen',
-  'ray-ban','oakley sunglass',
-  'canada goose jacket','moncler jacket','ugg boot',
-  'lego set','lego technic','lego duplo',
-]
-
-function isVero(title: string): boolean {
-  const t = title.toLowerCase()
-  return VERO_BRANDS.some(b => t.includes(b))
-}
+// VERO / brand protection is handled entirely by lib/listing-policy.ts
+// (HIGH_RISK_BRAND_RULES, RESTRICTED_ITEM_RULES, etc.) which is called at
+// lines ~1388 and ~1914. No separate isVero check is needed here.
 
 // ── eBay Category IDs ────────────────────────────────────────────────────────
 const NICHE_CATEGORY: Record<string, string> = {
@@ -1764,7 +1752,10 @@ export async function POST(req: NextRequest) {
     return (base + ' ' + additions.join(' ')).slice(0, 80).replace(/\s+\S*$/, '').trim()
   }
 
-  const safeTitle = buildSeoTitle(rawSafeTitle, niche, [])
+  // Pass validatedAmazon.specs so buildSeoTitle can pull brand, model,
+  // compatibility, and size values into the title — filling the 80-char
+  // eBay budget with real product attributes buyers actually search for.
+  const safeTitle = buildSeoTitle(rawSafeTitle, niche, validatedAmazon.specs || [])
 
   if (isWeakListingTitle(safeTitle)) {
     return apiError(
@@ -1911,9 +1902,12 @@ export async function POST(req: NextRequest) {
     _apiError: fetchedAmazon._apiError,
   }
   amazon.specs = dedupeSpecEntries(amazon.specs)
+  // Include a spec value summary so brand names or restricted terms inside
+  // product specs (e.g. "Compatible: Nike", "Brand: Apple") are also caught.
+  const specText = (amazon.specs || []).map(([k, v]) => `${k}: ${v}`).join(' ')
   const validatedPolicyFlags = getListingPolicyFlags({
     title: listingTitle,
-    description: amazon.description,
+    description: amazon.description ? `${amazon.description} ${specText}` : specText,
     niche,
   })
   if (hasBlockedListingPolicyFlag(validatedPolicyFlags)) {

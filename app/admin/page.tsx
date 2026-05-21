@@ -413,14 +413,18 @@ export default function AdminPage() {
   const [sourceNiches, setSourceNiches] = useState<ManagedSourceNiche[]>([])
   const [nicheForm, setNicheForm] = useState({ name: '', queries: '', notes: '' })
   const [nicheAction, setNicheAction] = useState<string | null>(null)
+  const [poolStatus, setPoolStatus] = useState<{ totalPool: number; totalAlreadyListed: number; totalTrulyValid: number; validByNiche: Array<{ niche: string | null; validCount: number }> } | null>(null)
 
   const loadAdmin = useCallback(async () => {
     setError(null)
-    const [statsRes, collabRes, sourceNicheRes] = await Promise.all([
+    const [statsRes, collabRes, sourceNicheRes, poolRes] = await Promise.all([
       fetch('/api/admin/stats').then(readJson),
       fetch(`/api/admin/collab?t=${Date.now()}`, { cache: 'no-store' }).then(readJson),
       fetch('/api/admin/source-niches').then(readJson),
+      fetch('/api/debug/pool-status').then(readJson).catch(() => null),
     ])
+    setPoolStatus(poolRes as typeof poolStatus)
+
     setStats(statsRes as Stats)
     setSourceNiches(Array.isArray(sourceNicheRes?.customNiches) ? sourceNicheRes.customNiches : [])
     setCollab(String(collabRes?.content || ''))
@@ -1066,6 +1070,54 @@ export default function AdminPage() {
             Ready means a niche has at least 30 active source products and 30 cached queue products with a recent refresh. Needs stock rows are now picked up automatically by the hourly niche stocker.
           </div>
         </section>
+
+        {/* Pool Health — truly valid per niche after all filters */}
+        {poolStatus && (
+          <section className="admin-panel" style={{ marginBottom: '20px' }}>
+            <div className="admin-panel-head">
+              <div>
+                <span>Pool health</span>
+                <h2>Truly valid products per niche</h2>
+                <p style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '4px' }}>
+                  Counts products that pass all SQL filters AND are not already listed. Sorted weakest first.
+                  Pool: <strong>{poolStatus.totalPool.toLocaleString()}</strong> active ·
+                  Listed: <strong>{poolStatus.totalAlreadyListed.toLocaleString()}</strong> on eBay ·
+                  Truly valid: <strong>{poolStatus.totalTrulyValid.toLocaleString()}</strong>
+                </p>
+              </div>
+              <span className={`admin-pill admin-pill-${poolStatus.validByNiche.filter(n => (n.validCount || 0) < 30).length === 0 ? 'good' : 'watch'}`}>
+                {poolStatus.validByNiche.filter(n => (n.validCount || 0) < 30).length} niches under 30
+              </span>
+            </div>
+            <div className="admin-table-wrap">
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>Niche</th>
+                    <th>Truly Valid</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...poolStatus.validByNiche]
+                    .sort((a, b) => (a.validCount || 0) - (b.validCount || 0))
+                    .map((row) => {
+                      const count = row.validCount || 0
+                      const status = count >= 30 ? 'good' : count >= 15 ? 'watch' : 'bad'
+                      const label = count >= 30 ? '✓ Ready' : count >= 15 ? '⚠ Low' : '✗ Critical'
+                      return (
+                        <tr key={row.niche || 'unassigned'}>
+                          <td><strong>{row.niche || 'Unassigned'}</strong></td>
+                          <td><strong style={{ color: count >= 30 ? 'var(--green)' : count >= 15 ? 'var(--gold)' : 'var(--red)' }}>{count}</strong></td>
+                          <td><span className={`admin-pill admin-pill-${status}`}>{label}</span></td>
+                        </tr>
+                      )
+                    })}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
 
         <section className="admin-panel">
           <div className="admin-panel-head">

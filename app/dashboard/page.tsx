@@ -926,6 +926,21 @@ export default function Dashboard() {
     }
   }, [continuousFinderState.error, continuousFinderState.loading, continuousFinderState.results, handleFindContinuousProducts, tab])
 
+  // Auto-load products when the user opens the Product Listing tab and there
+  // are no results yet. Without this, the user must manually click Find Products
+  // every time they open the tab — a significant UX friction point.
+  useEffect(() => {
+    if (
+      tab === 'product' &&
+      nicheState.value &&
+      !finderState.results &&
+      !finderState.loading &&
+      !finderState.error
+    ) {
+      void handleFindProducts()
+    }
+  }, [tab, nicheState.value, finderState.results, finderState.loading, finderState.error, handleFindProducts])
+
   // Auto-reseed continuous listing when the pool drops below the display threshold.
   // This keeps it "continuous" — once the current batch is listed/removed, a fresh
   // batch is pulled automatically so the user never hits an empty queue.
