@@ -1461,9 +1461,9 @@ export async function POST(req: NextRequest) {
       let overlap = 0
       for (const word of queuedWords) { if (validatedWords.has(word)) overlap++ }
       const similarity = queuedWords.size > 0 ? overlap / queuedWords.size : 1
-      // 0.55 threshold: strict enough to catch "keyboard" vs "eye mask" (0% overlap),
+      // 0.42 threshold: strict enough to catch "keyboard" vs "eye mask" (0% overlap),
       // loose enough to allow for shortened/variant titles ("TKL Keyboard" vs "87-Key TKL Keyboard")
-      if (similarity < 0.55) {
+      if (similarity < 0.42) {
         await markSourceAsinRejected()
         return apiError(
           `ASIN ${asin} now maps to a different product on Amazon ("${validatedAmazon.title.slice(0, 60)}"). Remove this from your queue and reload for fresh products.`,
@@ -1500,7 +1500,7 @@ export async function POST(req: NextRequest) {
           let overlap = 0
           for (const word of poolWords) { if (cacheWords.has(word)) overlap++ }
           const similarity = poolWords.size > 0 ? overlap / poolWords.size : 1
-          if (similarity < 0.45) {
+          if (similarity < 0.42) {
             await markSourceAsinRejected()
             return apiError(
               `ASIN ${asin} now maps to a different product ("${cached.title.slice(0, 60)}"). Queue entry is stale — remove it and reload for fresh products.`,
@@ -1623,7 +1623,7 @@ export async function POST(req: NextRequest) {
     let overlap = 0
     for (const word of queuedWords) { if (liveWords.has(word)) overlap++ }
     const similarity = queuedWords.size > 0 ? overlap / queuedWords.size : 1
-    if (similarity < 0.45) {
+    if (similarity < 0.42) {
       await markSourceAsinRejected()
       return apiError(
         `ASIN ${asin} now maps to a different product on Amazon ("${liveAvailability.title.slice(0, 60)}"). Remove it from your queue and reload for fresh products.`,

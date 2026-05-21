@@ -121,7 +121,7 @@ export function getBulkPreflightIssue(product: FinderProduct): BulkListFailure |
     }
   }
 
-  if (Number.isFinite(product.profit) && product.profit < 1) {
+  if (Number.isFinite(product.profit) && product.profit < 3) {
     return {
       asin: product.asin,
       title: product.title,

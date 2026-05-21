@@ -863,13 +863,17 @@ export async function GET(req: NextRequest) {
         const cronSecret = process.env.CRON_SECRET || ''
         const host = req.nextUrl.origin
         const url = `${host}/api/cron/refresh-products?stockWeak=1&wait=1&batch=1&niche=${encodeURIComponent(niche)}&source=product-finder-repair`
-        await fetch(url, {
+        const resp = await fetch(url, {
           headers: cronSecret ? { Authorization: `Bearer ${cronSecret}` } : { 'x-vercel-cron': '1' },
           signal: AbortSignal.timeout(280000),
-        }).catch(() => null)
-        console.info('[product-finder-repair]', JSON.stringify({ niche, reason, availableCount, readyCount }))
-      } catch {
-        // Source repair is opportunistic; the request should never fail because repair did.
+        }).catch((err) => { console.error('[product-finder-repair] fetch error', { niche, reason, error: String(err) }); return null })
+        console.info('[product-finder-repair]', JSON.stringify({
+          niche, reason, availableCount, readyCount,
+          status: resp?.status ?? 'failed',
+          ok: resp?.ok ?? false,
+        }))
+      } catch (err) {
+        console.error('[product-finder-repair] unexpected error', { niche, reason, error: String(err) })
       }
     })
   }

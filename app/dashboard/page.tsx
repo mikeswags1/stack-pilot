@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { signOut, useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import { DashboardSidebar } from './components/DashboardSidebar'
@@ -202,7 +202,10 @@ function mergeRefilledProducts(current: FinderProduct[] | null, incoming: Finder
   // an empty or stale queue. This is the self-heal: after the pool is exhausted the
   // API returns fresh products (via live-fill / scrape) and we surface them directly.
   if (additions.length === 0 && incoming.length > 0 && kept.length < FINDER_STOCK_TARGET) {
-    const freshAdditions = incoming.filter((product) => !listed.has(product.asin.toUpperCase()))
+    const freshAdditions = incoming.filter((product) => {
+      const asin = product.asin.toUpperCase()
+      return !listed.has(asin) && !seen.has(asin)
+    })
     console.info('[mergeRefilled] pool exhausted — using incoming as fresh replacement', { incomingCount: freshAdditions.length })
     return tagFinderProducts([...kept, ...freshAdditions].slice(0, FINDER_ROTATION_POOL_TARGET), sourceMode)
   }
@@ -302,6 +305,7 @@ export default function Dashboard() {
   // Start at 1 so the initial display is already shuffled (tick=0 would always show
   // the same deterministic first-30 slice — no variety for the user on first load).
   const [finderRotationTick, setFinderRotationTick] = useState(1)
+  const continuousReseedTimerRef = useRef<number>(0)
 
   const visibleFinderResults = useMemo(() => {
     const rotated = getRotatingFinderProducts(finderState.results, finderRotationTick)
@@ -934,6 +938,9 @@ export default function Dashboard() {
       continuousFinderState.results !== null &&
       continuousPoolSize < FINDER_STOCK_TARGET
     ) {
+      const now = Date.now()
+      if (now - continuousReseedTimerRef.current < 45_000) return  // debounce: max 1 reseed per 45s
+      continuousReseedTimerRef.current = now
       // Pass the currently queued ASINs as excludes so the auto-reseed
       // fetches genuinely fresh products rather than the same ones.
       const currentQueueAsins = (continuousFinderState.results || []).map((p) => p.asin)
