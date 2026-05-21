@@ -244,7 +244,11 @@ function rowToProduct(row: ProductSourceRow): SourceEngineProduct {
     specs: (row.cached_specs?.length || 0) > 0 ? row.cached_specs || undefined : rawSpecs,
     sourceNiche: row.source_niche || undefined,
     sourceQuality: row.cached_available === true && images.length >= 2 && row.source_quality !== 'reject' ? 'ready' : row.source_quality || undefined,
-    available: row.cached_available === null ? undefined : row.cached_available,
+    // If no amazon_product_cache row exists (LEFT JOIN → null), assume available.
+    // Only explicitly mark unavailable when the cache confirms available = FALSE.
+    // Using undefined previously caused isPublishReadyProduct (available === true check)
+    // to reject every pool product lacking a cache entry, shrinking publishReadyCount to 0.
+    available: row.cached_available ?? true,
     _rating: parseNumber(row.rating),
     _numRatings: Math.round(parseNumber(row.review_count)),
     bestSellerRank: row.cached_bsr ?? undefined,
@@ -622,7 +626,6 @@ export async function loadProductSourceProducts(options: { niche?: string | null
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
                 AND psi.source_niche = ${niche}
-                AND psi.last_seen_at > NOW() - INTERVAL '21 days'
                 AND psi.profit >= 3
                 AND psi.roi >= 25
                 AND psi.risk <> 'HIGH'
@@ -631,6 +634,10 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
                 AND UPPER(psi.asin) <> ALL(${excludeArray}::text[])
+                AND NOT EXISTS (
+                  SELECT 1 FROM listed_asins la
+                  WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
+                )
               ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC, psi.last_seen_at DESC
               LIMIT ${fetchLimit}
             `
@@ -645,7 +652,6 @@ export async function loadProductSourceProducts(options: { niche?: string | null
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
                 AND psi.source_niche = ${niche}
-                AND psi.last_seen_at > NOW() - INTERVAL '21 days'
                 AND psi.profit >= 3
                 AND psi.roi >= 25
                 AND psi.risk <> 'HIGH'
@@ -653,6 +659,10 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
+                AND NOT EXISTS (
+                  SELECT 1 FROM listed_asins la
+                  WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
+                )
               ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC, psi.last_seen_at DESC
               LIMIT ${fetchLimit}
             `)
@@ -667,7 +677,6 @@ export async function loadProductSourceProducts(options: { niche?: string | null
               FROM product_source_items psi
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
-                AND psi.last_seen_at > NOW() - INTERVAL '21 days'
                 AND psi.profit >= 3
                 AND psi.roi >= 25
                 AND psi.risk <> 'HIGH'
@@ -676,6 +685,10 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
                 AND UPPER(psi.asin) <> ALL(${excludeArray}::text[])
+                AND NOT EXISTS (
+                  SELECT 1 FROM listed_asins la
+                  WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
+                )
               ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC, psi.last_seen_at DESC
               LIMIT ${fetchLimit}
             `
@@ -689,7 +702,6 @@ export async function loadProductSourceProducts(options: { niche?: string | null
               FROM product_source_items psi
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
-                AND psi.last_seen_at > NOW() - INTERVAL '21 days'
                 AND psi.profit >= 3
                 AND psi.roi >= 25
                 AND psi.risk <> 'HIGH'
@@ -697,6 +709,10 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
+                AND NOT EXISTS (
+                  SELECT 1 FROM listed_asins la
+                  WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
+                )
               ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC, psi.last_seen_at DESC
               LIMIT ${fetchLimit}
             `)
