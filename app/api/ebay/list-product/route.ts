@@ -243,7 +243,10 @@ interface AmazonDetails {
   specs: Array<[string, string]>
 }
 
-const MIN_LISTING_IMAGES = 2
+// Require at least 1 image (not 2). Pool products carry imageUrl (1 image) until
+// the background cache enrichment cron fetches the full gallery. The eBay API
+// accepts single-image listings. Requiring 2 here was blocking ~90% of the pool.
+const MIN_LISTING_IMAGES = 1
 
 function isGenericFeature(value: string) {
   const normalized = value.toLowerCase()
