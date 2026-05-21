@@ -992,25 +992,25 @@ export default function Dashboard() {
   )
 
   const refillNicheFinderProducts = useCallback(
-    async (removeAsins: string[]) => {
+    async (removeAsins: string[], fetchExcludeAsins?: string[]) => {
       if (!nicheState.value || removeAsins.length === 0) return
 
       const listed = new Set(removeAsins.map((asin) => asin.toUpperCase()))
-      // Snapshot current results at call time (before any async gap).
-      // Using finderState.results directly here is safe since this is called
-      // synchronously after handleListAll captures the current state.
       const currentResults = finderState.results || []
       const remainingAsins = currentResults
         .filter((product) => !listed.has(product.asin.toUpperCase()))
         .map((product) => product.asin)
 
-      const allExcludeAsins = [...remainingAsins, ...removeAsins]
-      console.info('[refillNiche] fetching', { niche: nicheState.value, removeCount: removeAsins.length, remainingCount: remainingAsins.length, excludeCount: allExcludeAsins.length })
+      // fetchExcludeAsins: what to tell the API to skip (listed+skipped only, not failed).
+      // Failed CHECK_FAILED products are transient — exclude them from display
+      // but allow them back in the next refill so the pool stays full.
+      const excludeForFetch = [...remainingAsins, ...(fetchExcludeAsins ?? removeAsins)]
+      console.info('[refillNiche] fetching', { niche: nicheState.value, removeCount: removeAsins.length, remainingCount: remainingAsins.length, fetchExcludeCount: excludeForFetch.length })
 
       try {
         const refreshed = await fetchFinderProducts(nicheState.value, true, {
           limit: FINDER_ROTATION_POOL_TARGET,
-          excludeAsins: allExcludeAsins,
+          excludeAsins: excludeForFetch,
         })
         console.info('[refillNiche] received', { count: refreshed.results?.length ?? 0, source: (refreshed as { source?: string }).source })
         setFinderState((prev) => {
@@ -1029,24 +1029,23 @@ export default function Dashboard() {
   )
 
   const refillContinuousProducts = useCallback(
-    async (removeAsins: string[]) => {
+    async (removeAsins: string[], fetchExcludeAsins?: string[]) => {
       if (removeAsins.length === 0) return
 
       const listed = new Set(removeAsins.map((asin) => asin.toUpperCase()))
-      // Snapshot current results at call time.
       const currentResults = continuousFinderState.results || []
       const remainingAsins = currentResults
         .filter((product) => !listed.has(product.asin.toUpperCase()))
         .map((product) => product.asin)
 
-      const allExcludeAsins = [...remainingAsins, ...removeAsins]
-      console.info('[refillContinuous] fetching', { removeCount: removeAsins.length, remainingCount: remainingAsins.length, excludeCount: allExcludeAsins.length })
+      const excludeForFetch = [...remainingAsins, ...(fetchExcludeAsins ?? removeAsins)]
+      console.info('[refillContinuous] fetching', { removeCount: removeAsins.length, remainingCount: remainingAsins.length, fetchExcludeCount: excludeForFetch.length })
 
       try {
         const refreshed = await fetchFinderProducts('', true, {
           mode: 'continuous',
           limit: FINDER_ROTATION_POOL_TARGET,
-          excludeAsins: allExcludeAsins,
+          excludeAsins: excludeForFetch,
         })
         console.info('[refillContinuous] received', { count: refreshed.results?.length ?? 0, source: (refreshed as { source?: string }).source })
         setContinuousFinderState((prev) => {
@@ -1096,9 +1095,13 @@ export default function Dashboard() {
     const result = await listProductsInBatches({
       products,
       publish: (product) => {
-        // Skip trusted mode when images are sparse or niche needs full re-validation
-        const needsValidation = (product.images?.length ?? 0) < 2 || !product.images?.length
-        return publishFinderProduct(product, { trusted: !needsValidation })
+        // Always use trusted mode for bulk List All. The listing route's trusted
+        // path checks availability from cache and detects ASIN mismatches without
+        // hitting Amazon live. Non-trusted mode scrapes Amazon for every product,
+        // and 30 concurrent scrapes trigger rate-limiting → CHECK_FAILED for
+        // most of the batch. Pool products already have availability validated
+        // by the 30-min cron so live re-checking is redundant here.
+        return publishFinderProduct(product, { trusted: true })
       },
       preflight: getBulkPreflightIssue,
       onProgress: (progress) => {
@@ -1114,12 +1117,15 @@ export default function Dashboard() {
       return
     }
 
-    const terminalAsins = [...result.listedAsins, ...result.failedAsins, ...result.skippedAsins]
-    // Advance the rotation tick so the next visible batch shows different products
-    // from the pool rather than the same re-ranked slice every time.
+    // Remove all terminal ASINs from the current display.
+    // For the refill FETCH: only exclude listed+skipped — not failed ones.
+    // CHECK_FAILED products are not permanently invalid (rate-limit or transient
+    // scrape issue) and should re-enter the next batch via the refill.
+    const allTerminalAsins = [...result.listedAsins, ...result.failedAsins, ...result.skippedAsins]
+    const refillExcludeAsins = [...result.listedAsins, ...result.skippedAsins]
     setFinderRotationTick((t) => t + 1)
     if (result.errors > 0) {
-      await refillNicheFinderProducts(terminalAsins)
+      await refillNicheFinderProducts(allTerminalAsins, refillExcludeAsins)
       await refreshSubscriptionStatus().catch(() => {})
       setBanner({
         tone: 'error',
@@ -1128,7 +1134,7 @@ export default function Dashboard() {
       return
     }
 
-    await refillNicheFinderProducts(terminalAsins)
+    await refillNicheFinderProducts(allTerminalAsins, refillExcludeAsins)
     await refreshSubscriptionStatus().catch(() => {})
 
     setBanner({
@@ -1168,10 +1174,7 @@ export default function Dashboard() {
 
     const result = await listProductsInBatches({
       products,
-      publish: (product) => {
-        const needsValidation = (product.images?.length ?? 0) < 2 || !product.images?.length
-        return publishFinderProduct(product, { trusted: !needsValidation })
-      },
+      publish: (product) => publishFinderProduct(product, { trusted: true }),
       preflight: getBulkPreflightIssue,
       onProgress: (progress) => {
         setContinuousFinderState((prev) => ({ ...prev, listAllProgress: progress }))
@@ -1186,10 +1189,11 @@ export default function Dashboard() {
       return
     }
 
-    const terminalAsins = [...result.listedAsins, ...result.failedAsins, ...result.skippedAsins]
+    const allTerminalAsins = [...result.listedAsins, ...result.failedAsins, ...result.skippedAsins]
+    const refillExcludeAsins = [...result.listedAsins, ...result.skippedAsins]
     setFinderRotationTick((t) => t + 1)
     if (result.errors > 0) {
-      await refillContinuousProducts(terminalAsins)
+      await refillContinuousProducts(allTerminalAsins, refillExcludeAsins)
       await refreshSubscriptionStatus().catch(() => {})
       setBanner({
         tone: 'error',
@@ -1198,7 +1202,7 @@ export default function Dashboard() {
       return
     }
 
-    await refillContinuousProducts(terminalAsins)
+    await refillContinuousProducts(allTerminalAsins, refillExcludeAsins)
     await refreshSubscriptionStatus().catch(() => {})
     setBanner({
       tone: 'success',
