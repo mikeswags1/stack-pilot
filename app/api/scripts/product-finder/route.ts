@@ -879,14 +879,16 @@ export async function GET(req: NextRequest) {
   }
 
   const enrichSparseTopProducts = async (products: Product[]) => {
-    const publishReadyCount = products.filter(isPublishReadyProduct).length
-    if (publishReadyCount >= targetCount || isOutOfLiveFetchTime()) return products
+    if (isOutOfLiveFetchTime()) return products
 
+    // Always enrich products with < 2 images regardless of publishReadyCount.
+    // Previously this was skipped when readyCount >= targetCount, but that
+    // caused 1-image products to slip through once the available fix was applied.
+    // Now we always try to upgrade 1-image products to 2+ images.
     const checkedAsins = new Set<string>()
     const enrichedByAsin = new Map<string, Product>()
     const rejectedAsins = new Set<string>()
     const candidates = products
-      .filter((product) => !isPublishReadyProduct(product))
       .filter((product) => getProductImageCount(product) < 2 || product.available !== true)
       .slice(0, continuousMode ? 8 : Math.max(targetCount, 24))
 

@@ -106,17 +106,19 @@ export function getBulkPreflightIssue(product: FinderProduct): BulkListFailure |
     }
   }
 
-  // Require at least 1 image (not 2) at the preflight stage. Products with exactly
-  // 1 image are sent through non-trusted mode at publish time, which fetches fresh
-  // Amazon data and picks up the full image gallery before listing. Requiring 2 here
-  // was blocking the entire pool because pool products without a cache entry only
-  // carry imageUrl (1 image) — the gallery is added during listing enrichment.
-  if (imageCount < 1) {
+  // Require at least 2 images. Products with only 1 image go through enrichment
+  // in the product-finder API (enrichSparseTopProducts always runs now for < 2 image
+  // products). If enrichment succeeds they gain 2+ images and pass here.
+  // If enrichment fails, they are excluded from List Ready to maintain quality.
+  // A product with 0 images is also blocked.
+  if (imageCount < 2) {
     return {
       asin: product.asin,
       title: product.title,
       code: 'NEEDS_IMAGE_ENRICHMENT',
-      message: 'Skipped before publish: no product images available.',
+      message: imageCount === 0
+        ? 'Skipped before publish: no product images available.'
+        : 'Skipped before publish: only 1 image found — hit Find Products to enrich.',
       skipped: true,
     }
   }

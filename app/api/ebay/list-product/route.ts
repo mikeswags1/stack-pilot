@@ -1951,6 +1951,12 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  // Image quality tracking: flag listings that ship with only 1 image.
+  // These still go through — we do not block them — but they are marked
+  // so the admin can measure the scale of the problem and prioritize
+  // background enrichment for the affected ASINs.
+  const imageQualityWarning = filteredImages.length < 2
+
   const fallbackListingImage = `${siteUrl}/api/image/fallback?asin=${encodeURIComponent(asin)}&title=${encodeURIComponent(listingTitle)}`
   const primarySourceImage = filteredImages[0] || validatedAmazon.imageUrl || fallbackListingImage
   const primaryProxyImage = primarySourceImage.includes('/api/image/')
@@ -2463,7 +2469,7 @@ export async function POST(req: NextRequest) {
 
   await ensureListedAsinsFinancialColumns()
   await sql`
-    INSERT INTO listed_asins (user_id, asin, title, ebay_listing_id, amazon_price, ebay_price, ebay_fee_rate, amazon_image_url, amazon_images, amazon_snapshot, niche, category_id, amazon_available, amazon_status_reason, amazon_status_checked_at)
+    INSERT INTO listed_asins (user_id, asin, title, ebay_listing_id, amazon_price, ebay_price, ebay_fee_rate, amazon_image_url, amazon_images, amazon_snapshot, niche, category_id, amazon_available, amazon_status_reason, amazon_status_checked_at, image_count, image_quality_warning)
     VALUES (${effectiveUserId}, ${asin}, ${listingTitle.slice(0, 200)}, ${listingId}, ${listingAmazonPrice.toFixed(2)}, ${price}, ${EBAY_DEFAULT_FEE_RATE}, ${primarySourceImage}, ${JSON.stringify(filteredImages)}, ${JSON.stringify({
       asin,
       title: listingTitle,
@@ -2477,8 +2483,9 @@ export async function POST(req: NextRequest) {
       pricingWarning,
       available: validatedAmazon.available,
       source: validatedAmazon.source,
+      imageQualityWarning,
       amazonUrl: `https://www.amazon.com/dp/${asin}`,
-    })}, ${niche}, ${finalCategoryId}, TRUE, 'available', NOW())
+    })}, ${niche}, ${finalCategoryId}, TRUE, 'available', NOW(), ${filteredImages.length}, ${imageQualityWarning})
     ON CONFLICT (user_id, asin) DO UPDATE SET
       ebay_listing_id = ${listingId},
       title = ${listingTitle.slice(0, 200)},
@@ -2500,6 +2507,7 @@ export async function POST(req: NextRequest) {
         pricingWarning,
         available: validatedAmazon.available,
         source: validatedAmazon.source,
+        imageQualityWarning,
         amazonUrl: `https://www.amazon.com/dp/${asin}`,
       })},
       niche = ${niche},
@@ -2507,6 +2515,8 @@ export async function POST(req: NextRequest) {
       amazon_available = TRUE,
       amazon_status_reason = 'available',
       amazon_status_checked_at = NOW(),
+      image_count = ${filteredImages.length},
+      image_quality_warning = ${imageQualityWarning},
       listed_at = NOW(),
       ended_at = NULL
   `.catch(() => {})
@@ -2518,6 +2528,8 @@ export async function POST(req: NextRequest) {
     success: true,
     listingId,
     listingUrl: `https://www.ebay.com/itm/${listingId}`,
+    imageCount: filteredImages.length,
+    imageQualityWarning,
     subscription: latestTrialUsage
       ? {
           plan,

@@ -210,6 +210,7 @@ type Stats = {
     listed7Days: number
     listed30Days: number
     lowImageActive: number
+    imageBreakdown?: { oneImage: number; twoImages: number; threePlusImages: number; qualityWarnings: number }
     missingCategoryActive: number
     activeRevenue: number
     activeCost: number
@@ -918,10 +919,33 @@ export default function AdminPage() {
             <div className="admin-health-grid">
               <SmallStat label="Total listed" value={formatNumber(listingSummary.totalListings)} />
               <SmallStat label="Listed 7 days" value={formatNumber(listingSummary.listed7Days)} />
-              <SmallStat label="Low-image active" value={formatNumber(listingSummary.lowImageActive)} />
+              <SmallStat label="Low-image active" value={formatNumber(listingSummary.lowImageActive)} tone={listingSummary.lowImageActive > 0 ? 'warn' : undefined} />
               <SmallStat label="Missing category" value={formatNumber(listingSummary.missingCategoryActive)} />
             </div>
-            <div className="admin-subtle-line">
+            {listingSummary.imageBreakdown && (
+              <div style={{ marginTop: '12px', padding: '10px 14px', background: 'rgba(255,255,255,0.04)', borderRadius: '8px' }}>
+                <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '8px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Image quality — active listings</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: '22px', fontWeight: 800, color: 'var(--red)' }}>{formatNumber(listingSummary.imageBreakdown.oneImage)}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--muted)' }}>1 image ⚠</div>
+                  </div>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: '22px', fontWeight: 800, color: 'var(--gold)' }}>{formatNumber(listingSummary.imageBreakdown.twoImages)}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--muted)' }}>2 images</div>
+                  </div>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: '22px', fontWeight: 800, color: 'var(--green)' }}>{formatNumber(listingSummary.imageBreakdown.threePlusImages)}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--muted)' }}>3+ images ✓</div>
+                  </div>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: '22px', fontWeight: 800, color: listingSummary.imageBreakdown.qualityWarnings > 0 ? 'var(--red)' : 'var(--green)' }}>{formatNumber(listingSummary.imageBreakdown.qualityWarnings)}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--muted)' }}>quality flags</div>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div className="admin-subtle-line" style={{ marginTop: '10px' }}>
               Active revenue {formatMoney(listingSummary.activeRevenue)} against {formatMoney(listingSummary.activeCost)} stored cost basis.
             </div>
           </div>
@@ -1424,11 +1448,12 @@ function MetricCard({ label, value, detail }: { label: string; value: string; de
   )
 }
 
-function SmallStat({ label, value }: { label: string; value: string }) {
+function SmallStat({ label, value, tone }: { label: string; value: string; tone?: 'warn' | 'bad' | 'good' }) {
+  const toneColor = tone === 'warn' ? 'var(--gold)' : tone === 'bad' ? 'var(--red)' : tone === 'good' ? 'var(--green)' : undefined
   return (
     <div className="admin-small-stat">
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong style={toneColor ? { color: toneColor } : undefined}>{value}</strong>
     </div>
   )
 }

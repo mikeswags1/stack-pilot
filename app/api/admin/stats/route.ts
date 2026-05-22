@@ -40,6 +40,10 @@ type ListingSummaryRow = {
   listed_7: string | number
   listed_30: string | number
   low_image_active: string | number
+  one_image_active: string | number
+  two_image_active: string | number
+  three_plus_image_active: string | number
+  image_quality_warnings: string | number
   missing_category_active: string | number
   active_revenue: string | number | null
   active_cost: string | number | null
@@ -231,11 +235,19 @@ export async function GET(req: NextRequest) {
         COUNT(*) FILTER (
           WHERE ended_at IS NULL
             AND (
-              amazon_images IS NULL
-              OR jsonb_typeof(amazon_images) <> 'array'
-              OR jsonb_array_length(amazon_images) < 2
+              image_count IS NULL
+              OR image_count < 2
+              OR (image_count IS NULL AND (
+                amazon_images IS NULL
+                OR jsonb_typeof(amazon_images) <> 'array'
+                OR jsonb_array_length(amazon_images) < 2
+              ))
             )
         )::int AS low_image_active,
+        COUNT(*) FILTER (WHERE ended_at IS NULL AND image_count = 1)::int AS one_image_active,
+        COUNT(*) FILTER (WHERE ended_at IS NULL AND image_count = 2)::int AS two_image_active,
+        COUNT(*) FILTER (WHERE ended_at IS NULL AND image_count >= 3)::int AS three_plus_image_active,
+        COUNT(*) FILTER (WHERE ended_at IS NULL AND image_quality_warning = TRUE)::int AS image_quality_warnings,
         COUNT(*) FILTER (WHERE ended_at IS NULL AND (category_id IS NULL OR category_id = ''))::int AS missing_category_active,
         COALESCE(SUM(CASE WHEN ended_at IS NULL THEN ebay_price ELSE 0 END), 0) AS active_revenue,
         COALESCE(SUM(CASE WHEN ended_at IS NULL THEN amazon_price ELSE 0 END), 0) AS active_cost,
@@ -654,6 +666,12 @@ export async function GET(req: NextRequest) {
       listed7Days: toNumber(summary.listed_7),
       listed30Days: toNumber(summary.listed_30),
       lowImageActive: toNumber(summary.low_image_active),
+      imageBreakdown: {
+        oneImage: toNumber(summary.one_image_active),
+        twoImages: toNumber(summary.two_image_active),
+        threePlusImages: toNumber(summary.three_plus_image_active),
+        qualityWarnings: toNumber(summary.image_quality_warnings),
+      },
       missingCategoryActive: toNumber(summary.missing_category_active),
       activeRevenue: toNumber(summary.active_revenue),
       activeCost: toNumber(summary.active_cost),
