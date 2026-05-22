@@ -24,9 +24,12 @@ const CONTINUOUS_QUERY_LIMIT = 28
 const CONTINUOUS_LIVE_FETCH_BUDGET_MS = 4_500
 const NICHE_LIVE_FETCH_BUDGET_MS = 34_000
 const CONTINUOUS_MIN_FAST_RETURN = 24
-const MIN_STOCK_PROFIT = 9   // raised from 8 — $8 profit is marginal after real shipping costs
-const MIN_STOCK_ROI = 32     // raised from 30 — 32% ROI filters out the bottom quartile
-const MIN_STOCK_MARGIN = 16
+// Aligned with the source-engine filter (profit≥4, roi≥25). The previous 9/32 bar
+// was filtering out products before users could see them — the engine already enforces
+// a quality floor and downstream pricing recommends the safe eBay price.
+const MIN_STOCK_PROFIT = 4
+const MIN_STOCK_ROI = 25
+const MIN_STOCK_MARGIN = 10
 const MIN_PRIMARY_RATING = 3.8
 const MIN_ACCEPTABLE_RATING = 3.6  // raised from 3.5 — poor-rated products generate returns
 const MIN_PRIMARY_REVIEW_COUNT = 20 // raised from 12 — products with <20 reviews have unproven demand
@@ -731,7 +734,11 @@ export async function GET(req: NextRequest) {
   const isPublishReadyProduct = (product: Product) =>
     !shouldBlockProduct(product) &&
     product.available === true &&
-    getProductImageCount(product) >= 2 &&
+    // Aligned with list-product endpoint's MIN_LISTING_IMAGES = 1. Products with only
+    // the search-result image (image_url, no cached gallery yet) still publish — the
+    // listing endpoint pulls the full gallery on demand. Previously this gate of >=2
+    // was filtering out 97% of the pool because cache enrichment lags behind discovery.
+    getProductImageCount(product) >= 1 &&
     product.profit >= MIN_STOCK_PROFIT &&
     product.roi >= MIN_STOCK_ROI &&
     product.risk !== 'HIGH' &&
