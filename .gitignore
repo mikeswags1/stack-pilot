@@ -16,3 +16,4 @@ tsconfig.tsbuildinfo
 
 # Legacy artifact if ever regenerated locally — do not commit
 public/stackpilot-fulfillment-extension.zip
+.env*

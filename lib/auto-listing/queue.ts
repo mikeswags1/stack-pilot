@@ -60,8 +60,31 @@ export async function enqueueCandidates(userId: string | number, accountId: numb
   return inserted
 }
 
+// Maximum age before a queued job is considered stale. Beyond this window the source
+// pool data the job was scored against has likely drifted (ASIN cross-mapped to a new
+// product on Amazon, price/availability moved) and listing it produces ASIN_MISMATCH or
+// PRODUCT_UNAVAILABLE failures. Auto-expire instead of letting them keep retrying.
+const QUEUE_ENTRY_TTL_HOURS = 24
+
+export async function expireStaleQueueEntries(userId: string | number) {
+  await ensureAutoListingTables()
+  const rows = await queryRows<{ id: string }>`
+    UPDATE auto_listing_queue
+    SET status = 'failed',
+        last_error = ${`expired: queued longer than ${QUEUE_ENTRY_TTL_HOURS}h — source data likely drifted`},
+        updated_at = NOW()
+    WHERE user_id = ${userId}
+      AND status IN ('queued','retry')
+      AND created_at < NOW() - (${QUEUE_ENTRY_TTL_HOURS} || ' hours')::interval
+    RETURNING id
+  `.catch(() => [])
+  return rows.length
+}
+
 export async function acquireNextDueJob(userId: string | number) {
   await ensureAutoListingTables()
+  // Sweep stale entries first so they don't get re-attempted and don't hold the score-DESC slot.
+  await expireStaleQueueEntries(userId)
   const rows = await queryRows<{
     id: string
     asin: string
@@ -77,6 +100,7 @@ export async function acquireNextDueJob(userId: string | number) {
       WHERE user_id = ${userId}
         AND status IN ('queued','retry')
         AND (scheduled_at IS NULL OR scheduled_at <= NOW())
+        AND created_at > NOW() - (${QUEUE_ENTRY_TTL_HOURS} || ' hours')::interval
       ORDER BY score DESC, scheduled_at ASC NULLS FIRST, created_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED

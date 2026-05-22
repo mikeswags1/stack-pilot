@@ -1998,6 +1998,22 @@ export async function POST(req: NextRequest) {
       usablePictureList.push(fallbackUrl)
     }
   }
+  // eBay constraint: total length of all Picture URLs (including XML overhead) must
+  // stay under 3,975 chars. Each `&` becomes `&amp;` in the XML payload, so allow
+  // an ~8% margin under the cap to be safe.
+  const EBAY_PICTURE_URL_TOTAL_LIMIT = 3700
+  const cappedPictureList: string[] = []
+  let totalPictureUrlLength = 0
+  for (const url of usablePictureList) {
+    if (url.length > 500) continue
+    const xmlPaddedLength = url.length + (url.match(/&/g)?.length || 0) * 4 // &→&amp;
+    if (totalPictureUrlLength + xmlPaddedLength > EBAY_PICTURE_URL_TOTAL_LIMIT) break
+    cappedPictureList.push(url)
+    totalPictureUrlLength += xmlPaddedLength
+  }
+  // Replace usablePictureList with the capped slice so downstream XML stays under the limit.
+  usablePictureList.length = 0
+  usablePictureList.push(...cappedPictureList)
   if (usablePictureList.length < MIN_LISTING_IMAGES) {
     return apiError(
       `This product only produced ${usablePictureList.length} publishable image${usablePictureList.length === 1 ? '' : 's'} after eBay image processing. StackPilot requires at least ${MIN_LISTING_IMAGES} photos, so reload the queue or choose a different product.`,
