@@ -510,7 +510,7 @@ async function fetchSearchFallbackByTitle(title: string, fallbackImage?: string,
 // Pre-enriches products in product_source_items that are missing from amazon_product_cache.
 // Runs during the daily cron to ensure continuous-listing products have rich data
 // (images, features, description) before users try to list them in bulk.
-export async function warmAmazonProductCache(limit = 40): Promise<{ warmed: number; failed: number }> {
+export async function warmAmazonProductCache(limit = 40): Promise<{ warmed: number; failed: number; enrichedWithImages: number }> {
   await ensureAmazonProductCacheTable()
   const rows = await queryRows<{ asin: string; image_url: string | null }>`
     SELECT psi.asin, psi.image_url
@@ -522,10 +522,11 @@ export async function warmAmazonProductCache(limit = 40): Promise<{ warmed: numb
     LIMIT ${limit}
   `.catch(() => [])
 
-  if (rows.length === 0) return { warmed: 0, failed: 0 }
+  if (rows.length === 0) return { warmed: 0, failed: 0, enrichedWithImages: 0 }
 
-  let warmed = 0, failed = 0
-  const BATCH = 3
+  let warmed = 0, failed = 0, enrichedWithImages = 0
+  const BATCH = 2  // Lowered from 3 — Amazon bot-detects faster with parallel calls
+  const INTER_BATCH_DELAY_MS = 750  // Give Amazon a breather between batches
 
   for (let i = 0; i < rows.length; i += BATCH) {
     const batch = rows.slice(i, i + BATCH)
@@ -539,12 +540,23 @@ export async function warmAmazonProductCache(limit = 40): Promise<{ warmed: numb
       )
     )
     for (const result of results) {
-      if (result.status === 'fulfilled' && result.value) warmed++
-      else failed++
+      if (result.status === 'fulfilled' && result.value) {
+        warmed++
+        // Track "real" enrichment vs fallback (we want products with >=2 images for list-ready)
+        if (result.value.source !== 'fallback' && (result.value.images?.length || 0) >= 2) {
+          enrichedWithImages++
+        }
+      } else {
+        failed++
+      }
+    }
+    // Throttle to reduce Amazon bot detection. Last batch doesn't need to sleep.
+    if (i + BATCH < rows.length) {
+      await new Promise(resolve => setTimeout(resolve, INTER_BATCH_DELAY_MS))
     }
   }
 
-  return { warmed, failed }
+  return { warmed, failed, enrichedWithImages }
 }
 
 export async function fetchAmazonProductByAsin(
@@ -554,11 +566,17 @@ export async function fetchAmazonProductByAsin(
   if (!/^[A-Z0-9]{10}$/.test(asin)) return null
 
   const cached = await loadCachedAmazonProduct(asin)
-  const [apiResult, searchResult, scrapeResult] = await Promise.all([
+  // Use allSettled so a single source throwing doesn't kill the others.
+  // Previously Promise.all rejected on first failure → ~84% of warm attempts
+  // marked as failed even when 1-2 sources had usable data.
+  const settled = await Promise.allSettled([
     fetchProductDetailsFromApi(asin, options.fallbackImage),
     fetchProductFromSearch(asin, options.fallbackImage),
     fetchProductFromScrape(asin, options.fallbackImage),
   ])
+  const apiResult = settled[0].status === 'fulfilled' ? settled[0].value : null
+  const searchResult = settled[1].status === 'fulfilled' ? settled[1].value : null
+  const scrapeResult = settled[2].status === 'fulfilled' ? settled[2].value : null
 
   const merged = mergeProducts(asin, [apiResult, searchResult, scrapeResult, cached], options)
   if (merged) {
