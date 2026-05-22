@@ -747,8 +747,8 @@ export async function loadProductSourceProducts(options: { niche?: string | null
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
                 AND psi.source_niche = ${niche}
-                AND psi.profit >= 7
-                AND psi.roi >= 30
+                AND psi.profit >= 4
+                AND psi.roi >= 25
                 AND psi.risk <> 'HIGH'
                 AND psi.image_url IS NOT NULL
                 AND psi.image_url <> ''
@@ -773,8 +773,8 @@ export async function loadProductSourceProducts(options: { niche?: string | null
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
                 AND psi.source_niche = ${niche}
-                AND psi.profit >= 7
-                AND psi.roi >= 30
+                AND psi.profit >= 4
+                AND psi.roi >= 25
                 AND psi.risk <> 'HIGH'
                 AND psi.image_url IS NOT NULL
                 AND psi.image_url <> ''
@@ -798,8 +798,8 @@ export async function loadProductSourceProducts(options: { niche?: string | null
               FROM product_source_items psi
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
-                AND psi.profit >= 7
-                AND psi.roi >= 30
+                AND psi.profit >= 4
+                AND psi.roi >= 25
                 AND psi.risk <> 'HIGH'
                 AND psi.image_url IS NOT NULL
                 AND psi.image_url <> ''
@@ -823,8 +823,8 @@ export async function loadProductSourceProducts(options: { niche?: string | null
               FROM product_source_items psi
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
-                AND psi.profit >= 7
-                AND psi.roi >= 30
+                AND psi.profit >= 4
+                AND psi.roi >= 25
                 AND psi.risk <> 'HIGH'
                 AND psi.image_url IS NOT NULL
                 AND psi.image_url <> ''
