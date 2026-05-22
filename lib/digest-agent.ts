@@ -77,7 +77,10 @@ async function buildDigestContext(): Promise<DigestContext> {
 async function callAnthropic(prompt: string): Promise<string | null> {
   const apiKey = String(process.env.ANTHROPIC_API_KEY || '').trim()
   if (!apiKey) return null
-  const model = String(process.env.ANTHROPIC_MODEL || 'claude-3-5-haiku-latest').trim()
+  // Default to the current Haiku-class model. The `-latest` alias for older versions
+  // is deprecated over time, so production should set ANTHROPIC_MODEL explicitly to a
+  // current dated model id from console.anthropic.com (Models tab).
+  const model = String(process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5').trim()
   const system = [
     'You are StackPilot Digest Agent.',
     'Generate brief, actionable daily insights for an eBay dropshipping operation.',
