@@ -419,6 +419,25 @@ export default function AdminPage() {
   const [lowImagePreview, setLowImagePreview] = useState<{ count: number; listings: Array<{ ebayListingId: string; asin: string; title: string }> } | null>(null)
   const [lowImageMsg, setLowImageMsg] = useState('')
 
+  // Legacy image audit (image_count IS NULL — older listings)
+  type AuditedListing = {
+    id: number; userId: number; ebayListingId: string; asin: string; title: string
+    listedAt: string | null; liveImageCount: number | null
+    classification: '1-image' | '2-images' | '3+-images' | 'unverified'
+    suggestedAction: string; ebayLink: string
+  }
+  type AuditResult = {
+    total: number; capped: boolean; remainingLegacy: number
+    listings: AuditedListing[]
+    summary: { oneImage: number; twoImages: number; threePlus: number; unverified: number }
+    message: string
+  }
+  const [legacyAuditState, setLegacyAuditState] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
+  const [legacyAuditResult, setLegacyAuditResult] = useState<AuditResult | null>(null)
+  const [legacyAuditMsg, setLegacyAuditMsg] = useState('')
+  const [legacyEndState, setLegacyEndState] = useState<'idle' | 'confirm' | 'ending' | 'done' | 'error'>('idle')
+  const [legacyEndMsg, setLegacyEndMsg] = useState('')
+
   const loadAdmin = useCallback(async () => {
     setError(null)
     const [statsRes, collabRes, sourceNicheRes, poolRes] = await Promise.all([
@@ -513,6 +532,42 @@ export default function AdminPage() {
     } catch (err) {
       setLowImageState('error')
       setLowImageMsg(err instanceof Error ? err.message : 'Failed to end listings.')
+    }
+  }
+
+  const runLegacyAudit = async () => {
+    setLegacyAuditState('running')
+    setLegacyAuditMsg('Fetching live image counts from eBay — this can take up to 60 seconds for large accounts...')
+    setLegacyAuditResult(null)
+    setLegacyEndState('idle')
+    setLegacyEndMsg('')
+    try {
+      const data = await readJson(await fetch('/api/admin/audit-legacy-images'))
+      setLegacyAuditResult(data as Parameters<typeof setLegacyAuditResult>[0])
+      setLegacyAuditMsg(data.message || '')
+      setLegacyAuditState('done')
+    } catch (err) {
+      setLegacyAuditState('error')
+      setLegacyAuditMsg(err instanceof Error ? err.message : 'Audit failed.')
+    }
+  }
+
+  const confirmEndLegacyListings = async (ids: number[]) => {
+    setLegacyEndState('ending')
+    setLegacyEndMsg(`Ending ${ids.length} listing${ids.length !== 1 ? 's' : ''} on eBay...`)
+    try {
+      const data = await readJson(await fetch('/api/admin/audit-legacy-images', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed: true, ids }),
+      }))
+      setLegacyEndMsg(data.message || 'Done.')
+      setLegacyEndState('done')
+      // Re-run audit to reflect the ended listings
+      await runLegacyAudit()
+    } catch (err) {
+      setLegacyEndState('error')
+      setLegacyEndMsg(err instanceof Error ? err.message : 'Failed to end listings.')
     }
   }
 
@@ -1040,6 +1095,184 @@ export default function AdminPage() {
               Active revenue {formatMoney(listingSummary.activeRevenue)} against {formatMoney(listingSummary.activeCost)} stored cost basis.
             </div>
           </div>
+        </section>
+
+        {/* Legacy image audit — listings created before image_count tracking */}
+        <section className="admin-panel" style={{ marginBottom: '20px' }}>
+          <div className="admin-panel-head">
+            <div>
+              <span>Legacy image audit</span>
+              <h2>Verify image counts on older listings</h2>
+            </div>
+            <span className={`admin-pill admin-pill-${legacyAuditState === 'done' ? 'good' : legacyAuditState === 'error' ? 'bad' : 'neutral'}`}>
+              {legacyAuditState === 'idle' ? 'Not run' : legacyAuditState === 'running' ? 'Running…' : legacyAuditState === 'done' ? 'Complete' : 'Error'}
+            </span>
+          </div>
+          <p style={{ fontSize: '13px', color: 'var(--muted)', margin: '0 0 14px' }}>
+            Listings created before the image-quality system was deployed have <code>image_count = NULL</code>.
+            This audit fetches each listing&apos;s live image count directly from eBay, classifies it,
+            and writes the count back to the database. Nothing is ended unless you explicitly confirm.
+          </p>
+
+          {legacyAuditState === 'idle' && (
+            <button className="btn btn-solid btn-sm" onClick={runLegacyAudit}>
+              Run legacy image audit
+            </button>
+          )}
+          {legacyAuditState === 'running' && (
+            <div style={{ fontSize: '13px', color: 'var(--muted)' }}>{legacyAuditMsg}</div>
+          )}
+          {legacyAuditState === 'error' && (
+            <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+              <span style={{ fontSize: '13px', color: 'var(--red)' }}>{legacyAuditMsg}</span>
+              <button className="btn btn-ghost btn-sm" onClick={runLegacyAudit}>Retry</button>
+            </div>
+          )}
+
+          {legacyAuditState === 'done' && legacyAuditResult && (
+            <div>
+              {/* Summary chips */}
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                <span style={{ padding: '4px 10px', borderRadius: '20px', fontSize: '12px', fontWeight: 700, background: 'rgba(239,68,68,0.12)', color: 'var(--red)' }}>
+                  {legacyAuditResult.summary.oneImage} × 1 image ⚠
+                </span>
+                <span style={{ padding: '4px 10px', borderRadius: '20px', fontSize: '12px', fontWeight: 700, background: 'rgba(234,179,8,0.12)', color: 'var(--gold)' }}>
+                  {legacyAuditResult.summary.twoImages} × 2 images
+                </span>
+                <span style={{ padding: '4px 10px', borderRadius: '20px', fontSize: '12px', fontWeight: 700, background: 'rgba(74,222,128,0.12)', color: 'var(--green)' }}>
+                  {legacyAuditResult.summary.threePlus} × 3+ images ✓
+                </span>
+                <span style={{ padding: '4px 10px', borderRadius: '20px', fontSize: '12px', fontWeight: 700, background: 'rgba(255,255,255,0.06)', color: 'var(--muted)' }}>
+                  {legacyAuditResult.summary.unverified} unverified
+                </span>
+                {legacyAuditResult.capped && (
+                  <span style={{ padding: '4px 10px', borderRadius: '20px', fontSize: '12px', background: 'rgba(255,255,255,0.04)', color: 'var(--muted)' }}>
+                    Capped at 200 — {legacyAuditResult.remainingLegacy} legacy listings remain. Run again to continue.
+                  </span>
+                )}
+              </div>
+
+              {/* End 1-image button */}
+              {legacyAuditResult.summary.oneImage > 0 && (
+                <div style={{ marginBottom: '16px', padding: '12px 14px', background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '8px' }}>
+                  {legacyEndState === 'idle' && (
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--red)', marginBottom: '6px' }}>
+                        {legacyAuditResult.summary.oneImage} legacy listing{legacyAuditResult.summary.oneImage !== 1 ? 's' : ''} confirmed with only 1 image
+                      </div>
+                      <button
+                        className="btn btn-solid btn-sm"
+                        style={{ background: 'var(--red)', borderColor: 'var(--red)' }}
+                        onClick={() => setLegacyEndState('confirm')}
+                      >
+                        Review &amp; end these {legacyAuditResult.summary.oneImage} listing{legacyAuditResult.summary.oneImage !== 1 ? 's' : ''}
+                      </button>
+                    </div>
+                  )}
+                  {legacyEndState === 'confirm' && (
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--red)', marginBottom: '6px' }}>
+                        Confirm: end {legacyAuditResult.summary.oneImage} 1-image listing{legacyAuditResult.summary.oneImage !== 1 ? 's' : ''} on eBay — this cannot be undone
+                      </div>
+                      <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '10px', maxHeight: '120px', overflowY: 'auto' }}>
+                        {legacyAuditResult.listings
+                          .filter((l) => l.classification === '1-image')
+                          .map((l) => (
+                            <div key={l.id} style={{ marginBottom: '3px' }}>
+                              {l.title.length > 60 ? `${l.title.slice(0, 57)}...` : l.title}
+                              {' · '}
+                              <a href={l.ebayLink} target="_blank" rel="noreferrer" style={{ color: 'var(--gold)' }}>
+                                {l.ebayListingId} ↗
+                              </a>
+                            </div>
+                          ))}
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button
+                          className="btn btn-solid btn-sm"
+                          style={{ background: 'var(--red)', borderColor: 'var(--red)' }}
+                          onClick={() => {
+                            const ids = legacyAuditResult.listings.filter((l) => l.classification === '1-image').map((l) => l.id)
+                            confirmEndLegacyListings(ids)
+                          }}
+                        >
+                          Yes — end {legacyAuditResult.summary.oneImage} listing{legacyAuditResult.summary.oneImage !== 1 ? 's' : ''} on eBay
+                        </button>
+                        <button className="btn btn-ghost btn-sm" onClick={() => setLegacyEndState('idle')}>Cancel</button>
+                      </div>
+                    </div>
+                  )}
+                  {legacyEndState === 'ending' && (
+                    <div style={{ fontSize: '13px', color: 'var(--muted)' }}>{legacyEndMsg}</div>
+                  )}
+                  {(legacyEndState === 'done' || legacyEndState === 'error') && (
+                    <div style={{ fontSize: '13px', color: legacyEndState === 'error' ? 'var(--red)' : 'var(--green)', fontWeight: 600 }}>{legacyEndMsg}</div>
+                  )}
+                </div>
+              )}
+
+              {/* Full results table */}
+              <div className="admin-table-wrap">
+                <table className="admin-table">
+                  <thead>
+                    <tr>
+                      <th>Listing</th>
+                      <th>Live images</th>
+                      <th>Classification</th>
+                      <th>Suggested action</th>
+                      <th>Listed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {legacyAuditResult.listings.length === 0 ? (
+                      <tr><td colSpan={5}>No legacy listings found.</td></tr>
+                    ) : legacyAuditResult.listings.map((listing) => (
+                      <tr key={listing.id}>
+                        <td>
+                          <strong>{listing.title.length > 60 ? `${listing.title.slice(0, 57)}...` : listing.title}</strong>
+                          <span>
+                            {listing.asin}
+                            {' · '}
+                            <a href={listing.ebayLink} target="_blank" rel="noreferrer" style={{ color: 'var(--gold)' }}>
+                              eBay {listing.ebayListingId} ↗
+                            </a>
+                          </span>
+                        </td>
+                        <td>
+                          <strong style={{
+                            color: listing.liveImageCount === null ? 'var(--muted)'
+                              : listing.liveImageCount <= 1 ? 'var(--red)'
+                              : listing.liveImageCount === 2 ? 'var(--gold)'
+                              : 'var(--green)'
+                          }}>
+                            {listing.liveImageCount === null ? '?' : listing.liveImageCount}
+                          </strong>
+                        </td>
+                        <td>
+                          <span className={`admin-pill admin-pill-${
+                            listing.classification === '1-image' ? 'bad'
+                            : listing.classification === 'unverified' ? 'neutral'
+                            : listing.classification === '2-images' ? 'watch'
+                            : 'good'
+                          }`}>
+                            {listing.classification}
+                          </span>
+                        </td>
+                        <td style={{ fontSize: '11px', color: 'var(--muted)' }}>{listing.suggestedAction}</td>
+                        <td>{listing.listedAt ? new Date(listing.listedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div style={{ marginTop: '12px', display: 'flex', gap: '10px' }}>
+                <button className="btn btn-ghost btn-sm" onClick={runLegacyAudit}>
+                  Re-run audit
+                </button>
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="admin-panel">
