@@ -78,11 +78,60 @@ function defaultRepairQueries(niche: string) {
   ], 12)
 }
 
+/**
+ * Robust JSON extraction from Claude/OpenRouter responses.
+ *
+ * Handles: plain JSON, fenced markdown blocks, prose-wrapped JSON, and
+ * truncated responses (max_tokens cutoff mid-array). Falls back to '{}'
+ * so JSON.parse downstream never throws on malformed LLM output.
+ */
 function extractJsonObject(text: string) {
-  const trimmed = text.trim()
+  const trimmed = String(text || '').trim()
+  if (!trimmed) return '{}'
+
+  // Case 1: already a clean JSON object
   if (trimmed.startsWith('{') && trimmed.endsWith('}')) return trimmed
-  const match = trimmed.match(/\{[\s\S]*\}/)
-  return match ? match[0] : '{}'
+
+  // Case 2: markdown code fence ```json ... ``` or ``` ... ```
+  const fenced = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/)
+  if (fenced?.[1]) {
+    const inside = fenced[1].trim()
+    if (inside.startsWith('{') && inside.endsWith('}')) return inside
+  }
+
+  // Case 3: greedy match from first { to last } in the whole text
+  const greedy = trimmed.match(/\{[\s\S]*\}/)
+  if (greedy?.[0]) {
+    const candidate = greedy[0]
+    // Try parsing as-is; if it fails (truncated), try to repair by
+    // closing open brackets/braces until balanced.
+    try { JSON.parse(candidate); return candidate } catch {}
+
+    // Truncation repair: count opens vs closes, append missing closers
+    let braceDepth = 0
+    let bracketDepth = 0
+    let inString = false
+    let escape = false
+    for (let i = 0; i < candidate.length; i++) {
+      const c = candidate[i]
+      if (escape) { escape = false; continue }
+      if (c === '\\') { escape = true; continue }
+      if (c === '"') { inString = !inString; continue }
+      if (inString) continue
+      if (c === '{') braceDepth++
+      else if (c === '}') braceDepth--
+      else if (c === '[') bracketDepth++
+      else if (c === ']') bracketDepth--
+    }
+    let repaired = candidate
+    // Drop trailing comma if we're closing an incomplete array/object element
+    if (/,\s*$/.test(repaired)) repaired = repaired.replace(/,\s*$/, '')
+    while (bracketDepth-- > 0) repaired += ']'
+    while (braceDepth-- > 0) repaired += '}'
+    try { JSON.parse(repaired); return repaired } catch {}
+  }
+
+  return '{}'
 }
 
 function sanitizePlan(input: unknown): AgentPlan {
@@ -123,7 +172,9 @@ async function callAnthropic(system: string, prompt: string) {
     },
     body: JSON.stringify({
       model,
-      max_tokens: 1200,
+      // Raised from 1200 — Claude was being truncated mid-JSON-array, producing
+      // unparseable output. 4096 gives comfortable headroom for a full plan.
+      max_tokens: 4096,
       temperature: 0.25,
       system,
       messages: [{ role: 'user', content: prompt }],
