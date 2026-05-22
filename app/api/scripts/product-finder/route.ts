@@ -1,4 +1,4 @@
-import { after, NextRequest } from 'next/server'
+﻿import { after, NextRequest } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { apiError, apiOk } from '@/lib/api-response'
@@ -14,8 +14,8 @@ import { getSeasonalQueryExpansions, getSourcingTrendMultiplier, loadActiveCusto
 
 export const maxDuration = 60
 
-const MAX_COST   = 180  // tightened from 300 — products >$180 have thin dropship margins and high return risk
-const CACHE_TTL  = 23 * 60 * 60 * 1000 // 23 hours — refresh once per day
+const MAX_COST   = 180  // tightened from 300 â€” products >$180 have thin dropship margins and high return risk
+const CACHE_TTL  = 23 * 60 * 60 * 1000 // 23 hours â€” refresh once per day
 const CACHE_VERSION = 6
 const TARGET_STOCK = 30
 const MAX_POOL_SIZE = 160
@@ -24,15 +24,15 @@ const CONTINUOUS_QUERY_LIMIT = 28
 const CONTINUOUS_LIVE_FETCH_BUDGET_MS = 4_500
 const NICHE_LIVE_FETCH_BUDGET_MS = 34_000
 const CONTINUOUS_MIN_FAST_RETURN = 24
-// Aligned with the source-engine filter (profit≥4, roi≥25). The previous 9/32 bar
-// was filtering out products before users could see them — the engine already enforces
+// Aligned with the source-engine filter (profitâ‰¥4, roiâ‰¥25). The previous 9/32 bar
+// was filtering out products before users could see them â€” the engine already enforces
 // a quality floor and downstream pricing recommends the safe eBay price.
 const MIN_STOCK_PROFIT = 4
 const MIN_STOCK_ROI = 25
 const MIN_STOCK_MARGIN = 10
 const MIN_PRIMARY_RATING = 3.8
-const MIN_ACCEPTABLE_RATING = 3.6  // raised from 3.5 — poor-rated products generate returns
-const MIN_PRIMARY_REVIEW_COUNT = 20 // raised from 12 — products with <20 reviews have unproven demand
+const MIN_ACCEPTABLE_RATING = 3.6  // raised from 3.5 â€” poor-rated products generate returns
+const MIN_PRIMARY_REVIEW_COUNT = 20 // raised from 12 â€” products with <20 reviews have unproven demand
 const MIN_PRIMARY_SALES = 20
 
 const REJECT_KEYWORDS = [
@@ -40,7 +40,7 @@ const REJECT_KEYWORDS = [
   'treadmill','elliptical','mattress','sofa','couch','generator','chainsaw',
   'television',' tv ','monitor','e-bike','pressure washer',
   'louis vuitton','lv bag','gucci','chanel','prada','burberry','versace','fendi',
-  'christian dior','yves saint laurent','hermes','hermès','balenciaga','givenchy',
+  'christian dior','yves saint laurent','hermes','hermÃ¨s','balenciaga','givenchy',
   'rolex','omega watch','patek philippe','audemars piguet','hublot','cartier watch',
   'ray-ban','oakley sunglass','canada goose jacket','moncler jacket',
   'lego set','lego technic','lego duplo',
@@ -681,15 +681,15 @@ export async function GET(req: NextRequest) {
   }
   const requestSeed = forceRefresh ? `${Date.now()}:${Math.random()}` : String(getRotationBucket())
   // Incorporate the excluded ASINs into the seed so each refill batch produces a
-  // genuinely different ranking — not just the same ordering with excluded items removed.
+  // genuinely different ranking â€” not just the same ordering with excluded items removed.
   // Without this, after listing 30 products the next 30 are drawn from the same ranked
   // position in the pool, often returning near-identical items.
   const excludeSeedFragment = hashExcludeAsins(excludeAsins)
   const distributionSeed = `${userId}:${continuousMode ? 'continuous' : niche}:${requestSeed}:${excludeSeedFragment}`
-  // Defer niche weights until after cache check — avoids eBay API call when cache is warm
+  // Defer niche weights until after cache check â€” avoids eBay API call when cache is warm
   let nicheWeights = new Map<string, number>()
 
-  // ── Load ALL users' active ASINs (cross-user deduplication) ─────────────────
+  // â”€â”€ Load ALL users' active ASINs (cross-user deduplication) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Blocks any ASIN already live on eBay by ANY account on the platform.
   // This prevents two users from listing the same product and competing with each other.
   // If a listing ends (sold out or removed), that ASIN becomes available again for everyone.
@@ -763,7 +763,7 @@ export async function GET(req: NextRequest) {
     // The dashboard is now a pure read of the pre-vetted enriched pool. The pool is
     // kept full by background cron + admin enrich endpoint. Doing live Amazon scraping
     // during the dashboard request just makes the UI slow ("scanning") and adds raw
-    // 1-image candidates that aren't list-ready anyway. Trust the pool — skip entirely.
+    // 1-image candidates that aren't list-ready anyway. Trust the pool â€” skip entirely.
     return products
   }
 
@@ -790,6 +790,13 @@ export async function GET(req: NextRequest) {
   }
 
   const enrichSparseTopProducts = async (products: Product[]) => {
+    // DISABLED â€” dashboard is now a read of the pre-vetted enriched pool. The SQL
+    // filter in loadProductSourceProducts only returns products with >=2 cached images,
+    // so this function should be a no-op. Returning early avoids any chance of a
+    // synchronous Amazon scrape during the dashboard request.
+    return products
+
+    // eslint-disable-next-line no-unreachable
     if (isOutOfLiveFetchTime()) return products
 
     // Always enrich products with < 2 images regardless of publishReadyCount.
@@ -889,7 +896,7 @@ export async function GET(req: NextRequest) {
     // Supplement products that have sparse images/content with data from amazon_product_cache.
     // Catalog-crawl products only store imageUrl (1 image). If this ASIN was ever validated
     // by the niche finder, the full images/features/description are already in the cache.
-    // A single batch DB lookup here — no new API calls — fixes bulk listing image/description issues.
+    // A single batch DB lookup here â€” no new API calls â€” fixes bulk listing image/description issues.
     const topRankedAsins = ranked
       .slice(0, Math.max(targetCount, TARGET_STOCK))
       .map(p => p.asin)
@@ -965,7 +972,7 @@ export async function GET(req: NextRequest) {
               ...(Array.isArray(cached.images) ? cached.images : []),
             ].filter((u): u is string => typeof u === 'string' && u.startsWith('http'))
             const deduped = Array.from(new Set(mergedImages))
-            if (deduped.length < 2) return product  // still sparse — no improvement
+            if (deduped.length < 2) return product  // still sparse â€” no improvement
 
             return {
               ...product,
@@ -983,7 +990,7 @@ export async function GET(req: NextRequest) {
             }
           })
         }
-      } catch { /* best-effort — never block on cache lookup failure */ }
+      } catch { /* best-effort â€” never block on cache lookup failure */ }
     }
 
     ranked = prioritizePublishReadyProducts(await liveFillPublishReadyProducts(await enrichSparseTopProducts(ranked)))
@@ -994,7 +1001,7 @@ export async function GET(req: NextRequest) {
 
     // For products still sparse after the cache lookup, schedule background enrichment
     // so the NEXT time the user loads products they'll already have full images/features.
-    // Uses after() — runs after response is sent, never delays the user.
+    // Uses after() â€” runs after response is sent, never delays the user.
     const stillSparseAsins = ranked
       .filter(p => (p.images?.length ?? 0) < 2)
       .slice(0, 12)
@@ -1039,7 +1046,7 @@ export async function GET(req: NextRequest) {
   // picks a different top-N from this pool on each call (different seed = different order),
   // so a bigger pool directly means more product variety across requests.
   // When excludeAsins are supplied (refill/rotation), pass them to the DB query so the
-  // source engine itself skips already-listed/excluded items — not just client-side filtering.
+  // source engine itself skips already-listed/excluded items â€” not just client-side filtering.
   // This is the primary mechanism that makes sequential batches genuinely different.
   const sourceEnginePoolLimit = continuousMode ? 800 : 600
   console.info('[product-finder] sourceEngine load', JSON.stringify({
@@ -1062,312 +1069,15 @@ export async function GET(req: NextRequest) {
     targetCount,
     excludeCount: excludeAsins.size,
   }))
-  // Only early-return from source engine when there are clearly enough products AND
-  // either we're not forcing a refresh, OR the pool is large enough to surface variety.
-  // When excludeAsins are present, always go through respondWithProducts so the
-  // exclude-aware seed produces a genuinely fresh ranking.
-  if (
-    sourceEngineAvailable.length >= targetCount &&
-    excludeAsins.size === 0 &&
-    (!forceRefresh || sourceEngineProducts.length > targetCount * 3)
-  ) {
-    return respondWithProducts(sourceEngineProducts, continuousMode ? 'source-engine' : 'source-engine-niche')
-  }
-  if (sourceEngineAvailable.length >= targetCount) {
-    return respondWithProducts(sourceEngineProducts, continuousMode ? 'source-engine-fresh' : 'source-engine-niche-fresh')
-  }
-
-  // ── Check cache ──────────────────────────────────────────────────────────────
-  let cacheRow: { results: Product[]; cached_at: Date; version?: number } | null = null
-  try {
-    const rows = await queryRows<{ results: Product[]; cached_at: Date; version?: number }>`SELECT results, cached_at, version FROM product_cache WHERE niche = ${niche}`
-    if (rows[0]) cacheRow = rows[0] as { results: Product[]; cached_at: Date; version?: number }
-  } catch { /* ignore */ }
-
-  const cacheAge = cacheRow ? Date.now() - new Date(cacheRow.cached_at).getTime() : Infinity
-  const cacheIsFresh = cacheAge < CACHE_TTL && (cacheRow?.version || 1) === CACHE_VERSION
-  const continuousNicheCacheProducts = continuousMode
-    ? await withTimeout(loadContinuousProductsFromNicheCache(16), 750, [])
-    : []
-  const cachedProducts = continuousMode
-    ? [...(cacheRow?.results || []), ...continuousNicheCacheProducts]
-    : (cacheRow?.results || [])
-  const stockedProducts = [...sourceEngineProducts, ...cachedProducts]
-  const stockedAvailable = getAvailableProducts(stockedProducts)
-  if (stockedAvailable.length >= targetCount && (!forceRefresh || stockedProducts.length > targetCount)) {
-    return respondWithProducts(stockedProducts, continuousMode ? 'source-engine-cache' : 'source-engine-cache-niche')
-  }
-  const cachedAvailable = getAvailableProducts(cachedProducts)
-
-  if (continuousMode && cachedAvailable.length >= targetCount && (!forceRefresh || cachedProducts.length > targetCount)) {
-    return respondWithProducts(cachedProducts, forceRefresh ? 'cache-reshuffle' : 'cache')
-  }
-
-  if (continuousMode && cachedAvailable.length >= CONTINUOUS_MIN_FAST_RETURN) {
-    return respondWithProducts(cachedProducts, forceRefresh ? 'cache-reshuffle-partial' : 'cache-partial')
-  }
-
-  if (cacheIsFresh && !forceRefresh) {
-    if (cachedAvailable.length >= targetCount) {
-      return respondWithProducts(cachedProducts, 'cache')
-    }
-    // Cache is fresh but below target. Do not return a tiny niche queue;
-    // keep the request moving through live sourcing and also kick the
-    // background catalog forward so the pool repairs itself for later users.
-    if (cachedAvailable.length > 0 && !continuousMode) {
-      after(async () => {
-        try {
-          const cronSecret = process.env.CRON_SECRET || ''
-          const host = req.nextUrl.origin
-          await fetch(`${host}/api/cron/refresh-products?catalog=1&wait=1&batch=1&niche=${encodeURIComponent(niche)}`, {
-            headers: cronSecret ? { Authorization: `Bearer ${cronSecret}` } : {},
-            signal: AbortSignal.timeout(280000),
-          })
-        } catch { /* background — ignore errors */ }
-      })
-    }
-  }
-
-  // Cache miss — load lightweight DB-only niche weights before live fetch.
-  if (continuousMode) {
-    nicheWeights = await withTimeout(getUserNicheWeights(userId, { includeSoldSignals: false }), 700, new Map<string, number>())
-  }
-
-  // ── Fetch fresh data from StackPilot's own source engine ─────────────────────
-
-  const queryEntries = continuousMode
-    ? buildContinuousQueryEntries(nicheWeights, distributionSeed, sourceNicheQueries)
-    : buildNicheQueryEntries(niche, sourceNicheQueries)
-  const results: Product[] = []
-  const fallbackResults: Product[] = []
-  const seenAsins = new Set<string>()
-
-  const candidateCount = () => results.length + fallbackResults.length
-  const isStockableListing = (amazonPrice: number, ebayPrice: number) => {
-    const metrics = getListingMetrics(amazonPrice, ebayPrice, EBAY_DEFAULT_FEE_RATE)
-    return metrics.profit >= MIN_STOCK_PROFIT && metrics.roi >= MIN_STOCK_ROI && metrics.margin >= MIN_STOCK_MARGIN
-  }
-  const hasStrongDemandSignal = (rating: number, reviewCount: number, salesVolume?: string) => {
-    const sales = parseSales(salesVolume)
-    const ratingOk = rating === 0 || rating >= MIN_PRIMARY_RATING
-    const demandOk = reviewCount === 0 || reviewCount >= MIN_PRIMARY_REVIEW_COUNT || sales >= MIN_PRIMARY_SALES
-    return ratingOk && demandOk
-  }
-  const getRisk = (price: number, roi: number, fallback = false) => {
-    if (price > 150) return 'HIGH'
-    if (price > 60 || roi < 45 || fallback) return 'MEDIUM'
-    return 'LOW'
-  }
-  const addCandidate = (product: Product, primary: boolean) => {
-    if (primary) {
-      results.push(product)
-    } else {
-      fallbackResults.push({ ...product, risk: getRisk(product.amazonPrice, product.roi, true) })
-    }
-  }
-
-  const addScrapedProducts = async (entries: Array<{ query: string; sourceNiche: string }>, queryLimit: number, timeoutMs = 6000) => {
-    const selectedEntries = entries.slice(0, queryLimit)
-    const parallel = continuousMode ? 2 : 4
-    for (let index = 0; index < selectedEntries.length; index += parallel) {
-      if (isOutOfLiveFetchTime() || getAvailableProducts(results).length >= targetCount || candidateCount() >= MAX_POOL_SIZE) break
-      const batch = selectedEntries.slice(index, index + parallel)
-      const settled = await Promise.allSettled(
-        batch.map(async ({ query, sourceNiche }) => ({
-          sourceNiche,
-          products: await scrapeAmazonSearch(query, 1, timeoutMs),
-        }))
-      )
-      for (const outcome of settled) {
-        if (outcome.status !== 'fulfilled') continue
-        const { sourceNiche, products: scraped } = outcome.value
-        for (const p of scraped) {
-          if (isOutOfLiveFetchTime() || getAvailableProducts(results).length >= targetCount || candidateCount() >= MAX_POOL_SIZE) break
-          if (!p.asin || seenAsins.has(p.asin) || shouldBlockProduct({ asin: p.asin, title: p.title })) continue
-          seenAsins.add(p.asin)
-          if (!p.price || p.price <= 0 || p.price > MAX_COST) continue
-          if (!p.title || isRejected(p.title)) continue
-          const { ebayPrice, profit, roi } = calcMetrics(p.price)
-          const healthy = isHealthyListing(p.price, ebayPrice, EBAY_DEFAULT_FEE_RATE)
-          if (p.rating > 0 && p.rating < MIN_ACCEPTABLE_RATING) continue
-          if (!healthy && !isStockableListing(p.price, ebayPrice)) continue
-          const primary = healthy && hasStrongDemandSignal(p.rating, p.reviewCount)
-          const risk = getRisk(p.price, roi, !primary)
-          addCandidate({ asin: p.asin, title: p.title, amazonPrice: p.price, ebayPrice, profit, roi,
-            imageUrl: p.imageUrl, risk, salesVolume: undefined, sourceNiche, _rating: p.rating, _numRatings: p.reviewCount }, primary)
-        }
-      }
-    }
-  }
-
-  const mergeStockedProducts = () => {
-    if (stockedProducts.length === 0) return
-    const seen = new Set(results.map((product) => product.asin.toUpperCase()))
-    const stocked = stockedProducts.filter((product) => {
-      const asin = product.asin.toUpperCase()
-      if (seen.has(asin)) return false
-      seen.add(asin)
-      return true
-    })
-    results.splice(0, results.length, ...rankProducts([...results, ...stocked], false))
-  }
-
-  const mergeFallbackProducts = () => {
-    if (fallbackResults.length === 0 || getAvailableProducts(results).length >= targetCount) return
-    const seen = new Set(results.map((product) => product.asin.toUpperCase()))
-    const fallback = fallbackResults.filter((product) => {
-      const asin = product.asin.toUpperCase()
-      if (seen.has(asin) || shouldBlockProduct(product)) return false
-      seen.add(asin)
-      return true
-    })
-    if (fallback.length === 0) return
-    results.splice(0, results.length, ...rankProducts([...results, ...fallback], false))
-  }
-
-  const saveResultsToCache = async (productsToSave = results) => {
-    if (productsToSave.length === 0) return
-    try {
-      const repriced = productsToSave.map(repriceProduct)
-      await sql`
-        INSERT INTO product_cache (niche, results, version) VALUES (${niche}, ${JSON.stringify(rankProducts(repriced, false))}, ${CACHE_VERSION})
-        ON CONFLICT (niche) DO UPDATE SET results = EXCLUDED.results, version = EXCLUDED.version, cached_at = NOW()
-      `
-    } catch { /* non-fatal */ }
-  }
-
-  const ingestProductsToSourceEngine = (productsToIngest = results, provider = 'finder') =>
-    upsertProductSourceItems(productsToIngest.map((product) => ({
-      ...product,
-      sourceNiche: product.sourceNiche || (continuousMode ? undefined : niche) || undefined,
-      sourceProvider: provider,
-    }))).catch(() => 0)
-
-  const scheduleCacheSave = (productsToSave = results) => {
-    const snapshot = rankProducts([...productsToSave].map(repriceProduct), false)
-    after(async () => {
-      await saveResultsToCache(snapshot)
-      await ingestProductsToSourceEngine(snapshot)
-    })
-  }
-
-  // StackPilot does not depend on RapidAPI for sourcing. The live pass below
-  // uses direct Amazon search scraping and supplements any partial cache.
-
-  // ── Save fresh results to cache ──────────────────────────────────────────────
-  if (getAvailableProducts(results).length < targetCount) {
-    mergeFallbackProducts()
-  }
-
-  if (results.length > 0) {
-    results.splice(0, results.length, ...rankProducts(results, false))
-    if (continuousMode) {
-      // Continuous Listing should return fast; cache writes happen when we return below.
-    } else {
-      const enrichmentCount = targetCount
-
-      const enriched: Array<Product | null> = await Promise.all(
-        results.slice(0, enrichmentCount).map(async (product): Promise<Product | null> => {
-          const validated = await fetchAmazonProductByAsin({
-            asin: product.asin,
-            fallbackImage: product.imageUrl,
-            fallbackTitle: product.title,
-            fallbackPrice: product.amazonPrice,
-            strictAsin: true,
-          }).catch(() => null)
-
-          if (!validated || validated.available !== true) return null
-          const titleScore = getTitleScore(product.title, validated.title)
-          const sameBrand =
-            product.title.split(/\s+/)[0]?.toLowerCase() &&
-            validated.title.split(/\s+/)[0]?.toLowerCase() &&
-            product.title.split(/\s+/)[0].toLowerCase() === validated.title.split(/\s+/)[0].toLowerCase()
-
-          if (titleScore < 0.42 && !sameBrand) {
-            return null
-          }
-
-          const enrichedProduct: Product = {
-            ...product,
-            title: validated.title || product.title,
-            amazonPrice: validated.amazonPrice || product.amazonPrice,
-            imageUrl: validated.imageUrl || product.imageUrl,
-            images: validated.images,
-            features: validated.features,
-            description: validated.description,
-            specs: validated.specs,
-            available: true,
-          }
-          return enrichedProduct
-        })
-      )
-
-      const filteredEnriched = dedupeProducts(enriched.filter((product): product is Product => product !== null))
-      const droppedSourceAsins = new Set(
-        results
-          .slice(0, enrichmentCount)
-          .map((product) => product.asin)
-          .filter((asin) => !filteredEnriched.some((product) => product.asin === asin))
-      )
-      const remainder = results.slice(enrichmentCount).filter((product) => !droppedSourceAsins.has(product.asin))
-      results.splice(0, results.length, ...rankProducts([...filteredEnriched, ...remainder], false))
-
-      await saveResultsToCache()
-      after(() => ingestProductsToSourceEngine([...results]))
-    }
-  }
-
-  // ── Direct Amazon scrape, then fall back to cache ───────────────────────────
-  if (results.length === 0) {
-    mergeStockedProducts()
-    if (continuousMode && getAvailableProducts(results).length > 0) {
-      return respondWithProducts(results, 'cache')
-    }
-
-    // Scrape Amazon search directly (free, no quota). This also supplements
-    // partial caches so niche pages do not get stuck showing only a few items.
-    await addScrapedProducts(queryEntries, continuousMode ? 1 : Math.min(queryEntries.length, 10), continuousMode ? 1800 : 6000)
-    mergeFallbackProducts()
-
-    if (results.length > 0) {
-      results.splice(0, results.length, ...rankProducts(results, false))
-      if (continuousMode) scheduleCacheSave()
-      else {
-        await saveResultsToCache()
-        after(() => ingestProductsToSourceEngine([...results]))
-      }
-      return respondWithProducts(results, 'scrape')
-    }
-
-    return apiError('Product search is temporarily unavailable. Try again in a few minutes.', {
-      status: 503,
-      code: 'PRODUCT_SEARCH_UNAVAILABLE',
-      details: { niche, results: [], count: 0 },
-    })
-  }
-
-  if (getAvailableProducts(results).length < targetCount) {
-    mergeStockedProducts()
-  }
-
-  if (continuousMode && getAvailableProducts(results).length === 0 && !isOutOfLiveFetchTime()) {
-    await addScrapedProducts(queryEntries, 1, 1800)
-    mergeFallbackProducts()
-  }
-
-  if (continuousMode && getAvailableProducts(results).length > 0) {
-    results.splice(0, results.length, ...rankProducts(results, false))
-    scheduleCacheSave()
-    return respondWithProducts(results, getAvailableProducts(results).length >= targetCount ? 'live' : 'live-partial')
-  }
-
-  if (!continuousMode && getAvailableProducts(results).length < targetCount) {
-    await addScrapedProducts(queryEntries, Math.min(queryEntries.length, 10), 6000)
-    mergeFallbackProducts()
-    results.splice(0, results.length, ...rankProducts(results, false))
-    await saveResultsToCache()
-    after(() => ingestProductsToSourceEngine([...results]))
-  }
-
-  return respondWithProducts(results, 'live')
+  // ALWAYS return the source engine result. The pool is the source of truth â€” it's
+  // continuously enriched by the background cron + admin /api/admin/enrich-pool endpoint.
+  // The dashboard is a fast READ of pre-vetted, list-ready products. If a niche has
+  // fewer than 30 enriched products, the dashboard correctly shows that exact number
+  // (not 30) â€” the fix is to enrich more in the background, NOT to scrape Amazon live
+  // during the user's request (which was making the dashboard take 10-30s).
+  //
+  // Old behavior fell through to a slow fallback path with synchronous Amazon scrapes
+  // when sourceEngineAvailable.length < targetCount. Now we short-circuit here.
+  return respondWithProducts(sourceEngineProducts, continuousMode ? 'source-engine' : 'source-engine-niche')
 }
+
