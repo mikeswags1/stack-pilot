@@ -1,10 +1,28 @@
 import { queryRows, sql } from '@/lib/db'
-import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getRecommendedEbayPrice } from '@/lib/listing-pricing'
+import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getRecommendedEbayPrice, getTargetRoi } from '@/lib/listing-pricing'
 import { getListingPolicyFlags, hasBlockedListingPolicyFlag } from '@/lib/listing-policy'
 import { scrapeAmazonProduct } from '@/lib/amazon-scrape'
 import { getRapidApiKey } from '@/lib/rapidapi'
-import { isWeakListingTitle } from '@/lib/listing-quality'
+import { getListingTitleQuality, isWeakListingTitle } from '@/lib/listing-quality'
 import { getSourcingTrendMultiplier, getSourcingTrendSignals } from '@/lib/source-niches'
+
+/** Minimum master score for a product to enter the active pool. Below this = auto-reject. */
+const MIN_MASTER_SCORE = 38
+
+export type ProductScores = {
+  profitScore: number       // 0–100  (20% weight)
+  roiScore: number          // 0–100  (15% weight)
+  demandScore: number       // 0–100  (18% weight)
+  reviewScore: number       // 0–100  (8%  weight)
+  competitionScore: number  // 0–100  (12% weight) — higher = less competition = better
+  imageScore: number        // 0–100  (7%  weight)
+  titleScore: number        // 0–100  (5%  weight)
+  riskScore: number         // 0–100  (8%  weight) — inverted: higher = safer
+  reliabilityScore: number  // 0–100  (4%  weight)
+  opportunityScore: number  // 0–100  (3%  weight) — demand gap index
+  masterScore: number       // 0–100  weighted composite — primary pool ranking signal
+  legacyScore: number       // backward-compat: existing unbounded total_score
+}
 
 export type SourceEngineProduct = {
   asin: string
@@ -23,6 +41,7 @@ export type SourceEngineProduct = {
   sourceNiche?: string
   sourceQuality?: string
   qualityScore?: number
+  masterScore?: number
   available?: boolean
   _rating?: number
   _numRatings?: number
@@ -103,70 +122,149 @@ function getRisk(price: number, roi: number) {
   return 'LOW'
 }
 
-function scoreProduct(product: SourceEngineProduct) {
+/** Compute all 10 sub-scores plus the master score (0–100) and legacy total_score. */
+export function computeProductScores(product: SourceEngineProduct): ProductScores {
   const rating = product._rating && product._rating > 0 ? product._rating : 3.8
   const reviews = product._numRatings || 0
   const sales = parseSales(product.salesVolume)
   const margin = product.ebayPrice > 0 ? (product.profit / product.ebayPrice) * 100 : 0
   const imageCount = Math.max(product.images?.length || 0, product.imageUrl ? 1 : 0)
+  const bsr = product.bestSellerRank
+  const competitors = product.ebayCompetitorCount
   const trendSignals = getSourcingTrendSignals({
     title: product.title,
     sourceNiche: product.sourceNiche,
     price: product.amazonPrice,
     imageCount,
   })
-  const demandScore =
-    Math.log10(sales + 10) * 16 +
-    Math.log10(reviews + 25) * 15 +
-    clamp(rating / 5, 0.65, 1.05) * 19
-  const profitScore = clamp(product.profit, 0, 120) * 1.02
-  const roiScore = clamp(product.roi / 65, 0.38, 1.85) * 26
-  const marginScore = clamp(margin / 30, 0.38, 1.55) * 19
-  const reviewTrust = reviews >= 80 ? 1.08 : reviews >= 35 ? 1.04 : reviews < 8 ? 0.92 : 1
-  const priceSweetSpot = product.amazonPrice >= 12 && product.amazonPrice <= 120 ? 18 : product.amazonPrice > 180 ? 7 : 12
-  const riskPenalty = product.risk === 'HIGH' ? 0.72 : product.risk === 'MEDIUM' ? 0.9 : 1
-  const imageBoost = imageCount >= 4 ? 12 : imageCount >= 2 ? 8 : product.imageUrl ? 3 : -10
-  const logisticsBoost = trendSignals.lightweight ? 8 : trendSignals.highReturnRisk ? -18 : 0
+
+  // 1. Profit Score (0–100) — price-tier adjusted
+  const targetProfit = Math.max(8, product.amazonPrice * 0.22)
+  const profitRaw = clamp((product.profit - 3) / Math.max(targetProfit - 3, 5), 0, 1.5) * 65
+  const profitBonus = product.profit >= 20 ? 20 : product.profit >= 14 ? 12 : product.profit >= 9 ? 5 : 0
+  const profitScore = clamp(profitRaw + profitBonus, 0, 100)
+
+  // 2. ROI Score (0–100) — target ROI is price-tier adjusted
+  const targetRoi = getTargetRoi(product.amazonPrice, { risk: product.risk })
+  const roiScore = clamp(product.roi / Math.max(targetRoi, 20), 0, 2.2) * 45
+
+  // 3. Demand Score (0–100) — BSR + reviews + rating + sales velocity
+  const bsrSignal = !bsr ? 15 : bsr <= 500 ? 35 : bsr <= 2000 ? 28 : bsr <= 10000 ? 20 : bsr <= 50000 ? 12 : 5
+  const reviewSignal = Math.log10(reviews + 10) * 22
+  const ratingSignal = clamp((rating - 3.0) / 2.0, 0, 1) * 18
+  const salesSignal = Math.log10(sales + 10) * 15
+  const demandScore = clamp(bsrSignal + reviewSignal + ratingSignal + salesSignal, 0, 100)
+
+  // 4. Review Score (0–100) — count + rating
+  const reviewCountScore = clamp(reviews / 500, 0, 1) * 50
+  const reviewRatingScore = clamp((rating - 3.0) / 2.0, 0, 1) * 50
+  const reviewScore = clamp(reviewCountScore + reviewRatingScore, 0, 100)
+
+  // 5. Competition Score (0–100) — higher = less eBay competition = better
+  const competitionScore = competitors === undefined || competitors < 0 ? 50
+    : competitors <= 5 ? 95
+    : competitors <= 15 ? 80
+    : competitors <= 40 ? 60
+    : competitors <= 100 ? 35
+    : 15
+
+  // 6. Image Quality Score (0–100)
+  const imageScore = imageCount >= 6 ? 100 : imageCount >= 4 ? 85 : imageCount >= 3 ? 70
+    : imageCount >= 2 ? 50 : imageCount >= 1 ? 20 : 0
+
+  // 7. Title Quality Score (0–100)
+  const tq = getListingTitleQuality(product.title)
+  const titleScore = tq.weak ? 0 : clamp(tq.score / 2, 0, 100)
+
+  // 8. Risk Score (0–100, inverted — higher = safer)
+  const baseRisk = product.risk === 'LOW' ? 80 : product.risk === 'MEDIUM' ? 50 : 15
+  const logisticsPenalty = trendSignals.highReturnRisk ? -20 : 0
+  const pricePenalty = product.amazonPrice > 100 ? -10 : 0
+  const riskScore = clamp(baseRisk + logisticsPenalty + pricePenalty, 0, 100)
+
+  // 9. Source Reliability Score (0–100) — data freshness + completeness
+  const features = product.features || []
+  const specs = product.specs || []
+  const description = product.description || ''
+  const reliabilityScore = clamp(
+    30 +
+    (imageCount >= 2 ? 20 : product.imageUrl ? 10 : 0) +
+    (features.length >= 3 ? 12 : 0) +
+    (specs.length >= 2 ? 8 : 0) +
+    (description.length >= 100 ? 8 : 0) +
+    (reviews >= 25 ? 12 : reviews >= 10 ? 6 : 0) +
+    (rating >= 4.0 ? 10 : 0),
+    0, 100,
+  )
+
+  // 10. Opportunity Score (0–100) — demand gap: strong Amazon demand + low eBay supply
+  const demandSignal = !bsr ? 0.3 : bsr <= 10000 ? 1.0 : bsr <= 50000 ? 0.6 : 0.25
+  const supplySignal = competitors === undefined || competitors < 0 ? 0.5
+    : competitors <= 10 ? 1.0 : competitors <= 30 ? 0.7 : competitors <= 75 ? 0.4 : 0.15
+  const opportunityScore = clamp(demandSignal * supplySignal * 100, 0, 100)
+
+  // Master Score — weighted composite (0–100)
+  const masterScore = clamp(
+    profitScore * 0.20 +
+    roiScore * 0.15 +
+    demandScore * 0.18 +
+    reviewScore * 0.08 +
+    competitionScore * 0.12 +
+    imageScore * 0.07 +
+    titleScore * 0.05 +
+    riskScore * 0.08 +
+    reliabilityScore * 0.04 +
+    opportunityScore * 0.03,
+    0, 100,
+  )
+
+  // Legacy total_score — backward-compat unbounded formula (kept for existing ORDER BY sorts)
   const trendMultiplier = getSourcingTrendMultiplier({
     title: product.title,
     sourceNiche: product.sourceNiche,
     price: product.amazonPrice,
     imageCount,
   })
-
-  // BSR multiplier — only applied when BSR is known from product page enrichment
-  const bsr = product.bestSellerRank
-  const bsrMultiplier = bsr
-    ? bsr <= 500 ? 1.25
-    : bsr <= 2000 ? 1.15
-    : bsr <= 10000 ? 1.07
-    : bsr <= 50000 ? 1.0
-    : 0.91
-    : 1.0
-
-  // eBay competition penalty — more sellers = lower priority
-  const competitors = product.ebayCompetitorCount
+  const reviewTrust = reviews >= 80 ? 1.08 : reviews >= 35 ? 1.04 : reviews < 8 ? 0.92 : 1
+  const priceSweetSpot = product.amazonPrice >= 12 && product.amazonPrice <= 120 ? 18 : product.amazonPrice > 180 ? 7 : 12
+  const riskPenalty = product.risk === 'HIGH' ? 0.72 : product.risk === 'MEDIUM' ? 0.9 : 1
+  const imageBoost = imageCount >= 4 ? 12 : imageCount >= 2 ? 8 : product.imageUrl ? 3 : -10
+  const logisticsBoost = trendSignals.lightweight ? 8 : trendSignals.highReturnRisk ? -18 : 0
+  const bsrMultiplier = bsr ? bsr <= 500 ? 1.25 : bsr <= 2000 ? 1.15 : bsr <= 10000 ? 1.07 : bsr <= 50000 ? 1.0 : 0.91 : 1.0
   const competitionMultiplier = competitors === undefined || competitors < 0 ? 1.0
-    : competitors <= 10 ? 1.05
-    : competitors <= 30 ? 0.97
-    : competitors <= 75 ? 0.88
-    : competitors <= 150 ? 0.76
-    : 0.60
-
-  // Outcome feedback — lifted from auto_listing_queue history
+    : competitors <= 10 ? 1.05 : competitors <= 30 ? 0.97 : competitors <= 75 ? 0.88
+    : competitors <= 150 ? 0.76 : 0.60
   const outcomeMult = Number.isFinite(product.listingOutcomeScore) && (product.listingOutcomeScore ?? 0) > 0
     ? clamp(product.listingOutcomeScore!, 0.60, 1.25)
     : 1.0
+  const demandLegacy = Math.log10(sales + 10) * 16 + Math.log10(reviews + 25) * 15 + clamp(rating / 5, 0.65, 1.05) * 19
+  const profitLegacy = clamp(product.profit, 0, 120) * 1.02
+  const roiLegacy = clamp(product.roi / 65, 0.38, 1.85) * 26
+  const marginLegacy = clamp(margin / 30, 0.38, 1.55) * 19
+  const legacyTotal =
+    (profitLegacy + roiLegacy + marginLegacy + demandLegacy + priceSweetSpot + imageBoost + logisticsBoost) *
+    riskPenalty * reviewTrust * trendMultiplier * bsrMultiplier * competitionMultiplier * outcomeMult
+  const legacyScore = Number.isFinite(legacyTotal) ? Number(legacyTotal.toFixed(2)) : 0
 
-  const total =
-    (profitScore + roiScore + marginScore + demandScore + priceSweetSpot + imageBoost + logisticsBoost) *
-    riskPenalty *
-    reviewTrust *
-    trendMultiplier *
-    bsrMultiplier *
-    competitionMultiplier *
-    outcomeMult
-  return Number.isFinite(total) ? Number(total.toFixed(2)) : 0
+  return {
+    profitScore: Math.round(profitScore),
+    roiScore: Math.round(clamp(roiScore, 0, 100)),
+    demandScore: Math.round(demandScore),
+    reviewScore: Math.round(reviewScore),
+    competitionScore: Math.round(competitionScore),
+    imageScore: Math.round(imageScore),
+    titleScore: Math.round(clamp(titleScore, 0, 100)),
+    riskScore: Math.round(riskScore),
+    reliabilityScore: Math.round(reliabilityScore),
+    opportunityScore: Math.round(opportunityScore),
+    masterScore: Math.round(masterScore * 10) / 10,
+    legacyScore,
+  }
+}
+
+/** Backward-compat wrapper — returns legacy total_score used in existing ORDER BY clauses. */
+function scoreProduct(product: SourceEngineProduct): number {
+  return computeProductScores(product).legacyScore
 }
 
 function normalizeProduct(input: SourceProductInput): (SourceEngineProduct & { sourceProvider: string; sourceQuery?: string; raw: Record<string, unknown> }) | null {
@@ -209,7 +307,16 @@ function normalizeProduct(input: SourceProductInput): (SourceEngineProduct & { s
   })
   if (hasBlockedListingPolicyFlag(policyFlags)) return null
 
-  product.qualityScore = scoreProduct(product)
+  const scores = computeProductScores(product)
+  product.qualityScore = scores.legacyScore
+  product.masterScore = scores.masterScore
+
+  // Apply quality gate: products below the master score floor are auto-rejected.
+  // They still enter the DB (as 'reject') so we can track why the pool is thin.
+  if (scores.masterScore < MIN_MASTER_SCORE) {
+    product.sourceQuality = 'reject'
+  }
+
   return product
 }
 
@@ -309,6 +416,7 @@ export async function ensureProductSourceTables() {
   await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS ebay_competitor_count INTEGER`.catch(() => {})
   await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS listing_outcome_score NUMERIC(5,3) NOT NULL DEFAULT 1.000`.catch(() => {})
   await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS best_seller_rank INTEGER`.catch(() => {})
+  await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS master_score NUMERIC(5,2)`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS product_source_items_intelligence_idx ON product_source_items (intelligence_score DESC NULLS LAST)`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS product_source_items_quality_idx ON product_source_items (active, source_quality, intelligence_score DESC NULLS LAST)`.catch(() => {})
 }
@@ -346,6 +454,8 @@ export async function upsertProductSourceItems(inputs: SourceProductInput[]) {
     rating: product._rating || null,
     review_count: product._numRatings || null,
     total_score: product.qualityScore || 0,
+    master_score: product.masterScore ?? null,
+    source_quality: product.sourceQuality === 'reject' ? 'reject' : 'candidate',
     raw: {
       images: product.images || [],
       features: product.features || [],
@@ -367,6 +477,8 @@ export async function upsertProductSourceItems(inputs: SourceProductInput[]) {
           title TEXT,
           source_niche TEXT,
           source_provider TEXT,
+          master_score NUMERIC,
+          source_quality TEXT,
           source_query TEXT,
           amazon_price NUMERIC,
           ebay_price NUMERIC,
@@ -383,11 +495,13 @@ export async function upsertProductSourceItems(inputs: SourceProductInput[]) {
       )
       INSERT INTO product_source_items (
         asin, title, source_niche, source_provider, source_query, amazon_price, ebay_price,
-        profit, roi, image_url, risk, sales_volume, rating, review_count, total_score, raw
+        profit, roi, image_url, risk, sales_volume, rating, review_count, total_score,
+        master_score, source_quality, raw
       )
       SELECT
         asin, title, source_niche, source_provider, source_query, amazon_price, ebay_price,
-        profit, roi, image_url, risk, sales_volume, rating, review_count, total_score, raw
+        profit, roi, image_url, risk, sales_volume, rating, review_count, total_score,
+        master_score, source_quality, raw
       FROM input
       ON CONFLICT (asin) DO UPDATE SET
         title = EXCLUDED.title,
@@ -404,9 +518,16 @@ export async function upsertProductSourceItems(inputs: SourceProductInput[]) {
         rating = COALESCE(EXCLUDED.rating, product_source_items.rating),
         review_count = COALESCE(EXCLUDED.review_count, product_source_items.review_count),
         total_score = EXCLUDED.total_score,
+        master_score = COALESCE(EXCLUDED.master_score, product_source_items.master_score),
         raw = product_source_items.raw || EXCLUDED.raw,
+        source_quality = CASE
+          WHEN product_source_items.source_quality = 'reject' THEN 'reject'
+          WHEN EXCLUDED.source_quality = 'reject' THEN 'reject'
+          ELSE COALESCE(product_source_items.source_quality, 'candidate')
+        END,
         active = CASE
           WHEN product_source_items.source_quality = 'reject' THEN FALSE
+          WHEN EXCLUDED.source_quality = 'reject' THEN FALSE
           ELSE TRUE
         END,
         last_seen_at = NOW(),
@@ -626,8 +747,8 @@ export async function loadProductSourceProducts(options: { niche?: string | null
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
                 AND psi.source_niche = ${niche}
-                AND psi.profit >= 3
-                AND psi.roi >= 25
+                AND psi.profit >= 7
+                AND psi.roi >= 30
                 AND psi.risk <> 'HIGH'
                 AND psi.image_url IS NOT NULL
                 AND psi.image_url <> ''
@@ -652,8 +773,8 @@ export async function loadProductSourceProducts(options: { niche?: string | null
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
                 AND psi.source_niche = ${niche}
-                AND psi.profit >= 3
-                AND psi.roi >= 25
+                AND psi.profit >= 7
+                AND psi.roi >= 30
                 AND psi.risk <> 'HIGH'
                 AND psi.image_url IS NOT NULL
                 AND psi.image_url <> ''
@@ -677,8 +798,8 @@ export async function loadProductSourceProducts(options: { niche?: string | null
               FROM product_source_items psi
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
-                AND psi.profit >= 3
-                AND psi.roi >= 25
+                AND psi.profit >= 7
+                AND psi.roi >= 30
                 AND psi.risk <> 'HIGH'
                 AND psi.image_url IS NOT NULL
                 AND psi.image_url <> ''
@@ -702,8 +823,8 @@ export async function loadProductSourceProducts(options: { niche?: string | null
               FROM product_source_items psi
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
-                AND psi.profit >= 3
-                AND psi.roi >= 25
+                AND psi.profit >= 7
+                AND psi.roi >= 30
                 AND psi.risk <> 'HIGH'
                 AND psi.image_url IS NOT NULL
                 AND psi.image_url <> ''

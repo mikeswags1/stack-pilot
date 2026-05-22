@@ -14,7 +14,7 @@ import { getSeasonalQueryExpansions, getSourcingTrendMultiplier, loadActiveCusto
 
 export const maxDuration = 60
 
-const MAX_COST   = 300
+const MAX_COST   = 180  // tightened from 300 — products >$180 have thin dropship margins and high return risk
 const CACHE_TTL  = 23 * 60 * 60 * 1000 // 23 hours — refresh once per day
 const CACHE_VERSION = 6
 const TARGET_STOCK = 30
@@ -24,12 +24,12 @@ const CONTINUOUS_QUERY_LIMIT = 28
 const CONTINUOUS_LIVE_FETCH_BUDGET_MS = 4_500
 const NICHE_LIVE_FETCH_BUDGET_MS = 34_000
 const CONTINUOUS_MIN_FAST_RETURN = 24
-const MIN_STOCK_PROFIT = 8
-const MIN_STOCK_ROI = 30
+const MIN_STOCK_PROFIT = 9   // raised from 8 — $8 profit is marginal after real shipping costs
+const MIN_STOCK_ROI = 32     // raised from 30 — 32% ROI filters out the bottom quartile
 const MIN_STOCK_MARGIN = 16
 const MIN_PRIMARY_RATING = 3.8
-const MIN_ACCEPTABLE_RATING = 3.5
-const MIN_PRIMARY_REVIEW_COUNT = 12
+const MIN_ACCEPTABLE_RATING = 3.6  // raised from 3.5 — poor-rated products generate returns
+const MIN_PRIMARY_REVIEW_COUNT = 20 // raised from 12 — products with <20 reviews have unproven demand
 const MIN_PRIMARY_SALES = 20
 
 const REJECT_KEYWORDS = [

@@ -1157,10 +1157,10 @@ export async function GET(req: NextRequest) {
     report.sourceProducts = await rebuildProductSourceFromCache()
     report.deactivatedUnavailableSources = await deactivateUnavailableProductSourcesFromCache().catch(() => 0)
     report.continuousProducts = await refreshContinuousCache()
-    // Pre-enrich catalog-crawl products that lack amazon_product_cache entries.
-    // This ensures continuous-listing products have full images/features/description
-    // before users try to bulk-list them. Top-scored 40 unenriched products per run.
-    report.warmCache = await warmAmazonProductCache(40).catch(() => ({ warmed: 0, failed: 0 }))
+    // Pre-enrich pool products that lack amazon_product_cache entries.
+    // Running 60 per 15-min cycle = up to 5,760 enrichments/day — clears the
+    // 1-image backlog far faster than the old cap of 40.
+    report.warmCache = await warmAmazonProductCache(60).catch(() => ({ warmed: 0, failed: 0 }))
     report.closedUnavailableLocalOnlyListings = await closeUnavailableLocalOnlyListings().catch(() => 0)
     report.unavailableSync = await syncUnavailableListings().catch(() => 'error')
     report.amazonListingAudit = await auditActiveAmazonListings(requestedAuditLimit).catch(() => 'error')
@@ -1354,7 +1354,7 @@ export async function GET(req: NextRequest) {
     report.continuousProducts = await refreshContinuousCache()
     report.priceRefresh = await refreshProductSourcePrices({ limit: 60, staleDays: 7 }).catch(() => ({}))
     report.repriced = await repriceProductSourceItems().catch(() => 0)
-    report.warmCache = await warmAmazonProductCache(20).catch(() => ({ warmed: 0, failed: 0 }))
+    report.warmCache = await warmAmazonProductCache(40).catch(() => ({ warmed: 0, failed: 0 }))
     report.closedUnavailableLocalOnlyListings = await closeUnavailableLocalOnlyListings().catch(() => 0)
     try { report.unavailableSync = await syncUnavailableListings() } catch { report.unavailableSync = 'error' }
     try { report.amazonListingAudit = await auditActiveAmazonListings(requestedAuditLimit) } catch { report.amazonListingAudit = 'error' }
@@ -1367,7 +1367,7 @@ export async function GET(req: NextRequest) {
     if (backgroundCatalog) {
       await repriceProductSourceItems().catch(() => 0)
     }
-    await warmAmazonProductCache(20).catch(() => {})
+    await warmAmazonProductCache(40).catch(() => {})
     await closeUnavailableLocalOnlyListings().catch(() => {})
     await syncUnavailableListings().catch(() => {})
     await auditActiveAmazonListings(60).catch(() => {})
