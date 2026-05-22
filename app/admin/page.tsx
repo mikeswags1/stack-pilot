@@ -415,6 +415,9 @@ export default function AdminPage() {
   const [nicheForm, setNicheForm] = useState({ name: '', queries: '', notes: '' })
   const [nicheAction, setNicheAction] = useState<string | null>(null)
   const [poolStatus, setPoolStatus] = useState<{ totalPool: number; totalAlreadyListed: number; totalTrulyValid: number; validByNiche: Array<{ niche: string | null; validCount: number }> } | null>(null)
+  const [lowImageState, setLowImageState] = useState<'idle' | 'previewing' | 'confirm' | 'running' | 'done' | 'error'>('idle')
+  const [lowImagePreview, setLowImagePreview] = useState<{ count: number; listings: Array<{ ebayListingId: string; asin: string; title: string }> } | null>(null)
+  const [lowImageMsg, setLowImageMsg] = useState('')
 
   const loadAdmin = useCallback(async () => {
     setError(null)
@@ -478,6 +481,38 @@ export default function AdminPage() {
         tone: 'error',
         message: err instanceof Error ? err.message : `${label} failed.`,
       })
+    }
+  }
+
+  const previewLowImageListings = async () => {
+    setLowImageState('previewing')
+    setLowImageMsg('Checking for 1-image listings...')
+    try {
+      const data = await readJson(await fetch('/api/admin/end-low-image-listings'))
+      setLowImagePreview({ count: data.count ?? 0, listings: data.listings ?? [] })
+      setLowImageMsg(data.message || '')
+      setLowImageState(data.count > 0 ? 'confirm' : 'done')
+    } catch (err) {
+      setLowImageState('error')
+      setLowImageMsg(err instanceof Error ? err.message : 'Preview failed.')
+    }
+  }
+
+  const confirmEndLowImageListings = async () => {
+    setLowImageState('running')
+    setLowImageMsg(`Ending ${lowImagePreview?.count ?? 0} listings on eBay...`)
+    try {
+      const data = await readJson(await fetch('/api/admin/end-low-image-listings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed: true }),
+      }))
+      setLowImageMsg(data.message || 'Done.')
+      setLowImageState('done')
+      await loadAdmin()
+    } catch (err) {
+      setLowImageState('error')
+      setLowImageMsg(err instanceof Error ? err.message : 'Failed to end listings.')
     }
   }
 
@@ -943,6 +978,62 @@ export default function AdminPage() {
                     <div style={{ fontSize: '11px', color: 'var(--muted)' }}>quality flags</div>
                   </div>
                 </div>
+              </div>
+            )}
+            {/* End 1-image listings tool */}
+            {listingSummary.lowImageActive > 0 && (
+              <div style={{ marginTop: '14px', padding: '12px 14px', background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '8px' }}>
+                <div style={{ fontWeight: 700, fontSize: '13px', marginBottom: '4px', color: 'var(--red)' }}>
+                  {formatNumber(listingSummary.lowImageActive)} active listing{listingSummary.lowImageActive !== 1 ? 's' : ''} with only 1 image
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '10px' }}>
+                  These listings reduce buyer trust. End them on eBay so the pool can relist with 2+ images.
+                </div>
+
+                {lowImageState === 'idle' && (
+                  <button className="btn btn-solid btn-sm" style={{ background: 'var(--red)', borderColor: 'var(--red)' }} onClick={previewLowImageListings}>
+                    Preview &amp; end 1-image listings
+                  </button>
+                )}
+                {lowImageState === 'previewing' && (
+                  <div style={{ fontSize: '12px', color: 'var(--muted)' }}>Checking eBay...</div>
+                )}
+                {lowImageState === 'confirm' && lowImagePreview && (
+                  <div>
+                    <div style={{ fontSize: '12px', marginBottom: '8px' }}>
+                      <strong style={{ color: 'var(--red)' }}>{lowImagePreview.count} listing{lowImagePreview.count !== 1 ? 's' : ''} will be ended on eBay.</strong>
+                      {' '}This cannot be undone — they will be removed from your eBay store immediately.
+                    </div>
+                    {lowImagePreview.listings.length > 0 && (
+                      <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '10px', maxHeight: '100px', overflowY: 'auto' }}>
+                        {lowImagePreview.listings.map((l) => (
+                          <div key={l.ebayListingId} style={{ marginBottom: '2px' }}>
+                            {l.title.length > 60 ? `${l.title.slice(0, 57)}...` : l.title}
+                            {' '}
+                            <a href={`https://www.ebay.com/itm/${l.ebayListingId}`} target="_blank" rel="noreferrer" style={{ color: 'var(--gold)' }}>↗</a>
+                          </div>
+                        ))}
+                        {lowImagePreview.count > lowImagePreview.listings.length && (
+                          <div style={{ color: 'var(--muted)', fontStyle: 'italic' }}>...and {lowImagePreview.count - lowImagePreview.listings.length} more</div>
+                        )}
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button className="btn btn-solid btn-sm" style={{ background: 'var(--red)', borderColor: 'var(--red)' }} onClick={confirmEndLowImageListings}>
+                        Yes — end {lowImagePreview.count} listing{lowImagePreview.count !== 1 ? 's' : ''} on eBay
+                      </button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => { setLowImageState('idle'); setLowImagePreview(null); setLowImageMsg('') }}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {lowImageState === 'running' && (
+                  <div style={{ fontSize: '12px', color: 'var(--muted)' }}>Ending listings on eBay... this may take a minute.</div>
+                )}
+                {(lowImageState === 'done' || lowImageState === 'error') && lowImageMsg && (
+                  <div style={{ fontSize: '12px', color: lowImageState === 'error' ? 'var(--red)' : 'var(--green)', fontWeight: 600 }}>{lowImageMsg}</div>
+                )}
               </div>
             )}
             <div className="admin-subtle-line" style={{ marginTop: '10px' }}>
