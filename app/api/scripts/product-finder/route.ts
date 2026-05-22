@@ -734,11 +734,10 @@ export async function GET(req: NextRequest) {
   const isPublishReadyProduct = (product: Product) =>
     !shouldBlockProduct(product) &&
     product.available === true &&
-    // Aligned with list-product endpoint's MIN_LISTING_IMAGES = 1. Products with only
-    // the search-result image (image_url, no cached gallery yet) still publish — the
-    // listing endpoint pulls the full gallery on demand. Previously this gate of >=2
-    // was filtering out 97% of the pool because cache enrichment lags behind discovery.
-    getProductImageCount(product) >= 1 &&
+    // Per user directive: listings must have >= 2 real product images. Single-image
+    // listings look unprofessional and convert poorly. If list-ready counts feel low,
+    // the fix is to enrich the pool faster (warmAmazonProductCache), NOT lower this gate.
+    getProductImageCount(product) >= 2 &&
     product.profit >= MIN_STOCK_PROFIT &&
     product.roi >= MIN_STOCK_ROI &&
     product.risk !== 'HIGH' &&
