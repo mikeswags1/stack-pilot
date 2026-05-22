@@ -16,7 +16,8 @@ _Clear this section when done._
 
 | Agent | File(s) | What | Started |
 |-------|---------|------|---------|
-| — | — | — | — |
+| Mike + Claude | Vercel env vars | **Enabling RapidAPI Real-Time Amazon Data (Pro $25/mo)** as primary Amazon PDP enrichment source. Adding `RAPIDAPI_KEY` + `ENABLE_RAPIDAPI_FALLBACK=1`. Code path already exists in `lib/amazon-product.ts::fetchProductDetailsFromApi`. Once live, will trigger `/api/admin/enrich-pool` in a loop to enrich the ~5,748 unenriched products currently in the active pool. | 2026-05-22 |
+| Mike | Amazon Associates enrollment | **Long-term goal: replace RapidAPI with free Amazon PA-API 5.0.** Mike enrolling in Amazon Associates program in parallel. Requires 3 qualifying affiliate sales within 180 days to gain PA-API access (2-6 week realistic wait). Once approved, switch primary enrichment tier to PA-API and either cancel or downgrade RapidAPI. PA-API integration code NOT YET written — todo for whichever agent picks this up when PA-API access is granted. | 2026-05-22 |
 
 ---
 
