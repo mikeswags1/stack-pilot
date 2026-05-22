@@ -571,6 +571,101 @@ export async function rebuildProductSourceFromCache(limit = 250) {
   return upsertProductSourceItems(products)
 }
 
+/**
+ * Recompute master_score / intelligence_score for active pool rows that are unscored
+ * (master_score IS NULL) or below floor (< MIN_MASTER_SCORE). Uses the same
+ * computeProductScores logic the upsert path runs but skips the heavy upsert side-effects
+ * (policy checks, image validation) so it can sweep thousands of rows quickly.
+ *
+ * Targets the 'silent failure' case where rows entered the pool before scoring was
+ * deployed, or where a scoring run produced NaN/null. Without this backfill the
+ * dashboard sort `ORDER BY intelligence_score DESC NULLS LAST` pushes unscored rows
+ * to the bottom but still surfaces them when supply is thin.
+ */
+export async function backfillProductScores(options: { limit?: number; onlyUnscored?: boolean } = {}) {
+  await ensureProductSourceTables()
+  const limit = Math.max(1, Math.min(Math.floor(options.limit || 5000), 10000))
+  const onlyUnscored = options.onlyUnscored !== false
+
+  const rows = onlyUnscored
+    ? await queryRows<ProductSourceRow & { master_score: number | null }>`
+        SELECT psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price,
+               psi.profit, psi.roi, psi.image_url, psi.risk, psi.sales_volume, psi.rating,
+               psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
+               psi.master_score
+        FROM product_source_items psi
+        WHERE psi.active = TRUE
+          AND (psi.master_score IS NULL OR psi.master_score < ${MIN_MASTER_SCORE})
+        ORDER BY psi.last_seen_at DESC
+        LIMIT ${limit}
+      `.catch(() => [])
+    : await queryRows<ProductSourceRow & { master_score: number | null }>`
+        SELECT psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price,
+               psi.profit, psi.roi, psi.image_url, psi.risk, psi.sales_volume, psi.rating,
+               psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
+               psi.master_score
+        FROM product_source_items psi
+        WHERE psi.active = TRUE
+        ORDER BY psi.last_seen_at DESC
+        LIMIT ${limit}
+      `.catch(() => [])
+
+  let updated = 0, skipped = 0, deactivated = 0
+
+  for (const row of rows) {
+    const raw = row.raw || {}
+    const product: SourceEngineProduct = {
+      asin: row.asin,
+      title: row.title,
+      amazonPrice: parseNumber(row.amazon_price),
+      ebayPrice: parseNumber(row.ebay_price),
+      profit: parseNumber(row.profit),
+      roi: parseNumber(row.roi),
+      imageUrl: row.image_url || undefined,
+      images: Array.isArray(raw.images) ? raw.images as string[] : undefined,
+      features: Array.isArray(raw.features) ? raw.features as string[] : undefined,
+      description: typeof raw.description === 'string' ? raw.description : undefined,
+      specs: Array.isArray(raw.specs) ? raw.specs as Array<[string, string]> : undefined,
+      sourceNiche: row.source_niche || undefined,
+      sourceQuality: row.source_quality || undefined,
+      salesVolume: row.sales_volume || undefined,
+      risk: row.risk || 'MEDIUM',
+      _rating: parseNumber(row.rating),
+      _numRatings: Math.round(parseNumber(row.review_count)),
+    }
+
+    const scores = computeProductScores(product)
+    if (!Number.isFinite(scores.masterScore)) { skipped++; continue }
+
+    // Below floor → deactivate so the pool stays clean. This is the same auto-reject
+    // logic upsertProductSourceItems applies on insert.
+    if (scores.masterScore < MIN_MASTER_SCORE) {
+      await sql`
+        UPDATE product_source_items
+        SET active = FALSE,
+            source_quality = 'reject',
+            master_score = ${scores.masterScore},
+            intelligence_score = ${scores.legacyScore},
+            last_intelligence_at = NOW()
+        WHERE asin = ${row.asin}
+      `.catch(() => {})
+      deactivated++
+      continue
+    }
+
+    await sql`
+      UPDATE product_source_items
+      SET master_score = ${scores.masterScore},
+          intelligence_score = ${scores.legacyScore},
+          last_intelligence_at = NOW()
+      WHERE asin = ${row.asin}
+    `.catch(() => {})
+    updated++
+  }
+
+  return { scanned: rows.length, updated, deactivated, skipped }
+}
+
 export async function deactivateUnavailableProductSourcesFromCache() {
   await ensureProductSourceTables()
   const rows = await queryRows<{ asin: string }>`
