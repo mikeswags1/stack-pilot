@@ -6,6 +6,7 @@ import { apiError, apiOk } from '@/lib/api-response'
 import { getValidEbayAccessToken } from '@/lib/ebay-auth'
 import { queryRows, sql } from '@/lib/db'
 import { ensureListedAsinsFinancialColumns } from '@/lib/listed-asins'
+import { getCachedCategoryByAsin, setCachedCategoryByAsin } from '@/lib/ebay-category-cache'
 import { fetchAmazonProductByAsin, loadCachedAmazonProduct, saveCachedAmazonProduct } from '@/lib/amazon-product'
 import { scrapeAmazonProduct } from '@/lib/amazon-scrape'
 import { checkAmazonLiveAvailability } from '@/lib/amazon-availability'
@@ -2039,14 +2040,21 @@ export async function POST(req: NextRequest) {
   // If a pre-computed categoryId was passed (bulk mode), skip all API lookups
   const cleanAsin = String(asin).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10)
   const titleQuery = safeTitle.split(' ').slice(0, 6).join(' ')
+  // Cache check: if we've successfully listed this ASIN before, reuse the verified
+  // category instead of firing 4 fresh eBay API calls. Falls through to live lookups
+  // on cache miss. The retry chain below handles the rare case where the cached
+  // category becomes invalid (e.g. eBay recategorization).
+  const cachedCategory = providedCategoryId ? null : await getCachedCategoryByAsin(cleanAsin).catch(() => null)
   const [asinCategory, comparableCategory, taxonomyIds, legacySuggestions] = providedCategoryId
     ? [providedCategoryId, null, [providedCategoryId], []]
-    : await Promise.all([
-        getCategoryByAsin(cleanAsin, credentials.accessToken),
-        getCategoryByComparableListings(safeTitle, credentials.accessToken),
-        getTaxonomyCategoryIds(safeTitle, credentials.accessToken),
-        getSuggestedCategoryIds(titleQuery, appId, credentials.accessToken),
-      ])
+    : cachedCategory
+      ? [cachedCategory.categoryId, null, cachedCategory.leafSuggestedIds.length > 0 ? cachedCategory.leafSuggestedIds : [cachedCategory.categoryId], []]
+      : await Promise.all([
+          getCategoryByAsin(cleanAsin, credentials.accessToken),
+          getCategoryByComparableListings(safeTitle, credentials.accessToken),
+          getTaxonomyCategoryIds(safeTitle, credentials.accessToken),
+          getSuggestedCategoryIds(titleQuery, appId, credentials.accessToken),
+        ])
 
   // Last-resort fallback still tries to land in a real leaf category instead of eBay's generic bucket.
   const titleFallback = inferFallbackCategoryFromTitle(safeTitle, niche)
@@ -2539,6 +2547,16 @@ export async function POST(req: NextRequest) {
 
   trialSlotReserved = false
   const latestTrialUsage = trialApplies ? await getTrialUsage(effectiveUserId) : null
+
+  // Memoize the verified category so the next listing of this ASIN skips 4 eBay API calls.
+  // Fire-and-forget — never block the response on cache write.
+  if (!providedCategoryId && finalCategoryId) {
+    setCachedCategoryByAsin(sourceAsin, {
+      categoryId: finalCategoryId,
+      leafSuggestedIds: leafSuggestedCategoryIds,
+      sources: categorySourceById.get(finalCategoryId) || [],
+    }).catch(() => {})
+  }
 
   return apiOk({
     success: true,
