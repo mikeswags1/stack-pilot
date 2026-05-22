@@ -210,6 +210,7 @@ type Stats = {
     listed7Days: number
     listed30Days: number
     lowImageActive: number
+    legacyUnaudited?: number
     imageBreakdown?: { oneImage: number; twoImages: number; threePlusImages: number; qualityWarnings: number }
     missingCategoryActive: number
     activeRevenue: number
@@ -1035,14 +1036,14 @@ export default function AdminPage() {
                 </div>
               </div>
             )}
-            {/* End 1-image listings tool */}
-            {listingSummary.lowImageActive > 0 && (
+            {/* End confirmed 1-image listings */}
+            {(listingSummary.imageBreakdown?.oneImage ?? 0) > 0 && (
               <div style={{ marginTop: '14px', padding: '12px 14px', background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '8px' }}>
                 <div style={{ fontWeight: 700, fontSize: '13px', marginBottom: '4px', color: 'var(--red)' }}>
-                  {formatNumber(listingSummary.lowImageActive)} active listing{listingSummary.lowImageActive !== 1 ? 's' : ''} with only 1 image
+                  {formatNumber(listingSummary.imageBreakdown!.oneImage)} confirmed 1-image listing{listingSummary.imageBreakdown!.oneImage !== 1 ? 's' : ''}
                 </div>
                 <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '10px' }}>
-                  These listings reduce buyer trust. End them on eBay so the pool can relist with 2+ images.
+                  These listings have a verified image count of 1. End them on eBay so the pool can relist with 2+ images.
                 </div>
 
                 {lowImageState === 'idle' && (
@@ -1089,6 +1090,16 @@ export default function AdminPage() {
                 {(lowImageState === 'done' || lowImageState === 'error') && lowImageMsg && (
                   <div style={{ fontSize: '12px', color: lowImageState === 'error' ? 'var(--red)' : 'var(--green)', fontWeight: 600 }}>{lowImageMsg}</div>
                 )}
+              </div>
+            )}
+            {/* Legacy unaudited notice */}
+            {(listingSummary.legacyUnaudited ?? 0) > 0 && (
+              <div style={{ marginTop: '12px', padding: '10px 14px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span style={{ fontSize: '20px', fontWeight: 800, color: 'var(--gold)', minWidth: '32px' }}>{formatNumber(listingSummary.legacyUnaudited ?? 0)}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--gold)' }}>listing{(listingSummary.legacyUnaudited ?? 0) !== 1 ? 's' : ''} without a recorded image count</div>
+                  <div style={{ fontSize: '11px', color: 'var(--muted)' }}>These were listed before image tracking was deployed. Run the Legacy Image Audit below to classify them.</div>
+                </div>
               </div>
             )}
             <div className="admin-subtle-line" style={{ marginTop: '10px' }}>

@@ -40,6 +40,7 @@ type ListingSummaryRow = {
   listed_7: string | number
   listed_30: string | number
   low_image_active: string | number
+  legacy_unaudited: string | number
   one_image_active: string | number
   two_image_active: string | number
   three_plus_image_active: string | number
@@ -234,16 +235,15 @@ export async function GET(req: NextRequest) {
         COUNT(*) FILTER (WHERE listed_at > NOW() - INTERVAL '30 days')::int AS listed_30,
         COUNT(*) FILTER (
           WHERE ended_at IS NULL
-            AND (
-              image_count IS NULL
-              OR image_count < 2
-              OR (image_count IS NULL AND (
-                amazon_images IS NULL
-                OR jsonb_typeof(amazon_images) <> 'array'
-                OR jsonb_array_length(amazon_images) < 2
-              ))
-            )
+            AND image_count IS NOT NULL
+            AND image_count < 2
         )::int AS low_image_active,
+        COUNT(*) FILTER (
+          WHERE ended_at IS NULL
+            AND image_count IS NULL
+            AND ebay_listing_id IS NOT NULL
+            AND ebay_listing_id <> ''
+        )::int AS legacy_unaudited,
         COUNT(*) FILTER (WHERE ended_at IS NULL AND image_count = 1)::int AS one_image_active,
         COUNT(*) FILTER (WHERE ended_at IS NULL AND image_count = 2)::int AS two_image_active,
         COUNT(*) FILTER (WHERE ended_at IS NULL AND image_count >= 3)::int AS three_plus_image_active,
@@ -628,7 +628,8 @@ export async function GET(req: NextRequest) {
   if (sourceIntelligenceWithAutopilot?.autopilot?.scheduledNow) warnings.push('Source autopilot started a background repair job.')
   if (runningAutoUsers > 0 && readyAutoQueue === 0) warnings.push('Auto Bulk is enabled but has no ready queue items yet.')
   if (dueListingAudits > Math.max(60, activeAuditListings * 0.5)) warnings.push('A large share of active listings are due for Amazon availability audit.')
-  if (toNumber(summary.low_image_active) > 0) warnings.push(`${toNumber(summary.low_image_active)} active listing(s) have fewer than 2 stored images.`)
+  if (toNumber(summary.one_image_active) > 0) warnings.push(`${toNumber(summary.one_image_active)} active listing(s) confirmed with only 1 image — use the Listing Quality panel to end them.`)
+  if (toNumber(summary.legacy_unaudited) > 0) warnings.push(`${toNumber(summary.legacy_unaudited)} active listing(s) have no image count recorded — run the Legacy Image Audit to classify them.`)
   if (toNumber(summary.missing_category_active) > 0) warnings.push(`${toNumber(summary.missing_category_active)} active listing(s) are missing a stored category id.`)
 
   const status = warnings.length === 0 ? 'healthy' : warnings.length <= 3 ? 'watch' : 'attention'
@@ -666,6 +667,7 @@ export async function GET(req: NextRequest) {
       listed7Days: toNumber(summary.listed_7),
       listed30Days: toNumber(summary.listed_30),
       lowImageActive: toNumber(summary.low_image_active),
+      legacyUnaudited: toNumber(summary.legacy_unaudited),
       imageBreakdown: {
         oneImage: toNumber(summary.one_image_active),
         twoImages: toNumber(summary.two_image_active),
