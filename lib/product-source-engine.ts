@@ -849,6 +849,12 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
+                -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
+                -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
+                -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
+                AND apc.asin IS NOT NULL
+                AND jsonb_typeof(apc.images) = 'array'
+                AND jsonb_array_length(apc.images) >= 2
                 AND UPPER(psi.asin) <> ALL(${excludeArray}::text[])
                 AND NOT EXISTS (
                   SELECT 1 FROM listed_asins la
@@ -881,6 +887,12 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
+                -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
+                -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
+                -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
+                AND apc.asin IS NOT NULL
+                AND jsonb_typeof(apc.images) = 'array'
+                AND jsonb_array_length(apc.images) >= 2
                 AND NOT EXISTS (
                   SELECT 1 FROM listed_asins la
                   WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
@@ -912,6 +924,12 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
+                -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
+                -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
+                -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
+                AND apc.asin IS NOT NULL
+                AND jsonb_typeof(apc.images) = 'array'
+                AND jsonb_array_length(apc.images) >= 2
                 AND UPPER(psi.asin) <> ALL(${excludeArray}::text[])
                 AND NOT EXISTS (
                   SELECT 1 FROM listed_asins la
@@ -943,6 +961,12 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
+                -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
+                -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
+                -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
+                AND apc.asin IS NOT NULL
+                AND jsonb_typeof(apc.images) = 'array'
+                AND jsonb_array_length(apc.images) >= 2
                 AND NOT EXISTS (
                   SELECT 1 FROM listed_asins la
                   WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL

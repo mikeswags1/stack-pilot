@@ -760,106 +760,11 @@ export async function GET(req: NextRequest) {
   }
 
   const liveFillPublishReadyProducts = async (products: Product[]) => {
-    if (continuousMode || isOutOfLiveFetchTime()) return products
-
-    const current = [...products]
-    const seen = new Set(current.map((product) => product.asin.toUpperCase()))
-    const readyCount = () => current.filter(isPublishReadyProduct).length
-    if (readyCount() >= targetCount) return current
-
-    const entries = buildNicheQueryEntries(niche, sourceNicheQueries).slice(0, 14)
-    const parallel = 3
-
-    for (let index = 0; index < entries.length; index += parallel) {
-      if (isOutOfLiveFetchTime() || readyCount() >= targetCount) break
-      const batch = entries.slice(index, index + parallel)
-      const settled = await Promise.allSettled(
-        batch.map(async ({ query, sourceNiche }) => {
-          const scraped = await scrapeAmazonSearch(query, 1, 5200).catch(() => [])
-          const candidates: Product[] = []
-
-          for (const item of scraped) {
-            if (isOutOfLiveFetchTime() || candidates.length >= 3) break
-            const asin = String(item.asin || '').toUpperCase()
-            const title = String(item.title || '')
-            const price = item.price
-            if (!asin || seen.has(asin) || !title || !price || price <= 0 || price > MAX_COST) continue
-            const { ebayPrice, profit, roi } = calcMetrics(price)
-            const risk = getRisk(price, roi)
-            const seedProduct: Product = {
-              asin,
-              title,
-              amazonPrice: price,
-              ebayPrice,
-              profit,
-              roi,
-              imageUrl: item.imageUrl,
-              risk,
-              sourceNiche,
-              _rating: item.rating,
-              _numRatings: item.reviewCount,
-            }
-            if (shouldBlockProduct(seedProduct) || !isHealthyListing(price, ebayPrice, EBAY_DEFAULT_FEE_RATE)) continue
-
-            seen.add(asin)
-            const validated = await fetchAmazonProductByAsin({
-              asin,
-              fallbackImage: item.imageUrl,
-              fallbackTitle: title,
-              fallbackPrice: price,
-              strictAsin: true,
-            }).catch(() => null)
-            if (!validated || validated.available !== true) continue
-
-            const titleScore = getTitleScore(title, validated.title)
-            const sameBrand =
-              title.split(/\s+/)[0]?.toLowerCase() &&
-              validated.title.split(/\s+/)[0]?.toLowerCase() &&
-              title.split(/\s+/)[0].toLowerCase() === validated.title.split(/\s+/)[0].toLowerCase()
-            if (titleScore < 0.42 && !sameBrand) continue
-
-            const mergedImages = Array.from(new Set([
-              ...(Array.isArray(validated.images) ? validated.images : []),
-              validated.imageUrl,
-              item.imageUrl,
-            ].filter((url): url is string => typeof url === 'string' && url.startsWith('http'))))
-            const liveProduct: Product = {
-              ...seedProduct,
-              title: validated.title || title,
-              amazonPrice: validated.amazonPrice || price,
-              imageUrl: mergedImages[0] || item.imageUrl,
-              images: mergedImages,
-              features: validated.features,
-              description: validated.description,
-              specs: validated.specs,
-              available: validated.available,
-              sourceQuality: mergedImages.length >= 2 ? 'ready' : 'candidate',
-            }
-            const repriced = repriceProduct(liveProduct)
-            if (isPublishReadyProduct(repriced)) candidates.push(repriced)
-          }
-
-          return candidates
-        })
-      )
-
-      for (const outcome of settled) {
-        if (outcome.status !== 'fulfilled') continue
-        for (const product of outcome.value) {
-          if (readyCount() >= targetCount) break
-          current.push(product)
-        }
-      }
-    }
-
-    if (current.length > products.length) {
-      after(() => upsertProductSourceItems(current.slice(products.length).map((product) => ({
-        ...product,
-        sourceProvider: 'finder-live-fill',
-      }))).catch(() => 0))
-    }
-
-    return current
+    // The dashboard is now a pure read of the pre-vetted enriched pool. The pool is
+    // kept full by background cron + admin enrich endpoint. Doing live Amazon scraping
+    // during the dashboard request just makes the UI slow ("scanning") and adds raw
+    // 1-image candidates that aren't list-ready anyway. Trust the pool — skip entirely.
+    return products
   }
 
   const scheduleNicheSourceRepair = (reason: string, availableCount: number, readyCount: number) => {
