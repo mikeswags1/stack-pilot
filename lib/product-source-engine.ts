@@ -854,7 +854,13 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                   SELECT 1 FROM listed_asins la
                   WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
                 )
-              ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC, psi.last_seen_at DESC
+              ORDER BY
+                -- Priority 1: cached + ≥2 images sit at the top so dashboard top-30 is all list-ready
+                (CASE WHEN apc.asin IS NOT NULL AND jsonb_typeof(apc.images) = 'array' AND jsonb_array_length(apc.images) >= 2 THEN 0 ELSE 1 END),
+                psi.master_score DESC NULLS LAST,
+                psi.intelligence_score DESC NULLS LAST,
+                psi.total_score DESC,
+                psi.last_seen_at DESC
               LIMIT ${fetchLimit}
             `
           : await queryRows<ProductSourceRow>`
@@ -879,7 +885,13 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                   SELECT 1 FROM listed_asins la
                   WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
                 )
-              ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC, psi.last_seen_at DESC
+              ORDER BY
+                -- Priority 1: cached + ≥2 images sit at the top so dashboard top-30 is all list-ready
+                (CASE WHEN apc.asin IS NOT NULL AND jsonb_typeof(apc.images) = 'array' AND jsonb_array_length(apc.images) >= 2 THEN 0 ELSE 1 END),
+                psi.master_score DESC NULLS LAST,
+                psi.intelligence_score DESC NULLS LAST,
+                psi.total_score DESC,
+                psi.last_seen_at DESC
               LIMIT ${fetchLimit}
             `)
       : (excludeArray
@@ -905,7 +917,13 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                   SELECT 1 FROM listed_asins la
                   WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
                 )
-              ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC, psi.last_seen_at DESC
+              ORDER BY
+                -- Priority 1: cached + ≥2 images sit at the top so dashboard top-30 is all list-ready
+                (CASE WHEN apc.asin IS NOT NULL AND jsonb_typeof(apc.images) = 'array' AND jsonb_array_length(apc.images) >= 2 THEN 0 ELSE 1 END),
+                psi.master_score DESC NULLS LAST,
+                psi.intelligence_score DESC NULLS LAST,
+                psi.total_score DESC,
+                psi.last_seen_at DESC
               LIMIT ${fetchLimit}
             `
           : await queryRows<ProductSourceRow>`
@@ -929,7 +947,13 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                   SELECT 1 FROM listed_asins la
                   WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
                 )
-              ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC, psi.last_seen_at DESC
+              ORDER BY
+                -- Priority 1: cached + ≥2 images sit at the top so dashboard top-30 is all list-ready
+                (CASE WHEN apc.asin IS NOT NULL AND jsonb_typeof(apc.images) = 'array' AND jsonb_array_length(apc.images) >= 2 THEN 0 ELSE 1 END),
+                psi.master_score DESC NULLS LAST,
+                psi.intelligence_score DESC NULLS LAST,
+                psi.total_score DESC,
+                psi.last_seen_at DESC
               LIMIT ${fetchLimit}
             `)
     return rows
