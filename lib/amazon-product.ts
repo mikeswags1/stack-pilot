@@ -510,28 +510,54 @@ async function fetchSearchFallbackByTitle(title: string, fallbackImage?: string,
 // Pre-enriches products in product_source_items that are missing from amazon_product_cache.
 // Runs during the daily cron to ensure continuous-listing products have rich data
 // (images, features, description) before users try to list them in bulk.
-export async function warmAmazonProductCache(limit = 40): Promise<{ warmed: number; failed: number; enrichedWithImages: number }> {
+export async function warmAmazonProductCache(
+  limit = 40,
+  options: { niches?: string[] } = {}
+): Promise<{ warmed: number; failed: number; enrichedWithImages: number }> {
   await ensureAmazonProductCacheTable()
   // Enrich the BEST products first. Sort by master_score (composite signal: profit, ROI,
   // demand, reviews, rating, BSR, eBay competition, listing outcome) with total_score as
   // tiebreaker. Apply explicit quality floors so RapidAPI calls only target products that
   // would actually be list-worthy after enrichment — never spend a call on something that
   // would still be excluded for being too risky / unprofitable / rejected.
-  const rows = await queryRows<{ asin: string; image_url: string | null }>`
-    SELECT psi.asin, psi.image_url
-    FROM product_source_items psi
-    LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
-    WHERE psi.active = TRUE
-      AND apc.asin IS NULL
-      AND psi.profit >= 4
-      AND psi.roi >= 25
-      AND psi.risk <> 'HIGH'
-      AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
-      AND psi.image_url IS NOT NULL
-      AND psi.image_url <> ''
-    ORDER BY psi.master_score DESC NULLS LAST, psi.total_score DESC NULLS LAST, psi.last_seen_at DESC
-    LIMIT ${limit}
-  `.catch(() => [])
+  //
+  // Optional `niches` filter restricts the queue to specific source_niche values — used
+  // when we've identified HOT niches via eBay market audit and want to spend RapidAPI
+  // quota only on proven-strong categories.
+  const allowedNiches = (options.niches || []).filter((n) => typeof n === 'string' && n.length > 0)
+  const useNicheFilter = allowedNiches.length > 0
+  const rows = useNicheFilter
+    ? await queryRows<{ asin: string; image_url: string | null }>`
+        SELECT psi.asin, psi.image_url
+        FROM product_source_items psi
+        LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
+        WHERE psi.active = TRUE
+          AND apc.asin IS NULL
+          AND psi.profit >= 4
+          AND psi.roi >= 25
+          AND psi.risk <> 'HIGH'
+          AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
+          AND psi.image_url IS NOT NULL
+          AND psi.image_url <> ''
+          AND psi.source_niche = ANY(${allowedNiches}::text[])
+        ORDER BY psi.master_score DESC NULLS LAST, psi.total_score DESC NULLS LAST, psi.last_seen_at DESC
+        LIMIT ${limit}
+      `.catch(() => [])
+    : await queryRows<{ asin: string; image_url: string | null }>`
+        SELECT psi.asin, psi.image_url
+        FROM product_source_items psi
+        LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
+        WHERE psi.active = TRUE
+          AND apc.asin IS NULL
+          AND psi.profit >= 4
+          AND psi.roi >= 25
+          AND psi.risk <> 'HIGH'
+          AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
+          AND psi.image_url IS NOT NULL
+          AND psi.image_url <> ''
+        ORDER BY psi.master_score DESC NULLS LAST, psi.total_score DESC NULLS LAST, psi.last_seen_at DESC
+        LIMIT ${limit}
+      `.catch(() => [])
 
   if (rows.length === 0) return { warmed: 0, failed: 0, enrichedWithImages: 0 }
 

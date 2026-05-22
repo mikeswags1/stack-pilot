@@ -40,7 +40,16 @@ export async function POST(req: NextRequest) {
     ? Math.min(200, Math.max(1, Number(limitRaw)))
     : 80
 
+  // Optional niche filter — pass either an array in JSON body { niches: [...] }
+  // or a comma-separated query param ?niches=Foo,Bar
+  let niches: string[] | undefined
+  if (Array.isArray(body.niches)) {
+    niches = (body.niches as unknown[]).map((n) => String(n)).filter((n) => n.length > 0)
+  } else if (query.get('niches')) {
+    niches = String(query.get('niches')).split(',').map((n) => n.trim()).filter((n) => n.length > 0)
+  }
+
   const startedAt = Date.now()
-  const result = await warmAmazonProductCache(limit)
-  return apiOk({ ...result, limit, durationMs: Date.now() - startedAt })
+  const result = await warmAmazonProductCache(limit, { niches })
+  return apiOk({ ...result, limit, nicheFilter: niches?.length || 0, durationMs: Date.now() - startedAt })
 }
