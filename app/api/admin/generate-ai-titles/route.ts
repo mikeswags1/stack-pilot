@@ -3,7 +3,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { apiError, apiOk } from '@/lib/api-response'
 import { queryRows } from '@/lib/db'
-import { getOrGenerateAiTitle } from '@/lib/ai-title-generator'
+import { ensureEbayTitleCacheTable, getOrGenerateAiTitle } from '@/lib/ai-title-generator'
 
 const ADMIN_EMAILS = ['msawaged12@gmail.com', 'mikeswags1@gmail.com']
 export const maxDuration = 300
@@ -27,6 +27,9 @@ export async function POST(req: NextRequest) {
       return apiError('Unauthorized', { status: 401, code: 'UNAUTHORIZED' })
     }
   }
+
+  // Ensure cache table exists before the LEFT JOIN query below references it
+  await ensureEbayTitleCacheTable()
 
   const body = await req.json().catch(() => ({} as Record<string, unknown>))
   const query = req.nextUrl.searchParams
