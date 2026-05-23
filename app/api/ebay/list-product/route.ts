@@ -1071,9 +1071,11 @@ function buildDescription(title: string, features: string[], about: string, imag
     ? `Specifications include ${topSpecsSentence}. See all photos and item specifics for exact style, fit, color, and included components before purchasing.`
     : 'See all photos and item specifics for exact style, fit, color, and included components before purchasing.'
   const escapeAttr = (value: string) => value.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  const formatBullet = (text: string, index: number) => {
+  const formatBullet = (text: string, _index: number) => {
+    // Extract any natural lead-in label (e.g. "BRAND NEW —", "FAST SHIPPING:") and bold it.
+    // Previously also prepended "Feature N:" which looked AI-generated and unprofessional.
     const cleaned = sanitizeContent(text).replace(/^([A-Z][A-Z0-9 &,'().]{3,}?)\s*[-:]\s*/i, '<strong>$1:</strong> ')
-    return `<li style="margin:0 0 12px 0;padding-left:4px;"><strong>Feature ${index + 1}:</strong> ${cleaned}</li>`
+    return `<li style="margin:0 0 12px 0;padding-left:4px;">${cleaned}</li>`
   }
   const sectionHeader = (icon: string, label: string) => `
     <div style="background:#202629;color:#ffffff;margin:28px 0 16px 0;padding:12px 18px;border-radius:3px;font-size:20px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;box-shadow:0 2px 4px rgba(0,0,0,.18);">
