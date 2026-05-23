@@ -7,6 +7,7 @@ import { getValidEbayAccessToken } from '@/lib/ebay-auth'
 import { queryRows, sql } from '@/lib/db'
 import { ensureListedAsinsFinancialColumns } from '@/lib/listed-asins'
 import { getCachedCategoryByAsin, setCachedCategoryByAsin } from '@/lib/ebay-category-cache'
+import { getOrGenerateAiTitle } from '@/lib/ai-title-generator'
 import { fetchAmazonProductByAsin, loadCachedAmazonProduct, saveCachedAmazonProduct } from '@/lib/amazon-product'
 import { scrapeAmazonProduct } from '@/lib/amazon-scrape'
 import { checkAmazonLiveAvailability } from '@/lib/amazon-availability'
@@ -1882,7 +1883,19 @@ export async function POST(req: NextRequest) {
   // Pass validatedAmazon.specs so buildSeoTitle can pull brand, model,
   // compatibility, and size values into the title — filling the 80-char
   // eBay budget with real product attributes buyers actually search for.
-  const safeTitle = buildSeoTitle(rawSafeTitle, niche, validatedAmazon.specs || [])
+  const ruleBasedTitle = buildSeoTitle(rawSafeTitle, niche, validatedAmazon.specs || [])
+
+  // Try Claude-rewritten title first (cached per-ASIN, ~$0.0002 once).
+  // Falls back to rule-based title if Claude is unavailable or output fails validation.
+  // The AI title leads with product type + buyer-search keywords instead of obscure
+  // Amazon brand prefixes (SHAPON, HAPIKAY, XY-WQ, etc.) — major eBay SEO win.
+  const aiTitle = await getOrGenerateAiTitle({
+    asin: String(asin).toUpperCase(),
+    amazonTitle: validatedAmazon.title || listingTitle,
+    niche: niche,
+    specs: validatedAmazon.specs || [],
+  }).catch(() => null)
+  const safeTitle = aiTitle && !isWeakListingTitle(aiTitle) ? aiTitle : ruleBasedTitle
 
   if (isWeakListingTitle(safeTitle)) {
     return apiError(
