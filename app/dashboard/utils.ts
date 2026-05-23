@@ -106,11 +106,9 @@ export function getBulkPreflightIssue(product: FinderProduct): BulkListFailure |
     }
   }
 
-  // Require at least 2 images. Products with only 1 image go through enrichment
-  // in the product-finder API (enrichSparseTopProducts always runs now for < 2 image
-  // products). If enrichment succeeds they gain 2+ images and pass here.
-  // If enrichment fails, they are excluded from List Ready to maintain quality.
-  // A product with 0 images is also blocked.
+  // Require at least 2 images. Sparse candidates should be enriched by the
+  // background cache warmer before they become list-ready. If enrichment fails,
+  // they stay out of List Ready to maintain quality.
   if (imageCount < 2) {
     return {
       asin: product.asin,

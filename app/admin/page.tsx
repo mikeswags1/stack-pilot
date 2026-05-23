@@ -57,6 +57,8 @@ type TrendingNiche = {
   name: string
   activeProducts: number
   cacheProducts: number
+  readyProducts: number
+  needsEnrichment: number
   averageProfit: number
   averageRoi: number
   averageScore: number
@@ -227,6 +229,17 @@ type Stats = {
       highRiskProducts: number
       averageScore: number
       newestSeenAt: string | null
+    }
+    publishReadiness: {
+      activePool: number
+      viableCandidates: number
+      enrichedReady: number
+      publishReady: number
+      needsEnrichment: number
+      alreadyListed: number
+      unavailable: number
+      blockedQuality: number
+      nichesWith30Ready: number
     }
     cache: {
       totalNiches: number
@@ -660,6 +673,7 @@ export default function AdminPage() {
 
   const listingSummary = stats.listingSummary
   const source = stats.sourceHealth.sourceEngine
+  const publishReadiness = stats.sourceHealth.publishReadiness
   const cache = stats.sourceHealth.cache
   const continuous = stats.sourceHealth.continuous
   const intelligence = stats.sourceHealth.intelligence
@@ -701,10 +715,70 @@ export default function AdminPage() {
           <MetricCard label="Accounts" value={formatNumber(stats.totalUsers)} detail={`${stats.ebayConnected} eBay connected`} />
           <MetricCard label="Active Listings" value={formatNumber(listingSummary.activeListings)} detail={`${formatNumber(listingSummary.listed30Days)} listed in 30 days`} />
           <MetricCard label="Active Profit" value={formatMoney(listingSummary.activeProfit)} detail={`${Math.round(listingSummary.averageRoi || 0)}% average ROI`} />
-          <MetricCard label="Source Pool" value={formatNumber(source.totalProducts)} detail={`${source.niches} niches tracked`} />
+          <MetricCard label="Publish-Ready Now" value={formatNumber(publishReadiness.publishReady)} detail={`${publishReadiness.nichesWith30Ready} niches have 30+ ready`} />
+          <MetricCard label="Source Candidates" value={formatNumber(source.totalProducts)} detail={`${formatNumber(publishReadiness.needsEnrichment)} need enrichment`} />
           <MetricCard label="Continuous Queue" value={formatNumber(continuous.products)} detail={`Version ${continuous.version || 0}`} />
           <MetricCard label="Niche Caches" value={`${cache.readyNiches}/${cache.totalNiches}`} detail={`${cache.staleNiches} stale caches`} />
         </div>
+
+        <section className="admin-panel">
+          <div className="admin-panel-head">
+            <div>
+              <span>Product publishing funnel</span>
+              <h2>Exactly what can be published right now</h2>
+            </div>
+            <span className={`admin-pill admin-pill-${publishReadiness.publishReady >= 900 ? 'good' : publishReadiness.publishReady >= 300 ? 'watch' : 'bad'}`}>
+              {formatNumber(publishReadiness.publishReady)} ready
+            </span>
+          </div>
+          <div className="admin-health-grid">
+            <SmallStat label="Active source rows" value={formatNumber(publishReadiness.activePool || source.totalProducts)} />
+            <SmallStat label="Pass price/risk" value={formatNumber(publishReadiness.viableCandidates)} />
+            <SmallStat label="Enriched 2+ images" value={formatNumber(publishReadiness.enrichedReady)} />
+            <SmallStat label="Publish-ready" value={formatNumber(publishReadiness.publishReady)} tone={publishReadiness.publishReady < 300 ? 'warn' : undefined} />
+            <SmallStat label="Need enrichment" value={formatNumber(publishReadiness.needsEnrichment)} />
+            <SmallStat label="Already listed" value={formatNumber(publishReadiness.alreadyListed)} />
+            <SmallStat label="Unavailable" value={formatNumber(publishReadiness.unavailable)} />
+            <SmallStat label="Blocked quality" value={formatNumber(publishReadiness.blockedQuality)} />
+          </div>
+          <div className="admin-subtle-line">
+            Publish-ready means: active source row, profit at least $4, ROI at least 25%, not high risk, Amazon cache not unavailable, cached Amazon product exists with 2+ images, and the ASIN is not already active on StackPilot.
+          </div>
+          <div className="admin-table-wrap" style={{ marginTop: '14px' }}>
+            <table className="admin-table">
+              <thead>
+                <tr>
+                  <th>Niche</th>
+                  <th>Publish-ready</th>
+                  <th>Need enrichment</th>
+                  <th>Active candidates</th>
+                  <th>Cache</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.sourceHealth.trendingNiches
+                  .slice()
+                  .sort((a, b) => b.readyProducts - a.readyProducts || b.activeProducts - a.activeProducts)
+                  .slice(0, 18)
+                  .map((niche) => (
+                    <tr key={niche.name}>
+                      <td>{niche.name}</td>
+                      <td><strong>{formatNumber(niche.readyProducts)}</strong></td>
+                      <td>{formatNumber(niche.needsEnrichment)}</td>
+                      <td>{formatNumber(niche.activeProducts)}</td>
+                      <td>{formatNumber(niche.cacheProducts)}</td>
+                      <td>
+                        <span className={`admin-pill admin-pill-${niche.readyProducts >= 30 ? 'good' : niche.readyProducts >= 10 ? 'watch' : 'bad'}`}>
+                          {niche.readyProducts >= 30 ? 'Ready' : niche.readyProducts >= 10 ? 'Thin' : 'Needs work'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
 
         <section className="admin-panel admin-automation-panel">
           <div className="admin-panel-head">
@@ -818,7 +892,7 @@ export default function AdminPage() {
             <div className="admin-health-grid">
               <SmallStat label="New products today" value={formatNumber(intelligence?.productsFoundToday || 0)} />
               <SmallStat label="Cleaned today" value={formatNumber(intelligence?.productsRejectedToday || 0)} />
-              <SmallStat label="Ready/listable pool" value={formatNumber(intelligence?.readyToListProducts || 0)} />
+              <SmallStat label="Publish-ready now" value={formatNumber(publishReadiness.publishReady)} />
               <SmallStat label="Avg niche health" value={`${Math.round(intelligence?.averageNicheHealth || 0)}%`} />
             </div>
             <div className="admin-source-intel-row">
@@ -840,7 +914,7 @@ export default function AdminPage() {
               </div>
             </div>
             <div className="admin-subtle-line">
-              New products today counts brand-new source rows first seen today. Ready/listable pool is the current vetted inventory StackPilot can pull from. Cleaned today means unavailable, weak, or failed-source items removed from active use.
+              New products today counts brand-new source rows first seen today. Publish-ready now is the stricter live count after image enrichment, availability, quality, and already-listed filters. Cleaned today means unavailable, weak, or failed-source items removed from active use.
             </div>
             <div className={`admin-autopilot-card ${autopilot?.scheduledNow ? 'is-running' : autopilot?.available ? 'is-ready' : 'is-cooling'}`}>
               <div>
@@ -990,6 +1064,8 @@ export default function AdminPage() {
               </div>
             </div>
             <div className="admin-health-grid">
+              <SmallStat label="Publish-ready" value={formatNumber(publishReadiness.publishReady)} />
+              <SmallStat label="Need enrichment" value={formatNumber(publishReadiness.needsEnrichment)} />
               <SmallStat label="Average score" value={source.averageScore.toFixed(1)} />
               <SmallStat label="Stale products" value={formatNumber(source.staleProducts)} />
               <SmallStat label="Missing images" value={formatNumber(source.missingImages)} />

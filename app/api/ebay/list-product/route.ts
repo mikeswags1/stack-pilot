@@ -232,10 +232,10 @@ interface AmazonDetails {
   specs: Array<[string, string]>
 }
 
-// Require at least 1 image (not 2). Pool products carry imageUrl (1 image) until
-// the background cache enrichment cron fetches the full gallery. The eBay API
-// accepts single-image listings. Requiring 2 here was blocking ~90% of the pool.
-const MIN_LISTING_IMAGES = 1
+// Require at least 2 real product images. Product Finder and dashboard preflight
+// apply the same gate, but this route is the final safety net for stale tabs,
+// direct API calls, and Auto Bulk jobs.
+const MIN_LISTING_IMAGES = 2
 
 function isGenericFeature(value: string) {
   const normalized = value.toLowerCase()
@@ -1952,10 +1952,8 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Image quality tracking: flag listings that ship with only 1 image.
-  // These still go through — we do not block them — but they are marked
-  // so the admin can measure the scale of the problem and prioritize
-  // background enrichment for the affected ASINs.
+  // Image quality tracking stays for legacy/admin reporting.
+  // New listings are blocked above if they have fewer than MIN_LISTING_IMAGES.
   const imageQualityWarning = filteredImages.length < 2
 
   const fallbackListingImage = `${siteUrl}/api/image/fallback?asin=${encodeURIComponent(asin)}&title=${encodeURIComponent(listingTitle)}`

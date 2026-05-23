@@ -13,9 +13,8 @@ export const dynamic = 'force-dynamic'
  * Mass-enrich amazon_product_cache from product_source_items.
  *
  * Pool products start with only image_url (1 image from search results). Until cache
- * is populated, getProductImageCount() returns 1 and the old isPublishReadyProduct >= 2
- * gate would hide them. Now publishing accepts 1+ images, but cached enrichment still
- * improves listing quality (multi-image galleries, real descriptions, full specs).
+ * is populated with 2+ real product images, the dashboard and publish route hide/block
+ * them. Cached enrichment is what turns candidates into list-ready products.
  *
  * Auth: admin session OR CRON_SECRET bearer.
  * Body / query: limit (default 80, max 200 — Vercel's 300s function cap limits batch size).

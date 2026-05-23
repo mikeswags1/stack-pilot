@@ -93,6 +93,18 @@ type SourceSummaryRow = {
   newest_seen?: string | null
 }
 
+type SourcePublishReadinessRow = {
+  active_pool?: number | string
+  viable_candidates?: number | string
+  enriched_ready?: number | string
+  publish_ready?: number | string
+  needs_enrichment?: number | string
+  already_listed?: number | string
+  unavailable?: number | string
+  blocked_quality?: number | string
+  niches_with_30_ready?: number | string
+}
+
 type SourceNicheRow = {
   name?: string | null
   count?: number | string
@@ -110,6 +122,8 @@ type TrendingNicheRow = {
   latest_seen?: string | null
   cache_products?: number | string | null
   cache_refreshed_at?: string | null
+  ready_products?: number | string | null
+  needs_enrichment?: number | string | null
   missing_images?: number | string | null
   high_risk?: number | string | null
 }
@@ -189,6 +203,7 @@ export async function GET(req: NextRequest) {
     problemListingRows,
     nichePerformanceRows,
     sourceRows,
+    sourcePublishReadinessRows,
     sourceNicheRows,
     trendingNicheRows,
     cacheRows,
@@ -369,6 +384,85 @@ export async function GET(req: NextRequest) {
       FROM product_source_items
       WHERE active = TRUE
     `.catch(() => []),
+    queryRows<SourcePublishReadinessRow>`
+      WITH base AS (
+        SELECT
+          psi.asin,
+          psi.source_niche,
+          psi.profit,
+          psi.roi,
+          psi.risk,
+          psi.image_url,
+          COALESCE(psi.source_quality, 'candidate') AS source_quality,
+          apc.asin AS cached_asin,
+          apc.available AS cached_available,
+          CASE
+            WHEN apc.images IS NOT NULL AND jsonb_typeof(apc.images) = 'array'
+            THEN jsonb_array_length(apc.images)
+            ELSE 0
+          END AS cached_image_count,
+          EXISTS (
+            SELECT 1 FROM listed_asins la
+            WHERE UPPER(la.asin) = UPPER(psi.asin)
+              AND la.ended_at IS NULL
+          ) AS already_listed
+        FROM product_source_items psi
+        LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
+        WHERE psi.active = TRUE
+      ),
+      classified AS (
+        SELECT
+          *,
+          (
+            profit >= 4
+            AND roi >= 25
+            AND risk <> 'HIGH'
+            AND image_url IS NOT NULL
+            AND image_url <> ''
+            AND source_quality <> 'reject'
+            AND COALESCE(cached_available, TRUE) <> FALSE
+          ) AS viable,
+          (
+            profit >= 4
+            AND roi >= 25
+            AND risk <> 'HIGH'
+            AND image_url IS NOT NULL
+            AND image_url <> ''
+            AND source_quality <> 'reject'
+            AND COALESCE(cached_available, TRUE) <> FALSE
+            AND cached_asin IS NOT NULL
+            AND cached_image_count >= 2
+          ) AS enriched
+        FROM base
+      ),
+      by_niche AS (
+        SELECT
+          COALESCE(NULLIF(source_niche, ''), 'Unassigned') AS niche,
+          COUNT(*) FILTER (WHERE enriched AND NOT already_listed)::int AS ready_products
+        FROM classified
+        GROUP BY COALESCE(NULLIF(source_niche, ''), 'Unassigned')
+      )
+      SELECT
+        COUNT(*)::int AS active_pool,
+        COUNT(*) FILTER (WHERE viable)::int AS viable_candidates,
+        COUNT(*) FILTER (WHERE enriched)::int AS enriched_ready,
+        COUNT(*) FILTER (WHERE enriched AND NOT already_listed)::int AS publish_ready,
+        COUNT(*) FILTER (WHERE viable AND NOT enriched AND NOT already_listed)::int AS needs_enrichment,
+        COUNT(*) FILTER (WHERE enriched AND already_listed)::int AS already_listed,
+        COUNT(*) FILTER (WHERE cached_available = FALSE)::int AS unavailable,
+        COUNT(*) FILTER (
+          WHERE NOT (
+            profit >= 4
+            AND roi >= 25
+            AND risk <> 'HIGH'
+            AND image_url IS NOT NULL
+            AND image_url <> ''
+            AND source_quality <> 'reject'
+          )
+        )::int AS blocked_quality,
+        (SELECT COUNT(*)::int FROM by_niche WHERE ready_products >= 30) AS niches_with_30_ready
+      FROM classified
+    `.catch(() => []),
     queryRows<SourceNicheRow>`
       SELECT
         COALESCE(source_niche, 'Unassigned') AS name,
@@ -391,9 +485,48 @@ export async function GET(req: NextRequest) {
           ROUND(AVG(roi) FILTER (WHERE active = TRUE), 2) AS avg_roi,
           ROUND(AVG(total_score) FILTER (WHERE active = TRUE), 2) AS avg_score,
           MAX(last_seen_at) FILTER (WHERE active = TRUE) AS latest_seen,
+          COUNT(*) FILTER (
+            WHERE active = TRUE
+              AND profit >= 4
+              AND roi >= 25
+              AND risk <> 'HIGH'
+              AND image_url IS NOT NULL
+              AND image_url <> ''
+              AND COALESCE(source_quality, 'candidate') <> 'reject'
+              AND COALESCE(apc.available, TRUE) <> FALSE
+              AND apc.asin IS NOT NULL
+              AND jsonb_typeof(apc.images) = 'array'
+              AND jsonb_array_length(apc.images) >= 2
+              AND NOT EXISTS (
+                SELECT 1 FROM listed_asins la
+                WHERE UPPER(la.asin) = UPPER(product_source_items.asin)
+                  AND la.ended_at IS NULL
+              )
+          )::int AS ready_products,
+          COUNT(*) FILTER (
+            WHERE active = TRUE
+              AND profit >= 4
+              AND roi >= 25
+              AND risk <> 'HIGH'
+              AND image_url IS NOT NULL
+              AND image_url <> ''
+              AND COALESCE(source_quality, 'candidate') <> 'reject'
+              AND COALESCE(apc.available, TRUE) <> FALSE
+              AND NOT (
+                apc.asin IS NOT NULL
+                AND jsonb_typeof(apc.images) = 'array'
+                AND jsonb_array_length(apc.images) >= 2
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM listed_asins la
+                WHERE UPPER(la.asin) = UPPER(product_source_items.asin)
+                  AND la.ended_at IS NULL
+              )
+          )::int AS needs_enrichment,
           COUNT(*) FILTER (WHERE active = TRUE AND (image_url IS NULL OR image_url = ''))::int AS missing_images,
           COUNT(*) FILTER (WHERE active = TRUE AND risk = 'HIGH')::int AS high_risk
         FROM product_source_items
+        LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(product_source_items.asin)
         GROUP BY COALESCE(NULLIF(source_niche, ''), 'Unassigned')
       ),
       cache AS (
@@ -413,6 +546,8 @@ export async function GET(req: NextRequest) {
         source.latest_seen,
         COALESCE(cache.cache_products, 0)::int AS cache_products,
         cache.cache_refreshed_at,
+        COALESCE(source.ready_products, 0)::int AS ready_products,
+        COALESCE(source.needs_enrichment, 0)::int AS needs_enrichment,
         COALESCE(source.missing_images, 0)::int AS missing_images,
         COALESCE(source.high_risk, 0)::int AS high_risk
       FROM source
@@ -534,6 +669,7 @@ export async function GET(req: NextRequest) {
 
   const summary = listingSummaryRows[0] || {}
   const source = sourceRows[0] || {}
+  const publishReadiness = sourcePublishReadinessRows[0] || {}
   const cache = cacheRows[0] || {}
   const continuous = continuousRows[0] || {}
   const autoListingSettingsSummary = autoListingSettingsSummaryRows[0] || {}
@@ -690,6 +826,17 @@ export async function GET(req: NextRequest) {
         averageScore: toNumber(source.avg_score),
         newestSeenAt: toIso(source.newest_seen),
       },
+      publishReadiness: {
+        activePool: toNumber(publishReadiness.active_pool),
+        viableCandidates: toNumber(publishReadiness.viable_candidates),
+        enrichedReady: toNumber(publishReadiness.enriched_ready),
+        publishReady: toNumber(publishReadiness.publish_ready),
+        needsEnrichment: toNumber(publishReadiness.needs_enrichment),
+        alreadyListed: toNumber(publishReadiness.already_listed),
+        unavailable: toNumber(publishReadiness.unavailable),
+        blockedQuality: toNumber(publishReadiness.blocked_quality),
+        nichesWith30Ready: toNumber(publishReadiness.niches_with_30_ready),
+      },
       cache: {
         totalNiches,
         readyNiches,
@@ -731,13 +878,14 @@ export async function GET(req: NextRequest) {
       trendingNiches: trendingNicheRows.map((row) => {
         const activeProducts = toNumber(row.active_products)
         const cacheProducts = toNumber(row.cache_products)
+        const readyProducts = toNumber(row.ready_products)
         const refreshedAt = toIso(row.cache_refreshed_at) || toIso(row.latest_seen)
         const refreshedDate = refreshedAt ? new Date(refreshedAt) : null
         const stale = !refreshedDate || Date.now() - refreshedDate.getTime() > 48 * 60 * 60 * 1000
         const status =
-          activeProducts >= 30 && cacheProducts >= 30 && !stale
+          readyProducts >= 30 && !stale
             ? 'ready'
-            : activeProducts >= 10 || cacheProducts >= 10
+            : readyProducts >= 10 || activeProducts >= 30 || cacheProducts >= 30
               ? 'watch'
               : 'low'
         return {
@@ -749,6 +897,8 @@ export async function GET(req: NextRequest) {
           averageScore: toNumber(row.avg_score),
           latestSeenAt: toIso(row.latest_seen),
           cacheRefreshedAt: toIso(row.cache_refreshed_at),
+          readyProducts,
+          needsEnrichment: toNumber(row.needs_enrichment),
           missingImages: toNumber(row.missing_images),
           highRiskProducts: toNumber(row.high_risk),
           status,

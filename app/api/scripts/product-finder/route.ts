@@ -796,7 +796,6 @@ export async function GET(req: NextRequest) {
     // synchronous Amazon scrape during the dashboard request.
     return products
 
-    // eslint-disable-next-line no-unreachable
     if (isOutOfLiveFetchTime()) return products
 
     // Always enrich products with < 2 images regardless of publishReadyCount.
