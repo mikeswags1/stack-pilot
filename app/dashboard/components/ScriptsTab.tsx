@@ -78,7 +78,7 @@ export function ScriptsTab({
 
     if (deadState !== 'ready' || !deadPreview?.count) return
     setDeadState('running')
-    const endingCount = Math.min(deadPreview.count, 100)
+    const endingCount = deadPreview.count
     setDeadMessage(`Ending ${endingCount} dead listing${endingCount === 1 ? '' : 's'} on eBay...`)
     try {
       const res = await fetch('/api/ebay/dead-listings', {
@@ -171,7 +171,7 @@ export function ScriptsTab({
                 : deadState === 'running'
                   ? 'Ending dead listings...'
                   : deadState === 'ready' && (deadPreview?.count || 0) > 0
-                    ? `Confirm - End ${Math.min(deadPreview?.count || 0, 100)} Dead Listing${Math.min(deadPreview?.count || 0, 100) === 1 ? '' : 's'}`
+                    ? `Confirm - End ${deadPreview?.count || 0} Dead Listing${deadPreview?.count === 1 ? '' : 's'}`
                     : deadState === 'done'
                       ? 'Run Another Preview'
                       : 'Preview Dead Listings'}

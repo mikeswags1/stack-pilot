@@ -32,7 +32,7 @@ type DeadListingCandidate = LocalListingRow & EbayListingSignal & {
 
 const MIN_AGE_DAYS = 14
 const MAX_VIEWS = 10
-const MAX_END_PER_RUN = 100
+const MAX_END_PER_RUN = 2000
 
 function escapeXml(value: string) {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -217,7 +217,7 @@ export async function GET() {
       })),
       message: candidates.length === 0
         ? 'No poor-performing listings found with the current cleanup rule.'
-        : `${candidates.length} poor-performing listing${candidates.length === 1 ? '' : 's'} found: 14+ days old, 0 sold, 0 watchers, and 10 or fewer views. Cleanup ends up to ${MAX_END_PER_RUN} per run.`,
+        : `${candidates.length} poor-performing listing${candidates.length === 1 ? '' : 's'} found: 14+ days old, 0 sold, 0 watchers, and 10 or fewer views. Confirming will end all matched listings.`,
     })
   } catch (error) {
     if (error instanceof EbayReconnectRequiredError) {
@@ -248,7 +248,7 @@ export async function POST(req: NextRequest) {
     let ended = 0
     let failed = 0
     const endedIds: number[] = []
-    const batchSize = 5
+    const batchSize = 12
 
     for (let index = 0; index < selected.length; index += batchSize) {
       const batch = selected.slice(index, index + batchSize)
