@@ -144,7 +144,7 @@ export function ScriptsTab({
               </span>
             </div>
             <div style={{ fontSize: '13px', color: 'var(--sil)', marginBottom: '22px', lineHeight: 1.6 }}>
-              Preview listings that are 14+ days old with 0 sales, 0 watchers, and 2 or fewer views. Confirming ends only those poor performers.
+              Preview live eBay listings that are 14+ days old with 0 sales, 0 watchers, and 10 or fewer views. Confirming ends only those poor performers.
             </div>
             {deadMessage ? (
               <div style={{ marginBottom: '12px', fontSize: '12px', color: deadState === 'error' ? 'var(--red)' : deadState === 'done' ? 'var(--grn)' : 'var(--gold)', padding: '8px 12px', borderRadius: '8px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>

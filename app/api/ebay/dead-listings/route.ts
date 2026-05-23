@@ -31,7 +31,7 @@ type DeadListingCandidate = LocalListingRow & EbayListingSignal & {
 }
 
 const MIN_AGE_DAYS = 14
-const MAX_VIEWS = 2
+const MAX_VIEWS = 10
 const MAX_END_PER_RUN = 100
 
 function escapeXml(value: string) {
@@ -137,18 +137,22 @@ async function getDeadListingCandidates(userId: string | number, accessToken: st
     getActiveListingSignals(accessToken, appId),
   ])
 
+  const localByListingId = new Map(localRows.map((row) => [String(row.ebay_listing_id), row]))
   const candidates: DeadListingCandidate[] = []
 
-  for (const row of localRows) {
-    const signal = liveSignals.get(String(row.ebay_listing_id))
-    if (!signal) continue
-    const ageDays = Math.max(getAgeDays(signal.startTime), getAgeDays(row.listed_at))
+  for (const signal of liveSignals.values()) {
+    const row = localByListingId.get(signal.listingId)
+    const ageDays = Math.max(getAgeDays(signal.startTime), getAgeDays(row?.listed_at || null))
     const noSales = signal.quantitySold === 0
     const noInterest = signal.watchers === 0 && signal.views <= MAX_VIEWS
     if (ageDays >= MIN_AGE_DAYS && noSales && noInterest) {
       candidates.push({
-        ...row,
         ...signal,
+        id: row?.id || 0,
+        ebay_listing_id: signal.listingId,
+        asin: row?.asin || null,
+        listed_at: row?.listed_at || signal.startTime,
+        title: row?.title || signal.title,
         ageDays,
         reason: `${ageDays} days old, ${signal.views} view${signal.views === 1 ? '' : 's'}, 0 watchers, 0 sold`,
       })
@@ -212,8 +216,8 @@ export async function GET() {
         reason: listing.reason,
       })),
       message: candidates.length === 0
-        ? 'No dead listings found with the current cleanup rule.'
-        : `${candidates.length} dead listing${candidates.length === 1 ? '' : 's'} found: 14+ days old, 0 sold, 0 watchers, and 2 or fewer views. Cleanup ends up to ${MAX_END_PER_RUN} per run.`,
+        ? 'No poor-performing listings found with the current cleanup rule.'
+        : `${candidates.length} poor-performing listing${candidates.length === 1 ? '' : 's'} found: 14+ days old, 0 sold, 0 watchers, and 10 or fewer views. Cleanup ends up to ${MAX_END_PER_RUN} per run.`,
     })
   } catch (error) {
     if (error instanceof EbayReconnectRequiredError) {
@@ -256,7 +260,7 @@ export async function POST(req: NextRequest) {
         const listing = batch[resultIndex]
         if (result?.status === 'fulfilled' && result.value.ok && listing) {
           ended += 1
-          endedIds.push(listing.id)
+          if (listing.id > 0) endedIds.push(listing.id)
         } else {
           failed += 1
         }
