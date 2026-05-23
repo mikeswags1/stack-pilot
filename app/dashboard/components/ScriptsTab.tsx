@@ -22,6 +22,17 @@ type DeadListingPreview = {
   }>
 }
 
+type DuplicateListingPreview = {
+  count: number
+  message?: string
+  groups?: Array<{
+    key: string
+    label: string
+    keep: { ebayListingId: string; title: string; views: number; watchers: number; quantitySold: number }
+    end: Array<{ ebayListingId: string; title: string; views: number; watchers: number; quantitySold: number }>
+  }>
+}
+
 export function ScriptsTab({
   scriptRunning,
   scriptMessage,
@@ -38,6 +49,9 @@ export function ScriptsTab({
   const [deadState, setDeadState] = useState<'idle' | 'previewing' | 'ready' | 'running' | 'done' | 'error'>('idle')
   const [deadPreview, setDeadPreview] = useState<DeadListingPreview | null>(null)
   const [deadMessage, setDeadMessage] = useState<string | null>(null)
+  const [duplicateState, setDuplicateState] = useState<'idle' | 'previewing' | 'ready' | 'running' | 'done' | 'error'>('idle')
+  const [duplicatePreview, setDuplicatePreview] = useState<DuplicateListingPreview | null>(null)
+  const [duplicateMessage, setDuplicateMessage] = useState<string | null>(null)
 
   const handleEndAllListings = async () => {
     if (endState === 'idle') { setEndState('confirm'); return }
@@ -92,6 +106,42 @@ export function ScriptsTab({
     } catch {
       setDeadState('error')
       setDeadMessage('Request failed. Check your eBay connection.')
+    }
+  }
+
+  const handleDuplicateCleanup = async () => {
+    if (duplicateState === 'idle' || duplicateState === 'error' || duplicateState === 'done') {
+      setDuplicateState('previewing')
+      setDuplicateMessage(null)
+      setDuplicatePreview(null)
+      try {
+        const res = await fetch('/api/ebay/duplicate-listings')
+        const data = await res.json()
+        setDuplicatePreview(data)
+        setDuplicateMessage(data.message || (res.ok ? 'Preview complete.' : 'Something went wrong.'))
+        setDuplicateState(res.ok ? 'ready' : 'error')
+      } catch {
+        setDuplicateState('error')
+        setDuplicateMessage('Request failed. Check your eBay connection.')
+      }
+      return
+    }
+
+    if (duplicateState !== 'ready' || !duplicatePreview?.count) return
+    setDuplicateState('running')
+    setDuplicateMessage(`Ending ${duplicatePreview.count} duplicate listing${duplicatePreview.count === 1 ? '' : 's'} on eBay...`)
+    try {
+      const res = await fetch('/api/ebay/duplicate-listings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed: true }),
+      })
+      const data = await res.json()
+      setDuplicateMessage(data.message || (res.ok ? 'Cleanup complete.' : 'Something went wrong.'))
+      setDuplicateState(res.ok ? 'done' : 'error')
+    } catch {
+      setDuplicateState('error')
+      setDuplicateMessage('Request failed. Check your eBay connection.')
     }
   }
 
@@ -178,6 +228,54 @@ export function ScriptsTab({
             </button>
             {deadState === 'ready' ? (
               <button className="btn btn-ghost btn-sm" style={{ width: '100%', marginTop: '8px' }} onClick={() => { setDeadState('idle'); setDeadPreview(null); setDeadMessage(null) }}>
+                Cancel
+              </button>
+            ) : null}
+          </div>
+
+          <div className="card" style={{ padding: '28px', border: duplicateState === 'ready' && (duplicatePreview?.count || 0) > 0 ? '1px solid rgba(14,165,233,0.32)' : undefined }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px', gap: '12px' }}>
+              <div style={{ fontFamily: 'var(--serif)', fontSize: '20px', fontWeight: 600, color: 'var(--txt)' }}>Clean Duplicate Listings</div>
+              <span style={{ padding: '3px 10px', borderRadius: '20px', fontSize: '8px', fontWeight: 700, background: 'rgba(14,165,233,0.10)', color: 'var(--plat)', border: '1px solid rgba(14,165,233,0.28)' }}>
+                Cleanup
+              </span>
+            </div>
+            <div style={{ fontSize: '13px', color: 'var(--sil)', marginBottom: '22px', lineHeight: 1.6 }}>
+              Preview duplicate active listings. StackPilot keeps the strongest listing in each group and ends only the extras.
+            </div>
+            {duplicateMessage ? (
+              <div style={{ marginBottom: '12px', fontSize: '12px', color: duplicateState === 'error' ? 'var(--red)' : duplicateState === 'done' ? 'var(--grn)' : 'var(--gold)', padding: '8px 12px', borderRadius: '8px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                {duplicateMessage}
+              </div>
+            ) : null}
+            {duplicateState === 'ready' && duplicatePreview?.groups?.length ? (
+              <div style={{ marginBottom: '12px', maxHeight: '130px', overflow: 'auto', fontSize: '11px', color: 'var(--dim)', lineHeight: 1.45 }}>
+                {duplicatePreview.groups.slice(0, 4).map((group) => (
+                  <div key={group.key} style={{ marginBottom: '8px' }}>
+                    <strong style={{ color: 'var(--sil)' }}>Keep:</strong> {group.keep.title}
+                    <div>End {group.end.length}: {group.end[0]?.title}</div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            <button
+              className={`btn btn-sm ${duplicateState === 'ready' && (duplicatePreview?.count || 0) > 0 ? 'btn-gold' : 'btn-ghost'}`}
+              style={{ width: '100%' }}
+              disabled={duplicateState === 'previewing' || duplicateState === 'running' || (duplicateState === 'ready' && !duplicatePreview?.count)}
+              onClick={handleDuplicateCleanup}
+            >
+              {duplicateState === 'previewing'
+                ? 'Checking eBay...'
+                : duplicateState === 'running'
+                  ? 'Ending duplicates...'
+                  : duplicateState === 'ready' && (duplicatePreview?.count || 0) > 0
+                    ? `Confirm - End ${duplicatePreview?.count || 0} Duplicate Listing${duplicatePreview?.count === 1 ? '' : 's'}`
+                    : duplicateState === 'done'
+                      ? 'Run Another Preview'
+                      : 'Preview Duplicates'}
+            </button>
+            {duplicateState === 'ready' ? (
+              <button className="btn btn-ghost btn-sm" style={{ width: '100%', marginTop: '8px' }} onClick={() => { setDuplicateState('idle'); setDuplicatePreview(null); setDuplicateMessage(null) }}>
                 Cancel
               </button>
             ) : null}
