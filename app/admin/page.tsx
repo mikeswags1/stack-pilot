@@ -682,7 +682,7 @@ export default function AdminPage() {
   const automation = stats.automation ?? EMPTY_AUTOMATION
   const nicheReadinessSummary = stats.sourceHealth.trendingNiches.reduce(
     (acc, niche) => {
-      if (niche.readyProducts >= 45) acc.done += 1
+      if (niche.readyProducts >= 60) acc.done += 1
       else if (niche.readyProducts >= 30) acc.thin += 1
       else acc.repairing += 1
       return acc
@@ -746,12 +746,12 @@ export default function AdminPage() {
             <SmallStat label="Enriched 2+ images" value={formatNumber(publishReadiness.enrichedReady)} />
             <SmallStat label="Publish-ready" value={formatNumber(publishReadiness.publishReady)} tone={publishReadiness.publishReady < 300 ? 'warn' : undefined} />
             <SmallStat label="Need enrichment" value={formatNumber(publishReadiness.needsEnrichment)} />
-            <SmallStat label="Niches done" value={formatNumber(nicheReadinessSummary.done)} />
-            <SmallStat label="Niches thin" value={formatNumber(nicheReadinessSummary.thin)} />
+            <SmallStat label="30 guaranteed" value={formatNumber(nicheReadinessSummary.done)} />
+            <SmallStat label="30 possible" value={formatNumber(nicheReadinessSummary.thin)} />
             <SmallStat label="Repairing" value={formatNumber(nicheReadinessSummary.repairing)} />
           </div>
           <div className="admin-subtle-line">
-            Done means 45+ publish-ready products. Thin means 30-44. Repairing means under 30 and should be stocked or enriched before relying on it.
+            Done means 60+ backend publish-ready products, so Product Listing has enough buffer to present 30 after its final preflight filters. Thin means 30-59 and can dip below 30 after exclusions. Repairing means under 30.
           </div>
           <div className="admin-table-wrap" style={{ marginTop: '14px' }}>
             <table className="admin-table">
@@ -762,6 +762,7 @@ export default function AdminPage() {
                   <th>Need enrichment</th>
                   <th>Active candidates</th>
                   <th>Cache</th>
+                  <th>Product Listing</th>
                   <th>Status</th>
                 </tr>
               </thead>
@@ -777,8 +778,15 @@ export default function AdminPage() {
                       <td>{formatNumber(niche.activeProducts)}</td>
                       <td>{formatNumber(niche.cacheProducts)}</td>
                       <td>
-                        <span className={`admin-pill admin-pill-${niche.readyProducts >= 45 ? 'good' : niche.readyProducts >= 30 ? 'watch' : 'bad'}`}>
-                          {niche.readyProducts >= 45 ? 'Done' : niche.readyProducts >= 30 ? 'Thin' : 'Repairing'}
+                        {niche.readyProducts >= 60
+                          ? '30 shown'
+                          : niche.readyProducts >= 30
+                            ? 'Usually 30, no buffer'
+                            : `${formatNumber(niche.readyProducts)} max`}
+                      </td>
+                      <td>
+                        <span className={`admin-pill admin-pill-${niche.readyProducts >= 60 ? 'good' : niche.readyProducts >= 30 ? 'watch' : 'bad'}`}>
+                          {niche.readyProducts >= 60 ? 'Done' : niche.readyProducts >= 30 ? 'Thin' : 'Repairing'}
                         </span>
                       </td>
                     </tr>
