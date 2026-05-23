@@ -680,6 +680,15 @@ export default function AdminPage() {
   const sourceAgent = stats.sourceHealth.sourceAgent
   const autopilot = intelligence?.autopilot
   const automation = stats.automation ?? EMPTY_AUTOMATION
+  const nicheReadinessSummary = stats.sourceHealth.trendingNiches.reduce(
+    (acc, niche) => {
+      if (niche.readyProducts >= 45) acc.done += 1
+      else if (niche.readyProducts >= 30) acc.thin += 1
+      else acc.repairing += 1
+      return acc
+    },
+    { done: 0, thin: 0, repairing: 0 },
+  )
 
   return (
     <main className="admin-page">
@@ -737,12 +746,12 @@ export default function AdminPage() {
             <SmallStat label="Enriched 2+ images" value={formatNumber(publishReadiness.enrichedReady)} />
             <SmallStat label="Publish-ready" value={formatNumber(publishReadiness.publishReady)} tone={publishReadiness.publishReady < 300 ? 'warn' : undefined} />
             <SmallStat label="Need enrichment" value={formatNumber(publishReadiness.needsEnrichment)} />
-            <SmallStat label="Already listed" value={formatNumber(publishReadiness.alreadyListed)} />
-            <SmallStat label="Unavailable" value={formatNumber(publishReadiness.unavailable)} />
-            <SmallStat label="Blocked quality" value={formatNumber(publishReadiness.blockedQuality)} />
+            <SmallStat label="Niches done" value={formatNumber(nicheReadinessSummary.done)} />
+            <SmallStat label="Niches thin" value={formatNumber(nicheReadinessSummary.thin)} />
+            <SmallStat label="Repairing" value={formatNumber(nicheReadinessSummary.repairing)} />
           </div>
           <div className="admin-subtle-line">
-            Publish-ready means: active source row, profit at least $4, ROI at least 25%, not high risk, Amazon cache not unavailable, cached Amazon product exists with 2+ images, and the ASIN is not already active on StackPilot.
+            Done means 45+ publish-ready products. Thin means 30-44. Repairing means under 30 and should be stocked or enriched before relying on it.
           </div>
           <div className="admin-table-wrap" style={{ marginTop: '14px' }}>
             <table className="admin-table">
@@ -760,7 +769,6 @@ export default function AdminPage() {
                 {stats.sourceHealth.trendingNiches
                   .slice()
                   .sort((a, b) => b.readyProducts - a.readyProducts || b.activeProducts - a.activeProducts)
-                  .slice(0, 18)
                   .map((niche) => (
                     <tr key={niche.name}>
                       <td>{niche.name}</td>
@@ -769,8 +777,8 @@ export default function AdminPage() {
                       <td>{formatNumber(niche.activeProducts)}</td>
                       <td>{formatNumber(niche.cacheProducts)}</td>
                       <td>
-                        <span className={`admin-pill admin-pill-${niche.readyProducts >= 30 ? 'good' : niche.readyProducts >= 10 ? 'watch' : 'bad'}`}>
-                          {niche.readyProducts >= 30 ? 'Ready' : niche.readyProducts >= 10 ? 'Thin' : 'Needs work'}
+                        <span className={`admin-pill admin-pill-${niche.readyProducts >= 45 ? 'good' : niche.readyProducts >= 30 ? 'watch' : 'bad'}`}>
+                          {niche.readyProducts >= 45 ? 'Done' : niche.readyProducts >= 30 ? 'Thin' : 'Repairing'}
                         </span>
                       </td>
                     </tr>

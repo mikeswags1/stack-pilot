@@ -753,7 +753,7 @@ export default function Dashboard() {
   }, [loadPerformance, performanceState.data, performanceState.error, performanceState.loading, status, tab])
 
   useEffect(() => {
-    if (status === 'authenticated' && (tab === 'settings' || tab === 'product') && !sourceHealthState.data && !sourceHealthState.loading && !sourceHealthState.error) {
+    if (status === 'authenticated' && tab === 'settings' && !sourceHealthState.data && !sourceHealthState.loading && !sourceHealthState.error) {
       void loadProductSourceHealth()
     }
   }, [loadProductSourceHealth, sourceHealthState.data, sourceHealthState.error, sourceHealthState.loading, status, tab])
@@ -1562,9 +1562,6 @@ export default function Dashboard() {
             <ProductListingTab
               niche={nicheState.value}
               nicheSaving={nicheState.saving}
-              nicheCatalog={sourceHealthState.data?.allNiches || []}
-              nicheCatalogLoading={sourceHealthState.loading}
-              nicheCatalogError={sourceHealthState.error}
               onSelectNiche={(value) => void handleSaveNiche(value)}
               onClearNiche={() => {
                 setNicheState((prev) => ({ ...prev, value: null }))

@@ -4,81 +4,21 @@ import { dashboardDisplayImageUrl } from '@/lib/dashboard-display-image'
 import { TrialMeter } from './TrialMeter'
 import { getBulkPreflightIssue } from '../utils'
 
-type NicheCatalogItem = {
-  name: string
-  activeProducts: number
-  publishReady: number
-  needsEnrichment: number
-  cacheProducts: number
-  averageScore: number
-  status: 'ready' | 'thin' | 'repairing'
-  newestSeenAt: string | null
-}
-
 const NICHE_GROUPS = [
   { group: 'Trending', emoji: '\u2728', items: ['Golf Accessories', 'Pool Products', 'Beach & Sunny Day', 'Summer Outdoor Gear', 'Backyard & Patio', 'Travel Accessories', 'Fitness Recovery', 'Home Organization', 'Pet Products', 'Viral Gadgets', 'Giftable Under $50'] },
-  { group: 'Electronics', emoji: '⚡', items: ['Phone Accessories', 'Computer Parts', 'Audio & Headphones', 'Smart Home Devices', 'Gaming Gear'] },
-  { group: 'Home', emoji: '🏠', items: ['Kitchen Gadgets', 'Home Decor', 'Furniture & Lighting', 'Cleaning Supplies', 'Storage & Organization'] },
-  { group: 'Outdoors', emoji: '🌿', items: ['Camping & Hiking', 'Garden & Tools', 'Sporting Goods', 'Fishing & Hunting', 'Cycling'] },
+  { group: 'Electronics', emoji: '⚡', items: ['Phone Accessories', 'Computer Parts', 'Audio & Headphones', 'Smart Home Devices', 'Gaming Gear', 'Cable Organizers & Clips', 'Desk Cable Management', 'Desk Cord & Cable Clips', 'Workspace Cable & Power Management', 'Cable & Cord Storage Bundles'] },
+  { group: 'Home', emoji: '🏠', items: ['Kitchen Gadgets', 'Home Decor', 'Furniture & Lighting', 'Cleaning Supplies', 'Storage & Organization', 'Refrigerator & Freezer Organizers', 'Closet Rod Organizers & Hangers'] },
+  { group: 'Outdoors', emoji: '🌿', items: ['Camping & Hiking', 'Garden & Tools', 'Sporting Goods', 'Fishing & Hunting', 'Cycling', 'Garage Storage Hooks', 'Garage Wall Pegboard Organizers'] },
   { group: 'Health', emoji: '💪', items: ['Fitness Equipment', 'Personal Care', 'Supplements & Vitamins', 'Medical Supplies', 'Mental Wellness'] },
   { group: 'Automotive', emoji: '🚗', items: ['Car Parts', 'Car Accessories', 'Motorcycle Gear', 'Truck & Towing', 'Car Care'] },
-  { group: 'Lifestyle', emoji: '✨', items: ['Pet Supplies', 'Baby & Kids', 'Toys & Games', 'Clothing & Accessories', 'Jewelry & Watches'] },
+  { group: 'Lifestyle', emoji: '✨', items: ['Pet Supplies', 'Baby & Kids', 'Toys & Games', 'Clothing & Accessories', 'Jewelry & Watches', 'Hobby Tool Kits', 'Desk Organizer Bundles'] },
   { group: 'Business', emoji: '📦', items: ['Office Supplies', 'Industrial Equipment', 'Safety Gear', 'Janitorial & Cleaning', 'Packaging Materials'] },
   { group: 'Collectibles', emoji: '🏆', items: ['Trading Cards', 'Vintage & Antiques', 'Coins & Currency', 'Comics & Manga', 'Sports Memorabilia'] },
 ]
 
-const NICHE_META = new Map(
-  NICHE_GROUPS.flatMap((group) => group.items.map((item) => [item, { group: group.group, emoji: group.emoji }]))
-)
-
-const FALLBACK_NICHES: NicheCatalogItem[] = NICHE_GROUPS.flatMap((group) =>
-  group.items.map((name) => ({
-    name,
-    activeProducts: 0,
-    publishReady: 0,
-    needsEnrichment: 0,
-    cacheProducts: 0,
-    averageScore: 0,
-    status: 'repairing' as const,
-    newestSeenAt: null,
-  }))
-)
-
-function getNicheStatusCopy(status: NicheCatalogItem['status']) {
-  if (status === 'ready') return 'Ready'
-  if (status === 'thin') return 'Thin'
-  return 'Repairing'
-}
-
-function getNicheStatusStyle(status: NicheCatalogItem['status']) {
-  if (status === 'ready') return { color: 'var(--grn)', border: 'rgba(46,207,118,0.28)', background: 'rgba(46,207,118,0.10)' }
-  if (status === 'thin') return { color: 'var(--gold)', border: 'rgba(199,160,82,0.30)', background: 'rgba(199,160,82,0.10)' }
-  return { color: 'var(--sil)', border: 'rgba(125,211,252,0.14)', background: 'rgba(125,211,252,0.06)' }
-}
-
-function getNicheCatalogGroups(catalog: NicheCatalogItem[]) {
-  const source = catalog.length > 0 ? catalog : FALLBACK_NICHES
-  const deduped = Array.from(new Map(source.filter((item) => item.name && item.name !== 'Unassigned').map((item) => [item.name, item])).values())
-  const statusOrder: Record<NicheCatalogItem['status'], number> = { ready: 0, thin: 1, repairing: 2 }
-  const sorted = deduped.sort((a, b) =>
-    statusOrder[a.status] - statusOrder[b.status] ||
-    b.publishReady - a.publishReady ||
-    b.activeProducts - a.activeProducts ||
-    a.name.localeCompare(b.name)
-  )
-  return [
-    { group: 'Ready', emoji: '✓', items: sorted.filter((item) => item.status === 'ready') },
-    { group: 'Thin', emoji: '~', items: sorted.filter((item) => item.status === 'thin') },
-    { group: 'Repairing', emoji: '...', items: sorted.filter((item) => item.status === 'repairing') },
-  ].filter((group) => group.items.length > 0)
-}
-
 export function ProductListingTab({
   niche,
   nicheSaving,
-  nicheCatalog,
-  nicheCatalogLoading,
-  nicheCatalogError,
   onSelectNiche,
   onClearNiche,
   finderLoading,
@@ -99,9 +39,6 @@ export function ProductListingTab({
 }: {
   niche: string | null
   nicheSaving: boolean
-  nicheCatalog: NicheCatalogItem[]
-  nicheCatalogLoading: boolean
-  nicheCatalogError: string | null
   onSelectNiche: (niche: string) => void
   onClearNiche: () => void
   finderLoading: boolean
@@ -128,9 +65,6 @@ export function ProductListingTab({
   const listedCount = listAllProgress ? Math.max(0, listAllProgress.total - listAllProgress.errors) : 0
   const hasResults = Boolean(finderResults?.length)
   const publishReadyCount = finderResults?.filter((product) => !getBulkPreflightIssue(product)).length || 0
-  const nicheCatalogGroups = getNicheCatalogGroups(nicheCatalog)
-  const activeNicheMeta = niche ? NICHE_META.get(niche) : null
-  const activeNicheStats = niche ? nicheCatalog.find((item) => item.name === niche) : null
   const trialLocked = Boolean(
     trial &&
     !trial.loading &&
@@ -177,13 +111,8 @@ export function ProductListingTab({
                 {NICHE_GROUPS.find(g => g.items.includes(niche))?.emoji || '🛒'}
               </div>
               <div>
-                <div style={{ fontSize: '8px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0, color: 'var(--sil)', marginBottom: '3px' }}>{activeNicheMeta?.group || 'Active'} Niche</div>
+                <div style={{ fontSize: '8px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0, color: 'var(--sil)', marginBottom: '3px' }}>Active Niche</div>
                 <div style={{ fontFamily: 'var(--serif)', fontSize: '20px', fontWeight: 600, color: 'var(--gld2)' }}>{niche}</div>
-                {activeNicheStats ? (
-                  <div style={{ fontSize: '10px', color: 'var(--sil)', marginTop: '3px' }}>
-                    {activeNicheStats.publishReady} publish-ready · {activeNicheStats.needsEnrichment} need enrichment
-                  </div>
-                ) : null}
               </div>
             </div>
             <button onClick={onClearNiche} className="btn btn-ghost btn-sm" style={{ fontSize: '11px' }}>Change Niche</button>
@@ -192,37 +121,25 @@ export function ProductListingTab({
           /* Niche selector */
           <div className="card" style={{ padding: '32px', marginBottom: '28px' }}>
             <div style={{ fontSize: '18px', fontWeight: 700, color: 'var(--txt)', marginBottom: '6px' }}>Choose Your Niche</div>
-            <div style={{ fontSize: '12px', color: 'var(--dim)', marginBottom: '12px', lineHeight: 1.6 }}>
-              Pick one category to focus on. Ready niches have 45+ publish-ready products, Thin niches have 30-44, and Repairing niches are still being stocked or enriched.
+            <div style={{ fontSize: '12px', color: 'var(--dim)', marginBottom: '24px', lineHeight: 1.6 }}>
+              Pick one category to focus on. A focused niche means better sourcing, better listings, and faster momentum.
             </div>
-            {nicheCatalogLoading ? (
-              <div style={{ color: 'var(--sil)', fontSize: '12px', marginBottom: '16px' }}>Loading live niche counts...</div>
-            ) : nicheCatalogError ? (
-              <div style={{ color: 'var(--gold)', fontSize: '12px', marginBottom: '16px' }}>Live niche counts unavailable. Showing the built-in niche list.</div>
-            ) : (
-              <div style={{ color: 'var(--sil)', fontSize: '11px', marginBottom: '16px' }}>
-                Showing {nicheCatalog.length || FALLBACK_NICHES.length} source niches from the live product pool.
-              </div>
-            )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: '20px' }}>
-              {nicheCatalogGroups.map(group => (
+              {NICHE_GROUPS.map(group => (
                 <div key={group.group}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
                     <span style={{ fontSize: '14px' }}>{group.emoji}</span>
                     <span style={{ fontSize: '8px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0, color: 'var(--plat)' }}>{group.group}</span>
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    {group.items.map(item => {
-                      const statusStyle = getNicheStatusStyle(item.status)
-                      const meta = NICHE_META.get(item.name)
-                      return (
+                    {group.items.map(item => (
                       <button
-                        key={item.name}
-                        onClick={() => onSelectNiche(item.name)}
+                        key={item}
+                        onClick={() => onSelectNiche(item)}
                         disabled={nicheSaving}
                         style={{
                           textAlign: 'left',
-                          padding: '10px 12px',
+                          padding: '9px 12px',
                           borderRadius: '9px',
                           fontSize: '12px',
                           fontFamily: 'inherit',
@@ -236,19 +153,9 @@ export function ProductListingTab({
                         onMouseEnter={e => { (e.target as HTMLButtonElement).style.background = 'rgba(14,165,233,0.10)'; (e.target as HTMLButtonElement).style.borderColor = 'rgba(14,165,233,0.24)'; (e.target as HTMLButtonElement).style.color = 'var(--plat)' }}
                         onMouseLeave={e => { (e.target as HTMLButtonElement).style.background = 'rgba(14,27,44,0.72)'; (e.target as HTMLButtonElement).style.borderColor = 'rgba(14,116,144,0.12)'; (e.target as HTMLButtonElement).style.color = 'var(--sil)' }}
                       >
-                        <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
-                          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {meta?.emoji ? `${meta.emoji} ` : ''}{item.name}
-                          </span>
-                          <span style={{ flexShrink: 0, fontSize: '9px', color: statusStyle.color, border: `1px solid ${statusStyle.border}`, background: statusStyle.background, borderRadius: '999px', padding: '2px 6px', fontWeight: 800 }}>
-                            {getNicheStatusCopy(item.status)}
-                          </span>
-                        </span>
-                        <span style={{ display: 'block', marginTop: '4px', color: 'var(--dim)', fontSize: '10px' }}>
-                          {item.publishReady} ready · {item.needsEnrichment} enriching
-                        </span>
+                        {item}
                       </button>
-                    )})}
+                    ))}
                   </div>
                 </div>
               ))}

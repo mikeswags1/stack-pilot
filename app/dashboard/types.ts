@@ -234,16 +234,6 @@ export interface ProductSourceHealth {
     maxScore: number
     newestSeenAt: string | null
   }>
-  allNiches: Array<{
-    name: string
-    activeProducts: number
-    publishReady: number
-    needsEnrichment: number
-    cacheProducts: number
-    averageScore: number
-    status: 'ready' | 'thin' | 'repairing'
-    newestSeenAt: string | null
-  }>
   providers: {
     rapidApiConfigured: boolean
     liveProviderChecks: string
