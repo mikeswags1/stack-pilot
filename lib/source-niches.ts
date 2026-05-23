@@ -1,6 +1,32 @@
 import { queryRows, sql } from '@/lib/db'
 
 export const TRENDING_NEW_NICHE_QUERIES: Record<string, string[]> = {
+  'Fourth of July': [
+    'fourth of july decorations outdoor',
+    '4th of july decorations outdoor',
+    'american flag bunting outdoor',
+    'patriotic tablecloth disposable',
+    'red white blue party decorations',
+    'patriotic string lights outdoor',
+    'american flag garden flags',
+    'fourth of july party supplies',
+    'patriotic paper plates napkins',
+    'red white blue balloons arch kit',
+    'patriotic serving trays',
+    'american flag toothpicks food picks',
+    'fourth of july yard signs',
+    'patriotic porch decor',
+    'red white blue glow sticks',
+    'patriotic cooler bag',
+    'fourth of july picnic blanket',
+    'patriotic pool floats',
+    'american flag car magnets',
+    'patriotic bandanas bulk',
+    'fourth of july photo booth props',
+    'patriotic mason jar lights',
+    'red white blue outdoor pillows',
+    'fourth of july grilling accessories',
+  ],
   'Golf Accessories': [
     'golf towel magnetic clip', 'golf ball marker divot tool', 'golf club brush cleaner',
     'golf rangefinder case', 'golf tee holder pouch', 'golf alignment sticks training',
@@ -147,6 +173,7 @@ export const TRENDING_EXISTING_NICHE_QUERY_ADDITIONS: Record<string, string[]> =
 const SEASONAL_TRENDING_TERMS = [
   'golf', 'pool', 'beach', 'summer', 'sun', 'patio', 'backyard', 'outdoor', 'camping',
   'travel', 'road trip', 'cooling', 'portable fan', 'pickleball', 'grill', 'garden',
+  'fourth of july', '4th of july', 'patriotic', 'american flag', 'red white blue',
 ]
 
 const VIRAL_GIFTABLE_TERMS = [
@@ -209,7 +236,80 @@ export function getSeasonalQueryExpansions(niche: string) {
   if (includesAny(lower, ['golf', 'pool', 'beach', 'patio', 'outdoor', 'travel'])) {
     expansions.push(`2026 ${niche} trends`, `${niche} summer best seller`)
   }
+  if (includesAny(lower, ['fourth of july', '4th of july', 'patriotic'])) {
+    expansions.push(
+      '4th of july outdoor decorations',
+      'patriotic party supplies',
+      'red white blue decorations',
+      'independence day decorations outdoor',
+    )
+  }
   return uniqueQueries(expansions)
+}
+
+export function getUpcomingSeasonalSourceNiches(now = new Date()) {
+  const month = now.getUTCMonth() + 1
+  const day = now.getUTCDate()
+  const monthDay = month * 100 + day
+  const suggestions: Array<{ name: string; queries: string[]; reason: string }> = []
+
+  if (monthDay >= 501 && monthDay <= 704) {
+    suggestions.push({
+      name: 'Fourth of July',
+      queries: TRENDING_NEW_NICHE_QUERIES['Fourth of July'],
+      reason: 'Independence Day demand ramps from late May through July 4; target lightweight party, yard, picnic, and patriotic decor items.',
+    })
+  }
+  if (monthDay >= 601 && monthDay <= 831) {
+    suggestions.push({
+      name: 'Back to School Organization',
+      queries: [
+        'back to school desk organizer',
+        'locker shelf magnetic',
+        'pencil pouch bulk',
+        'student planner accessories',
+        'lunch box ice packs slim',
+        'backpack organizer insert',
+        'dorm desk organizer',
+        'school supply labels waterproof',
+      ],
+      reason: 'Back-to-school demand starts before August; prioritize small organization and supply accessories.',
+    })
+  }
+  if (monthDay >= 901 && monthDay <= 1031) {
+    suggestions.push({
+      name: 'Halloween Party Decor',
+      queries: [
+        'halloween outdoor decorations',
+        'halloween party supplies',
+        'halloween string lights',
+        'spider web decorations outdoor',
+        'pumpkin carving tools kit',
+        'halloween tablecloth disposable',
+        'halloween candy bags',
+        'trunk or treat decorations',
+      ],
+      reason: 'Halloween decor and party supplies trend early; avoid costumes/sizing and focus on low-return accessories.',
+    })
+  }
+  if (monthDay >= 1001 || monthDay <= 1215) {
+    suggestions.push({
+      name: 'Holiday Gift Wrap & Shipping',
+      queries: [
+        'christmas gift bags bulk',
+        'holiday wrapping paper rolls',
+        'christmas shipping boxes',
+        'gift tags stickers christmas',
+        'tissue paper christmas bulk',
+        'holiday mailers padded',
+        'ribbon bows gift wrapping',
+        'christmas thank you stickers',
+      ],
+      reason: 'Holiday packaging and gift-wrap products are lightweight, consumable, and peak before December shipping cutoffs.',
+    })
+  }
+
+  return suggestions
 }
 
 export function getSourcingTrendSignals(input: {

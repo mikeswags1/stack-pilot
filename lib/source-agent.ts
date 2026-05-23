@@ -7,6 +7,7 @@ import {
   refreshSourceIntelligenceState,
 } from '@/lib/source-intelligence'
 import {
+  getUpcomingSeasonalSourceNiches,
   loadCustomSourceNicheRows,
   upsertCustomSourceNiche,
 } from '@/lib/source-niches'
@@ -268,6 +269,7 @@ async function getAgentContext() {
 
 async function buildAgentPlan() {
   const context = await getAgentContext()
+  const upcomingSeasonalNiches = getUpcomingSeasonalSourceNiches()
   const system = [
     'You are StackPilot Source Agent.',
     'Your job is product sourcing only: find promising eBay resale niches, improve search queries, and recommend source-pool cleanup.',
@@ -278,7 +280,7 @@ async function buildAgentPlan() {
   ].join(' ')
   const prompt = JSON.stringify({
     goal: 'Create or refine source niches from what is selling and what has good source signals. Choose repair niches that need fresh product stock.',
-    context,
+    context: { ...context, upcomingSeasonalNiches },
     outputShape: {
       newNiches: [{ name: 'Short niche name', queries: ['6-18 Amazon search phrases'], reason: 'why this niche is promising' }],
       repairNiches: ['existing niche names to refresh'],
@@ -293,9 +295,12 @@ async function buildAgentPlan() {
       : 'deterministic'
 
   let plan: AgentPlan = {
-    newNiches: [],
-    repairNiches: context.weakNiches.filter((niche) => isAllowedNiche(niche, [])).slice(0, 3),
-    notes: ['No AI provider configured; ran deterministic source cleanup and weak-niche repair selection.'],
+    newNiches: upcomingSeasonalNiches.filter((niche) => isAllowedNiche(niche.name, niche.queries)).slice(0, 2),
+    repairNiches: unique([
+      ...upcomingSeasonalNiches.map((niche) => niche.name),
+      ...context.weakNiches.filter((niche) => isAllowedNiche(niche, [])),
+    ], 6),
+    notes: ['No AI provider configured; ran deterministic seasonal sourcing and weak-niche repair selection.'],
   }
   if (provider !== 'deterministic') {
     const text = provider === 'anthropic'
@@ -303,7 +308,15 @@ async function buildAgentPlan() {
       : await callOpenRouter(system, prompt)
     const parsed = JSON.parse(extractJsonObject(text || '{}'))
     plan = sanitizePlan(parsed)
-    if (!plan.repairNiches?.length) plan.repairNiches = context.weakNiches.filter((niche) => isAllowedNiche(niche, [])).slice(0, 3)
+    const seasonalNewNiches = upcomingSeasonalNiches
+      .filter((niche) => isAllowedNiche(niche.name, niche.queries))
+      .filter((niche) => !(plan.newNiches || []).some((item) => item.name.toLowerCase() === niche.name.toLowerCase()))
+    plan.newNiches = [...(plan.newNiches || []), ...seasonalNewNiches].slice(0, 3)
+    plan.repairNiches = unique([
+      ...(plan.repairNiches || []),
+      ...upcomingSeasonalNiches.map((niche) => niche.name),
+      ...context.weakNiches.filter((niche) => isAllowedNiche(niche, [])),
+    ], 8)
   }
 
   return { provider, plan, context }

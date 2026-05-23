@@ -5,7 +5,7 @@ import { TrialMeter } from './TrialMeter'
 import { getBulkPreflightIssue } from '../utils'
 
 const NICHE_GROUPS = [
-  { group: 'Trending', emoji: '\u2728', items: ['Golf Accessories', 'Pool Products', 'Beach & Sunny Day', 'Summer Outdoor Gear', 'Backyard & Patio', 'Travel Accessories', 'Fitness Recovery', 'Home Organization', 'Pet Products', 'Viral Gadgets', 'Giftable Under $50'] },
+  { group: 'Trending', emoji: '\u2728', items: ['Fourth of July', 'Golf Accessories', 'Pool Products', 'Beach & Sunny Day', 'Summer Outdoor Gear', 'Backyard & Patio', 'Travel Accessories', 'Fitness Recovery', 'Home Organization', 'Pet Products', 'Viral Gadgets', 'Giftable Under $50'] },
   { group: 'Electronics', emoji: '⚡', items: ['Phone Accessories', 'Computer Parts', 'Audio & Headphones', 'Smart Home Devices', 'Gaming Gear', 'Cable Organizers & Clips', 'Desk Cable Management', 'Desk Cord & Cable Clips', 'Workspace Cable & Power Management', 'Cable & Cord Storage Bundles'] },
   { group: 'Home', emoji: '🏠', items: ['Kitchen Gadgets', 'Home Decor', 'Furniture & Lighting', 'Cleaning Supplies', 'Storage & Organization', 'Refrigerator & Freezer Organizers', 'Closet Rod Organizers & Hangers'] },
   { group: 'Outdoors', emoji: '🌿', items: ['Camping & Hiking', 'Garden & Tools', 'Sporting Goods', 'Fishing & Hunting', 'Cycling', 'Garage Storage Hooks', 'Garage Wall Pegboard Organizers'] },
