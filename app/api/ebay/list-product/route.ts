@@ -1038,6 +1038,130 @@ async function uploadToEPS(externalUrl: string, token: string, appId: string): P
 
 // ── Description builder ──────────────────────────────────────────────────────
 function buildDescription(title: string, features: string[], about: string, images: string[], specs: Array<[string, string]> = [], listingNiche: string | null = null): string {
+  const displayTitle = decodeAllEntities(title)
+  const uniqueImages = dedupeImageUrls(images)
+  const mainImage = uniqueImages[0] || ''
+  const relevantSpecs = pickRelevantSpecs(specs)
+  const inferredBrand = inferBrandFromProduct(displayTitle, relevantSpecs)
+  const productType = inferTypeFromProduct(displayTitle, listingNiche, relevantSpecs)
+  const normalizedFeatures = buildOriginalFeatureBullets(displayTitle, relevantSpecs, listingNiche)
+  const sourceFeatureBullets = features
+    .map((value) => sanitizeContent(value))
+    .filter((value) => value.length > 12 && !isGenericFeature(value))
+    .slice(0, 6)
+  const specBullets = relevantSpecs
+    .filter(([key]) => !/brand/i.test(key))
+    .slice(0, 5)
+    .map(([key, value]) => `${titleCaseLabel(key)}: ${value}`)
+  const finalBullets = Array.from(new Set([...sourceFeatureBullets, ...normalizedFeatures, ...specBullets])).slice(0, 5)
+  const cleanAbout = sanitizeContent(about || '').replace(/\s+/g, ' ').trim()
+  const topSpecsSentence = relevantSpecs
+    .filter(([key]) => !/brand/i.test(key))
+    .slice(0, 3)
+    .map(([key, value]) => `${titleCaseLabel(key)} ${value}`)
+    .join(', ')
+  const benefit = finalBullets[0]
+    ? finalBullets[0].replace(/^([A-Z][A-Z0-9 &,'().]{3,}?)\s*[-:]\s*/i, '').slice(0, 92)
+    : `${productType} for dependable everyday use`
+  const subtitle = sanitizeContent(benefit).replace(/\.$/, '')
+  const overview = cleanAbout.length >= 80 && cleanAbout.length <= 420
+    ? cleanAbout
+    : `${displayTitle}${inferredBrand ? ` by ${inferredBrand}` : ''} is a ${productType.toLowerCase()} designed for practical everyday use, easy gifting, and reliable performance.`
+  const details = topSpecsSentence
+    ? `Specifications include ${topSpecsSentence}. See all photos and item specifics for exact style, fit, color, and included components before purchasing.`
+    : 'See all photos and item specifics for exact style, fit, color, and included components before purchasing.'
+  const escapeAttr = (value: string) => value.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const formatBullet = (text: string, index: number) => {
+    const cleaned = sanitizeContent(text).replace(/^([A-Z][A-Z0-9 &,'().]{3,}?)\s*[-:]\s*/i, '<strong>$1:</strong> ')
+    return `<li style="margin:0 0 12px 0;padding-left:4px;"><strong>Feature ${index + 1}:</strong> ${cleaned}</li>`
+  }
+  const sectionHeader = (icon: string, label: string) => `
+    <div style="background:#202629;color:#ffffff;margin:28px 0 16px 0;padding:12px 18px;border-radius:3px;font-size:20px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;box-shadow:0 2px 4px rgba(0,0,0,.18);">
+      <span style="display:inline-block;width:30px;margin-right:12px;text-align:center;font-size:22px;vertical-align:middle;">${icon}</span>${label}
+    </div>`
+  const imageBlock = mainImage
+    ? `<img src="${escapeAttr(mainImage)}" alt="${escapeAttr(displayTitle)}" style="display:block;width:100%;height:300px;object-fit:contain;border:1px solid #cfcfcf;border-radius:6px;background:#fafafa;">`
+    : `<div style="height:300px;border:1px solid #cfcfcf;border-radius:6px;background:#fafafa;text-align:center;color:#999;font-size:26px;font-weight:700;letter-spacing:.02em;padding-top:110px;box-sizing:border-box;">YOUR PRODUCT IMAGE<br>HERE</div>`
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#ffffff;color:#111;font-family:Arial,Helvetica,sans-serif;">
+<div style="max-width:920px;margin:0 auto;padding:28px 28px 34px;border:1px solid #d5d5d5;background:#fff;box-sizing:border-box;">
+
+  <div style="text-align:center;border-bottom:1px solid #999;padding-bottom:20px;margin-bottom:26px;">
+    <h1 style="margin:0 0 8px 0;font-size:38px;line-height:1.15;font-weight:900;letter-spacing:.03em;text-transform:uppercase;color:#050505;word-wrap:break-word;overflow-wrap:anywhere;">${displayTitle}</h1>
+    <div style="font-size:21px;line-height:1.35;color:#111;">${subtitle}</div>
+  </div>
+
+  <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin-bottom:30px;">
+    <tr>
+      <td style="width:58%;vertical-align:top;padding-right:36px;">${imageBlock}</td>
+      <td style="width:42%;vertical-align:middle;">
+        <div style="border-bottom:1px solid #cfcfcf;padding:10px 0 22px 0;margin-bottom:22px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;"><tr>
+            <td style="width:70px;vertical-align:middle;text-align:center;font-size:42px;">&#9734;</td>
+            <td style="vertical-align:middle;"><div style="font-size:20px;font-weight:900;text-transform:uppercase;">Brand New</div><div style="font-size:15px;line-height:1.5;">Ships in original packaging, ready to use out of the box.</div></td>
+          </tr></table>
+        </div>
+        <div style="border-bottom:1px solid #cfcfcf;padding:10px 0 22px 0;margin-bottom:22px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;"><tr>
+            <td style="width:70px;vertical-align:middle;text-align:center;font-size:40px;">&#128666;</td>
+            <td style="vertical-align:middle;"><div style="font-size:20px;font-weight:900;text-transform:uppercase;">Fast Shipping</div><div style="font-size:15px;line-height:1.5;">Free 2&ndash;4 day tracked shipping included with every order.</div></td>
+          </tr></table>
+        </div>
+        <div style="padding:10px 0 0 0;">
+          <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;"><tr>
+            <td style="width:70px;vertical-align:middle;text-align:center;font-size:42px;">&#8635;</td>
+            <td style="vertical-align:middle;"><div style="font-size:20px;font-weight:900;text-transform:uppercase;">Hassle-Free Returns</div><div style="font-size:15px;line-height:1.5;">30-day returns accepted with no restocking fee.</div></td>
+          </tr></table>
+        </div>
+      </td>
+    </tr>
+  </table>
+
+  ${sectionHeader('&#9638;', 'Product Overview')}
+  <p style="font-size:16px;line-height:1.75;margin:0 18px 16px;color:#111;">${overview}</p>
+  <p style="font-size:16px;line-height:1.75;margin:0 18px 22px;color:#111;">${details}</p>
+
+  ${sectionHeader('&#9734;', 'Product Features')}
+  ${finalBullets.length > 0
+    ? `<ul style="font-size:16px;line-height:1.7;margin:0 18px 24px;padding-left:28px;color:#111;">${finalBullets.slice(0, 4).map(formatBullet).join('')}</ul>`
+    : `<p style="font-size:16px;line-height:1.75;margin:0 18px 24px;color:#111;">Key product details are shown in the photos and item specifics for this listing.</p>`}
+
+  ${sectionHeader('&#128666;', 'Shipping')}
+  <ul style="font-size:16px;line-height:1.75;margin:0 18px 24px;padding-left:28px;color:#111;">
+    <li><strong>Shipping Speed:</strong> Free 2&ndash;4 day shipping.</li>
+    <li><strong>Handling Time:</strong> Ships same day or next business day after cleared payment.</li>
+    <li><strong>Tracking:</strong> Tracking is uploaded to eBay as soon as your order ships.</li>
+  </ul>
+
+  ${sectionHeader('&#8635;', 'Return Policy')}
+  <ul style="font-size:16px;line-height:1.75;margin:0 18px 24px;padding-left:28px;color:#111;">
+    <li><strong>Returns:</strong> 30-day returns accepted.</li>
+    <li><strong>Restocking Fee:</strong> No restocking fee.</li>
+    <li><strong>Refunds:</strong> Refunds processed within 1 business day of receiving the return.</li>
+  </ul>
+
+  ${sectionHeader('&#9997;', 'Feedback')}
+  <p style="font-size:16px;line-height:1.75;margin:0 18px 24px;color:#111;">Your satisfaction is our priority. If you are happy with your purchase, please leave positive feedback. If there is any issue, contact us <strong>before</strong> leaving feedback &mdash; we will make it right.</p>
+
+  ${sectionHeader('&#9993;', 'Contact Us')}
+  <p style="font-size:16px;line-height:1.75;margin:0 18px 28px;color:#111;">Questions? Message us through eBay. We respond within 24 hours, Monday&ndash;Friday 9am&ndash;5pm EST.</p>
+
+  <div style="border-top:1px solid #999;margin-top:28px;padding-top:18px;text-align:center;font-size:15px;font-weight:800;letter-spacing:.03em;text-transform:uppercase;">&#9825; Thank you for supporting our small business!</div>
+
+</div>
+</body>
+</html>`
+
+  const safeHtml = html
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    .replace(/]]>/g, ']] >')
+  return `<![CDATA[${safeHtml}]]>`
+}
+
+function buildLegacyDescription(title: string, features: string[], about: string, images: string[], specs: Array<[string, string]> = [], listingNiche: string | null = null): string {
 
   // Decode all HTML entities so &#039; → ' and &#034; → " etc. render correctly
   const displayTitle = decodeAllEntities(title)
