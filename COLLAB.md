@@ -16,6 +16,7 @@ _Clear this section when done._
 
 | Agent | File(s) | What | Started |
 |-------|---------|------|---------|
+| Mike | Launch readiness / Mike's account | **Do not treat StackPilot as live-ready until the product sourcing/listing flow is perfectly smooth on Mike's own account.** Admin and Product Listing must stay consistent: if Admin says a niche is truly Done, Product Listing must present 30 list-ready products for that niche. Mike confirmed `Coins & Currency`, `Fitness Equipment`, and `Clothing & Accessories` currently show 30 as expected; continue validating more niches and fixing any mismatch before launch. | 2026-05-23 |
 | Mike + Claude | Vercel env vars | **Enabling RapidAPI Real-Time Amazon Data (Pro $25/mo)** as primary Amazon PDP enrichment source. Adding `RAPIDAPI_KEY` + `ENABLE_RAPIDAPI_FALLBACK=1`. Code path already exists in `lib/amazon-product.ts::fetchProductDetailsFromApi`. Once live, will trigger `/api/admin/enrich-pool` in a loop to enrich the ~5,748 unenriched products currently in the active pool. | 2026-05-22 |
 | Mike | Amazon Associates enrollment | **Long-term goal: replace RapidAPI with free Amazon PA-API 5.0.** Mike enrolling in Amazon Associates program in parallel. Requires 3 qualifying affiliate sales within 180 days to gain PA-API access (2-6 week realistic wait). Once approved, switch primary enrichment tier to PA-API and either cancel or downgrade RapidAPI. PA-API integration code NOT YET written — todo for whichever agent picks this up when PA-API access is granted. | 2026-05-22 |
 
