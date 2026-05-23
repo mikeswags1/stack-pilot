@@ -763,19 +763,23 @@ export async function refreshProductSourcePrices(options: { limit?: number; stal
           }
         }
 
-        // Direct Amazon scraper is the default. External API fallback is opt-in only.
+        // Fall back to direct Amazon scrape only for fresh-price discovery — NEVER for
+        // deactivation. The own-scraper has a ~90% false-positive rate on availability
+        // due to Amazon bot detection (returns no price / available=false when bot-blocked).
+        // We trusted that signal in the past, causing massive false deactivations of
+        // perfectly-good products and the user-visible niche-count attrition leak.
+        //
+        // Trust ONLY RapidAPI's "currently unavailable" signal for deactivation (handled
+        // above at line ~755). If scrape returns invalid data here, just skip this product
+        // for this cycle — RapidAPI will reach it eventually and deactivate if warranted.
         if (!freshPrice) {
           try {
             const scraped = await scrapeAmazonProduct(row.asin)
-            if (scraped) {
-              if (!scraped.available || scraped.price <= 0) {
-                await sql`UPDATE product_source_items SET active = FALSE, last_seen_at = NOW() WHERE asin = ${row.asin}`.catch(() => {})
-                failed += 1
-                return
-              }
+            if (scraped && scraped.available && scraped.price > 0) {
               freshPrice = scraped.price
             }
-          } catch { /* scraper also failed — skip */ }
+            // If scrape returned not-available or no price, skip silently. Do not deactivate.
+          } catch { /* scraper failed — skip */ }
         }
 
         if (!freshPrice) return void (failed += 1)
