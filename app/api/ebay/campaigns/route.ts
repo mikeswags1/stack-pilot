@@ -71,6 +71,9 @@ export async function POST(req: NextRequest) {
 
   const requestBody = {
     campaignName: name.trim(),
+    // marketplaceId is REQUIRED in the body for ad_campaign creation — the
+    // X-EBAY-C-MARKETPLACE-ID header alone is not sufficient for this endpoint.
+    marketplaceId: 'EBAY_US',
     campaignType: 'PROMOTED_LISTINGS_STANDARD',
     fundingStrategy: {
       bidPercentage: rate.toFixed(1),
