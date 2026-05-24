@@ -160,7 +160,11 @@ export function summarizeBulkListResult(result: {
   failedAsins: string[]
   skippedAsins: string[]
   failures: BulkListFailure[]
+  quotaHit?: boolean
 }) {
+  if (result.quotaHit) {
+    return `${result.listedAsins.length} product${result.listedAsins.length === 1 ? '' : 's'} listed before eBay API quota was reached. Pause listing for now and try again after eBay resets your call allowance.`
+  }
   const listed = result.listedAsins.length
   const skipped = result.skippedAsins.length
   const failed = result.failedAsins.length
@@ -190,6 +194,7 @@ export async function listProductsInBatches(args: {
   let skipped = 0
   let done = 0
   let reconnectRequired = false
+  let quotaHit = false
 
   const pushFailure = (product: FinderProduct, failure: Omit<BulkListFailure, 'asin' | 'title'>) => {
     failures.push({
@@ -212,7 +217,7 @@ export async function listProductsInBatches(args: {
   }
 
   for (let index = 0; index < total; index += concurrency) {
-    if (reconnectRequired) break
+    if (reconnectRequired || quotaHit) break
 
     onProgress({ done, total, errors })
     const batch = products.slice(index, index + concurrency)
@@ -259,6 +264,18 @@ export async function listProductsInBatches(args: {
         reconnectRequired = true
         break
       }
+      if (result.errorCode === 'EBAY_API_QUOTA_EXCEEDED') {
+        quotaHit = true
+        errors += 1
+        if (product) {
+          pushFailure(product, {
+            code: result.errorCode,
+            message: result.errorMessage || 'eBay API usage limit reached. Pause listing for now and try again after eBay resets your call allowance.',
+          })
+        }
+        done += 1
+        break
+      }
       if (result.asin) {
         listedAsins.push(result.asin)
       } else {
@@ -277,7 +294,7 @@ export async function listProductsInBatches(args: {
     onProgress({ done, total, errors, skipped, failures: [...failures] })
   }
 
-  onProgress({ done: total, total, errors, skipped, failures: [...failures] })
+  onProgress({ done: quotaHit ? done : total, total, errors, skipped, failures: [...failures] })
 
-  return { listedAsins, failedAsins, skippedAsins, failures, errors, skipped, reconnectRequired }
+  return { listedAsins, failedAsins, skippedAsins, failures, errors, skipped, reconnectRequired, quotaHit }
 }

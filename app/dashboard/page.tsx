@@ -1138,6 +1138,15 @@ export default function Dashboard() {
       setBanner({ tone: 'error', text: 'Your eBay session expired while listing. Reconnect in Settings and try again.' })
       return
     }
+    if (result.quotaHit) {
+      await refreshSubscriptionStatus().catch(() => {})
+      setFinderState((prev) => ({ ...prev, listAllProgress: null }))
+      setBanner({
+        tone: 'error',
+        text: summarizeBulkListResult(result),
+      })
+      return
+    }
 
     // Remove all terminal ASINs from the current display.
     // For the refill FETCH: only exclude listed+skipped — not failed ones.
@@ -1208,6 +1217,15 @@ export default function Dashboard() {
       setListingState((prev) => ({ ...prev, error: 'RECONNECT_REQUIRED' }))
       setConnectionState((prev) => ({ ...prev, ebayConnected: false, ebayNeedsReconnect: true }))
       setBanner({ tone: 'error', text: 'Your eBay session expired while listing. Reconnect in Settings and try again.' })
+      return
+    }
+    if (result.quotaHit) {
+      await refreshSubscriptionStatus().catch(() => {})
+      setContinuousFinderState((prev) => ({ ...prev, listAllProgress: null }))
+      setBanner({
+        tone: 'error',
+        text: summarizeBulkListResult(result),
+      })
       return
     }
 

@@ -2318,6 +2318,16 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  const isEbayQuotaError = (short: string, long: string) => {
+    const text = `${short} ${long}`.toLowerCase()
+    return (
+      text.includes('exceeded usage limit') ||
+      text.includes('usage limit') ||
+      text.includes('getapiaccessrules') ||
+      (text.includes('quota') && text.includes('exceed'))
+    )
+  }
+
   const extractUnavailableShippingService = (short: string, long: string) => {
     const text = `${short} ${long}`
     const match = text.match(/shipping service\s+(.+?)\s+is not available/i)
@@ -2511,6 +2521,17 @@ export async function POST(req: NextRequest) {
     const verification = await verifyCategoryCandidate({ ...xmlParams, categoryId, itemSpecificsXml })
     verificationAttempts.push(...verification.attemptedCategoryIds)
 
+    if (isEbayQuotaError(verification.parsed.short, verification.parsed.long)) {
+      return apiError(
+        'eBay API usage limit reached. Pause listing for now and try again after eBay resets your call allowance.',
+        {
+          status: 429,
+          code: 'EBAY_API_QUOTA_EXCEEDED',
+          details: { raw: verification.responseText.slice(0, 1200) },
+        },
+      )
+    }
+
     if (verification.ok) {
       verifiedParams = {
         categoryId: verification.categoryId,
@@ -2658,6 +2679,16 @@ export async function POST(req: NextRequest) {
         status: 401,
         code: 'RECONNECT_REQUIRED',
       })
+    }
+    if (isEbayQuotaError(errMsg, responseText)) {
+      return apiError(
+        'eBay API usage limit reached. Pause listing for now and try again after eBay resets your call allowance.',
+        {
+          status: 429,
+          code: 'EBAY_API_QUOTA_EXCEEDED',
+          details: { raw: responseText.slice(0, 1200) },
+        },
+      )
     }
     return apiError(errMsg, {
       status: 400,
