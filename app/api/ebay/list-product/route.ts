@@ -1111,7 +1111,7 @@ function buildDescription(
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="margin:0;padding:0;background:#ffffff;color:#111;font-family:Arial,Helvetica,sans-serif;">
-<div style="max-width:920px;margin:0 auto;padding:28px 28px 34px;border:1px solid #d5d5d5;background:#fff;box-sizing:border-box;">
+<div style="width:100%;max-width:1200px;margin:0 auto;padding:30px 34px 36px;border:1px solid #d5d5d5;background:#fff;box-sizing:border-box;">
 
   <div style="text-align:center;border-bottom:1px solid #999;padding-bottom:20px;margin-bottom:26px;">
     <h1 style="margin:0 0 8px 0;font-size:38px;line-height:1.15;font-weight:900;letter-spacing:.03em;text-transform:uppercase;color:#050505;word-wrap:break-word;overflow-wrap:anywhere;">${displayTitle}</h1>
