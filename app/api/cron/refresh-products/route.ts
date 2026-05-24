@@ -900,6 +900,7 @@ async function syncUnavailableListings(): Promise<{ ended: number; failed: numbe
     JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(la.asin)
     WHERE la.ended_at IS NULL
       AND la.ebay_listing_id IS NOT NULL
+      AND la.listed_at < NOW() - INTERVAL '24 hours'
       AND apc.available = FALSE
       AND apc.updated_at > NOW() - INTERVAL '6 hours'
     LIMIT 200
@@ -935,6 +936,10 @@ async function syncUnavailableListings(): Promise<{ ended: number; failed: numbe
           SET available = TRUE, updated_at = NOW()
           WHERE UPPER(asin) = UPPER(${listing.asin})
         `.catch(() => {})
+        reverifiedSkipped++
+        continue
+      }
+      if (!reverified || reverified.available !== false) {
         reverifiedSkipped++
         continue
       }
