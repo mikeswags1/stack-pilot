@@ -4,7 +4,7 @@ import { getValidEbayAccessToken } from '@/lib/ebay-auth'
 import { queryRows, sql } from '@/lib/db'
 import { scrapeAmazonSearch } from '@/lib/amazon-scrape'
 import { deactivateUnavailableProductSourcesFromCache, ensureProductSourceTables, rebuildProductSourceFromCache, repriceProductSourceItems, refreshProductSourcePrices } from '@/lib/product-source-engine'
-import { warmAmazonProductCache, fetchAmazonProductByAsin } from '@/lib/amazon-product'
+import { warmAmazonProductCache, fetchProductDetailsFromApi } from '@/lib/amazon-product'
 import { checkAmazonLiveAvailability } from '@/lib/amazon-availability'
 import { getListingPolicyFlags, hasBlockedListingPolicyFlag } from '@/lib/listing-policy'
 import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getRecommendedEbayPrice } from '@/lib/listing-pricing'
@@ -830,7 +830,11 @@ async function ensureListingAvailabilityAuditColumns() {
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_available BOOLEAN`.catch(() => {})
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_status_reason TEXT`.catch(() => {})
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_status_checked_at TIMESTAMPTZ`.catch(() => {})
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_unavailable_confirmed_count INTEGER NOT NULL DEFAULT 0`.catch(() => {})
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_unavailable_first_seen_at TIMESTAMPTZ`.catch(() => {})
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_unavailable_last_seen_at TIMESTAMPTZ`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS listed_asins_amazon_status_idx ON listed_asins (ended_at, amazon_status_checked_at)`.catch(() => {})
+  await sql`CREATE INDEX IF NOT EXISTS listed_asins_amazon_unavailable_confirmed_idx ON listed_asins (ended_at, amazon_available, amazon_unavailable_confirmed_count, amazon_unavailable_first_seen_at)`.catch(() => {})
 }
 
 function escapeXml(value: string) {
@@ -872,7 +876,8 @@ async function endEbayListingAsUnavailable(
     SET ended_at = NOW(),
         amazon_available = FALSE,
         amazon_status_reason = 'unavailable_ended',
-        amazon_status_checked_at = NOW()
+        amazon_status_checked_at = NOW(),
+        amazon_unavailable_last_seen_at = NOW()
     WHERE user_id = ${userId}
       AND ebay_listing_id = ${listingId}
   `.catch(() => {})
@@ -895,21 +900,21 @@ async function syncUnavailableListings(): Promise<{ ended: number; failed: numbe
     ebay_listing_id: string
     asin: string
   }>`
-    SELECT la.user_id, la.ebay_listing_id, la.asin
-    FROM listed_asins la
-    JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(la.asin)
-    WHERE la.ended_at IS NULL
-      AND la.ebay_listing_id IS NOT NULL
-      AND la.listed_at < NOW() - INTERVAL '24 hours'
-      AND apc.available = FALSE
-      AND apc.updated_at > NOW() - INTERVAL '6 hours'
-    LIMIT 200
+    SELECT user_id, ebay_listing_id, asin
+    FROM listed_asins
+    WHERE ended_at IS NULL
+      AND ebay_listing_id IS NOT NULL
+      AND listed_at < NOW() - INTERVAL '24 hours'
+      AND amazon_available = FALSE
+      AND amazon_status_reason = 'unavailable'
+      AND amazon_unavailable_confirmed_count >= 2
+      AND amazon_unavailable_first_seen_at < NOW() - INTERVAL '12 hours'
+      AND amazon_unavailable_last_seen_at > NOW() - INTERVAL '48 hours'
+    ORDER BY amazon_unavailable_last_seen_at ASC
+    LIMIT 50
   `.catch(() => [])
 
   if (unavailableRows.length === 0) return { ended: 0, failed: 0, skipped: 0, reverified_skipped: 0 }
-  if (process.env.AUTO_END_UNAVAILABLE_LISTINGS !== '1') {
-    return { ended: 0, failed: 0, skipped: unavailableRows.length, reverified_skipped: 0 }
-  }
 
   const byUser = new Map<number, Array<{ ebay_listing_id: string; asin: string }>>()
   for (const row of unavailableRows) {
@@ -930,8 +935,7 @@ async function syncUnavailableListings(): Promise<{ ended: number; failed: numbe
     }
 
     for (const listing of listings) {
-      // Re-verify with RapidAPI before pulling the trigger
-      const reverified = await fetchAmazonProductByAsin({ asin: listing.asin, strictAsin: true }).catch(() => null)
+      const reverified = await fetchProductDetailsFromApi(listing.asin).catch(() => null)
       if (reverified && reverified.available === true) {
         // Was a false positive — undo the cache flag and skip the end
         await sql`
@@ -939,10 +943,20 @@ async function syncUnavailableListings(): Promise<{ ended: number; failed: numbe
           SET available = TRUE, updated_at = NOW()
           WHERE UPPER(asin) = UPPER(${listing.asin})
         `.catch(() => {})
+        await sql`
+          UPDATE listed_asins
+          SET amazon_available = TRUE,
+              amazon_status_reason = 'available',
+              amazon_status_checked_at = NOW(),
+              amazon_unavailable_confirmed_count = 0,
+              amazon_unavailable_first_seen_at = NULL,
+              amazon_unavailable_last_seen_at = NULL
+          WHERE ebay_listing_id = ${listing.ebay_listing_id}
+        `.catch(() => {})
         reverifiedSkipped++
         continue
       }
-      if (!reverified || reverified.available !== false) {
+      if (!reverified || reverified.available !== false || reverified.source !== 'api') {
         reverifiedSkipped++
         continue
       }
@@ -1055,7 +1069,10 @@ async function auditActiveAmazonListings(limit = 24): Promise<{
           SET amazon_available = TRUE,
               amazon_status_reason = 'available',
               amazon_status_checked_at = NOW(),
-              amazon_price = ${check.amazonPrice}
+              amazon_price = ${check.amazonPrice},
+              amazon_unavailable_confirmed_count = 0,
+              amazon_unavailable_first_seen_at = NULL,
+              amazon_unavailable_last_seen_at = NULL
           WHERE user_id = ${row.user_id}
             AND ebay_listing_id = ${row.ebay_listing_id}
         `.catch(() => {})
@@ -1063,19 +1080,37 @@ async function auditActiveAmazonListings(limit = 24): Promise<{
         continue
       }
 
+      if (check.reason === 'CHECK_FAILED') {
+        await sql`
+          UPDATE listed_asins
+          SET amazon_status_reason = 'check_failed',
+              amazon_status_checked_at = NOW()
+          WHERE user_id = ${row.user_id}
+            AND ebay_listing_id = ${row.ebay_listing_id}
+        `.catch(() => {})
+        skipped++
+        continue
+      }
+
       await sql`
         UPDATE listed_asins
         SET amazon_available = FALSE,
             amazon_status_reason = ${check.reason.toLowerCase()},
-            amazon_status_checked_at = NOW()
+            amazon_status_checked_at = NOW(),
+            amazon_unavailable_confirmed_count = CASE
+              WHEN amazon_available = FALSE AND amazon_status_reason = ${check.reason.toLowerCase()}
+                THEN amazon_unavailable_confirmed_count + 1
+              ELSE 1
+            END,
+            amazon_unavailable_first_seen_at = CASE
+              WHEN amazon_available = FALSE AND amazon_status_reason = ${check.reason.toLowerCase()}
+                THEN COALESCE(amazon_unavailable_first_seen_at, NOW())
+              ELSE NOW()
+            END,
+            amazon_unavailable_last_seen_at = NOW()
         WHERE user_id = ${row.user_id}
           AND ebay_listing_id = ${row.ebay_listing_id}
       `.catch(() => {})
-
-      if (check.reason === 'CHECK_FAILED') {
-        skipped++
-        continue
-      }
 
       await sql`
         UPDATE product_source_items
@@ -1083,9 +1118,8 @@ async function auditActiveAmazonListings(limit = 24): Promise<{
         WHERE asin = ${row.asin.toUpperCase()}
       `.catch(() => {})
 
-      // Never end live eBay listings from the background audit. The audit may
-      // mark Amazon/source status, but removing a listing must be an explicit
-      // user cleanup action.
+      // The audit records confirmed unavailable evidence only. A separate
+      // strict gate decides later whether an eBay listing is safe to end.
       skipped++
     }
   }

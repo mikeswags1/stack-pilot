@@ -354,7 +354,7 @@ export async function saveCachedAmazonProduct(product: ValidatedAmazonProduct) {
   `.catch(() => {})
 }
 
-async function fetchProductDetailsFromApi(asin: string, fallbackImage?: string) {
+export async function fetchProductDetailsFromApi(asin: string, fallbackImage?: string) {
   const rapidKey = getRapidApiKey()
   if (!rapidKey) return null
 

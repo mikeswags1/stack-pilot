@@ -14,6 +14,9 @@ export async function ensureListedAsinsFinancialColumns() {
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_available BOOLEAN`.catch(() => {})
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_status_reason TEXT`.catch(() => {})
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_status_checked_at TIMESTAMPTZ`.catch(() => {})
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_unavailable_confirmed_count INTEGER NOT NULL DEFAULT 0`.catch(() => {})
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_unavailable_first_seen_at TIMESTAMPTZ`.catch(() => {})
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_unavailable_last_seen_at TIMESTAMPTZ`.catch(() => {})
   await sql`
     DELETE FROM listed_asins a
     USING listed_asins b
@@ -25,6 +28,7 @@ export async function ensureListedAsinsFinancialColumns() {
   await sql`CREATE INDEX IF NOT EXISTS listed_asins_user_listing_idx ON listed_asins (user_id, ebay_listing_id)`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS listed_asins_user_niche_idx ON listed_asins (user_id, niche)`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS listed_asins_amazon_status_idx ON listed_asins (ended_at, amazon_status_checked_at)`.catch(() => {})
+  await sql`CREATE INDEX IF NOT EXISTS listed_asins_amazon_unavailable_confirmed_idx ON listed_asins (ended_at, amazon_available, amazon_unavailable_confirmed_count, amazon_unavailable_first_seen_at)`.catch(() => {})
   // Image quality tracking: records how many images were actually used in the eBay listing
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS image_count SMALLINT`.catch(() => {})
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS image_quality_warning BOOLEAN NOT NULL DEFAULT FALSE`.catch(() => {})
