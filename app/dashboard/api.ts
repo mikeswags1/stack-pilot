@@ -78,6 +78,30 @@ export async function fetchEbayCredentials() {
   return requestJson<{ ok: true; credentials: EbayCredentialsSummary | null }>('/api/ebay/credentials')
 }
 
+export type EbayQuotaRule = {
+  callName: string
+  dailyHardLimit: number
+  dailyUsage: number
+  dailyRemaining: number | null
+  hourlyHardLimit: number
+  hourlyUsage: number
+  hourlyRemaining: number | null
+  dailyPercent: number | null
+  hourlyPercent: number | null
+}
+
+export async function fetchEbayQuotaStatus() {
+  return requestJson<{
+    ok: true
+    nearLimit: boolean
+    exhausted: boolean
+    resetEstimateIso: string
+    limitingRules: EbayQuotaRule[]
+    activeRules: EbayQuotaRule[]
+    rulesCount: number
+  }>('/api/ebay/quota', { cache: 'no-store', timeoutMs: 12000 })
+}
+
 export async function disconnectEbay() {
   return requestJson<{ ok: true; success: true }>('/api/ebay/credentials', {
     method: 'DELETE',

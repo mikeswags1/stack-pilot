@@ -47,6 +47,7 @@ import {
   fetchFinancials,
   fetchPerformance,
   fetchEbayCredentials,
+  fetchEbayQuotaStatus,
   fetchFinderProducts,
   fetchOrderAsinMap,
   fetchOrders,
@@ -71,6 +72,22 @@ type ConnectionState = {
   ebayConnected: boolean
   ebayNeedsReconnect: boolean
   syncing: boolean
+}
+
+type EbayQuotaState = {
+  loading: boolean
+  nearLimit: boolean
+  exhausted: boolean
+  resetEstimateIso: string | null
+  limitingRules: Array<{
+    callName: string
+    dailyRemaining: number | null
+    hourlyRemaining: number | null
+    dailyPercent: number | null
+    hourlyPercent: number | null
+  }>
+  checkedAt: string | null
+  error: string | null
 }
 
 type SubscriptionState = {
@@ -238,6 +255,15 @@ export default function Dashboard() {
     ebayConnected: false,
     ebayNeedsReconnect: false,
     syncing: false,
+  })
+  const [ebayQuotaState, setEbayQuotaState] = useState<EbayQuotaState>({
+    loading: false,
+    nearLimit: false,
+    exhausted: false,
+    resetEstimateIso: null,
+    limitingRules: [],
+    checkedAt: null,
+    error: null,
   })
   const [disconnectingEbay, setDisconnectingEbay] = useState(false)
   const [orderState, setOrderState] = useState<OrderState>({
@@ -635,6 +661,57 @@ export default function Dashboard() {
     return status
   }, [applySubscriptionStatus])
 
+  const refreshEbayQuotaStatus = useCallback(async () => {
+    setEbayQuotaState((prev) => ({ ...prev, loading: true, error: null }))
+    try {
+      const quota = await fetchEbayQuotaStatus()
+      setEbayQuotaState({
+        loading: false,
+        nearLimit: quota.nearLimit,
+        exhausted: quota.exhausted,
+        resetEstimateIso: quota.resetEstimateIso,
+        limitingRules: quota.limitingRules,
+        checkedAt: new Date().toISOString(),
+        error: null,
+      })
+      return quota
+    } catch (error) {
+      const message = getErrorMessage(error, 'Unable to check eBay API quota right now.')
+      setEbayQuotaState((prev) => ({ ...prev, loading: false, error: message }))
+      return null
+    }
+  }, [])
+
+  const guardEbayQuotaBeforeListing = useCallback(async (plannedListings: number) => {
+    const quota = await refreshEbayQuotaStatus()
+    if (!quota) return true
+
+    const minRemaining = quota.limitingRules
+      .flatMap((rule) => [rule.dailyRemaining, rule.hourlyRemaining])
+      .filter((value): value is number => typeof value === 'number')
+      .reduce<number | null>((min, value) => min === null ? value : Math.min(min, value), null)
+    const estimatedNeeded = Math.max(20, plannedListings * 4)
+
+    if (quota.exhausted || (minRemaining !== null && minRemaining < estimatedNeeded)) {
+      const resetText = quota.resetEstimateIso
+        ? new Date(quota.resetEstimateIso).toLocaleString([], { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' })
+        : 'the next eBay reset'
+      setBanner({
+        tone: 'error',
+        text: `eBay API quota is too low to safely list ${plannedListings} item${plannedListings === 1 ? '' : 's'}. StackPilot stopped before publishing. Try again after ${resetText}.`,
+      })
+      return false
+    }
+
+    if (quota.nearLimit) {
+      setBanner({
+        tone: 'error',
+        text: 'eBay API quota is getting low, so StackPilot will list carefully and stop immediately if eBay pushes back.',
+      })
+    }
+    return true
+  }, [refreshEbayQuotaStatus])
+
   const loadDashboardBootstrap = useCallback(async () => {
     setSubscriptionState((prev) => ({ ...prev, loading: true }))
     const results = await Promise.allSettled([
@@ -745,6 +822,12 @@ export default function Dashboard() {
       void loadFinancials()
     }
   }, [loadDashboardBootstrap, loadFinancials, loadOrders, status])
+
+  useEffect(() => {
+    if (status === 'authenticated' && connectionState.ebayConnected && (tab === 'product' || tab === 'continuous')) {
+      void refreshEbayQuotaStatus()
+    }
+  }, [connectionState.ebayConnected, refreshEbayQuotaStatus, status, tab])
 
   useEffect(() => {
     if (status === 'authenticated' && tab === 'performance' && !performanceState.data && !performanceState.loading && !performanceState.error) {
@@ -1113,6 +1196,8 @@ export default function Dashboard() {
       })
       return
     }
+    const quotaOk = await guardEbayQuotaBeforeListing(products.length)
+    if (!quotaOk) return
 
     const result = await listProductsInBatches({
       products,
@@ -1129,7 +1214,7 @@ export default function Dashboard() {
       onProgress: (progress) => {
         setFinderState((prev) => ({ ...prev, listAllProgress: progress }))
       },
-      concurrency: 3,
+      concurrency: ebayQuotaState.nearLimit ? 1 : 2,
     })
 
     if (result.reconnectRequired) {
@@ -1140,6 +1225,7 @@ export default function Dashboard() {
     }
     if (result.quotaHit) {
       await refreshSubscriptionStatus().catch(() => {})
+      await refreshEbayQuotaStatus().catch(() => null)
       setFinderState((prev) => ({ ...prev, listAllProgress: null }))
       setBanner({
         tone: 'error',
@@ -1172,7 +1258,7 @@ export default function Dashboard() {
       tone: 'success',
       text: summarizeBulkListResult(result),
     })
-  }, [connectionState.ebayConnected, publishFinderProduct, refillNicheFinderProducts, refreshSubscriptionStatus, subscriptionState.loading, subscriptionState.plan, subscriptionState.trialRemaining, visibleFinderResults])
+  }, [connectionState.ebayConnected, ebayQuotaState.nearLimit, guardEbayQuotaBeforeListing, publishFinderProduct, refillNicheFinderProducts, refreshEbayQuotaStatus, refreshSubscriptionStatus, subscriptionState.loading, subscriptionState.plan, subscriptionState.trialRemaining, visibleFinderResults])
 
   const handleContinuousListAll = useCallback(async () => {
     if (!connectionState.ebayConnected) {
@@ -1202,6 +1288,8 @@ export default function Dashboard() {
       })
       return
     }
+    const quotaOk = await guardEbayQuotaBeforeListing(products.length)
+    if (!quotaOk) return
 
     const result = await listProductsInBatches({
       products,
@@ -1210,7 +1298,7 @@ export default function Dashboard() {
       onProgress: (progress) => {
         setContinuousFinderState((prev) => ({ ...prev, listAllProgress: progress }))
       },
-      concurrency: 2,
+      concurrency: ebayQuotaState.nearLimit ? 1 : 2,
     })
 
     if (result.reconnectRequired) {
@@ -1221,6 +1309,7 @@ export default function Dashboard() {
     }
     if (result.quotaHit) {
       await refreshSubscriptionStatus().catch(() => {})
+      await refreshEbayQuotaStatus().catch(() => null)
       setContinuousFinderState((prev) => ({ ...prev, listAllProgress: null }))
       setBanner({
         tone: 'error',
@@ -1248,7 +1337,7 @@ export default function Dashboard() {
       tone: 'success',
       text: summarizeBulkListResult(result),
     })
-  }, [connectionState.ebayConnected, publishFinderProduct, refillContinuousProducts, refreshSubscriptionStatus, subscriptionState.loading, subscriptionState.plan, subscriptionState.trialRemaining, visibleContinuousResults])
+  }, [connectionState.ebayConnected, ebayQuotaState.nearLimit, guardEbayQuotaBeforeListing, publishFinderProduct, refillContinuousProducts, refreshEbayQuotaStatus, refreshSubscriptionStatus, subscriptionState.loading, subscriptionState.plan, subscriptionState.trialRemaining, visibleContinuousResults])
 
   const handleRunScript = useCallback(async (file: string) => {
     setScriptRunning(file)
@@ -1597,6 +1686,7 @@ export default function Dashboard() {
               onOpenListModal={(product) => openListModal({ ...product, sourceMode: 'niche' })}
               onListAll={() => void handleListAll()}
               listAllProgress={finderState.listAllProgress}
+              ebayQuota={ebayQuotaState}
               connected={connectionState.ebayConnected}
               compact={compact}
               trial={{

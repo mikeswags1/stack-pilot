@@ -33,6 +33,7 @@ export function ProductListingTab({
   onOpenListModal,
   onListAll,
   listAllProgress,
+  ebayQuota,
   connected,
   compact,
   trial,
@@ -53,6 +54,21 @@ export function ProductListingTab({
   onOpenListModal: (product: FinderProduct) => void
   onListAll: () => void
   listAllProgress: ListProgress | null
+  ebayQuota?: {
+    loading: boolean
+    nearLimit: boolean
+    exhausted: boolean
+    resetEstimateIso: string | null
+    limitingRules: Array<{
+      callName: string
+      dailyRemaining: number | null
+      hourlyRemaining: number | null
+      dailyPercent: number | null
+      hourlyPercent: number | null
+    }>
+    checkedAt: string | null
+    error: string | null
+  }
   connected: boolean
   compact?: boolean
   trial?: { loading: boolean; plan: string; listed: number; trialLimit: number; trialRemaining?: number }
@@ -65,6 +81,10 @@ export function ProductListingTab({
   const listedCount = listAllProgress ? Math.max(0, listAllProgress.total - listAllProgress.errors) : 0
   const hasResults = Boolean(finderResults?.length)
   const publishReadyCount = finderResults?.filter((product) => !getBulkPreflightIssue(product)).length || 0
+  const quotaRule = ebayQuota?.limitingRules?.[0]
+  const quotaReset = ebayQuota?.resetEstimateIso
+    ? new Date(ebayQuota.resetEstimateIso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : null
   const trialLocked = Boolean(
     trial &&
     !trial.loading &&
@@ -172,6 +192,30 @@ export function ProductListingTab({
                 <div style={{ fontSize: '12px', color: 'var(--sil)', lineHeight: 1.6 }}>
                   eBay isn't connected yet — you can still browse products, but the <strong style={{ color: 'var(--txt)' }}>Publish to eBay</strong> button won't work until you connect your account in Settings.
                 </div>
+              </div>
+            ) : null}
+
+            {connected && ebayQuota && (ebayQuota.loading || ebayQuota.nearLimit || ebayQuota.checkedAt || ebayQuota.error) ? (
+              <div style={{
+                marginBottom: '20px',
+                padding: '12px 16px',
+                borderRadius: '10px',
+                background: ebayQuota.exhausted ? 'rgba(232,63,80,0.08)' : ebayQuota.nearLimit ? 'rgba(199,160,82,0.08)' : 'rgba(46,207,118,0.06)',
+                border: ebayQuota.exhausted ? '1px solid rgba(232,63,80,0.22)' : ebayQuota.nearLimit ? '1px solid rgba(199,160,82,0.22)' : '1px solid rgba(46,207,118,0.16)',
+                color: 'var(--sil)',
+                fontSize: '12px',
+                lineHeight: 1.55,
+              }}>
+                <strong style={{ color: ebayQuota.exhausted ? 'var(--red)' : ebayQuota.nearLimit ? 'var(--gold)' : 'var(--grn)' }}>
+                  eBay API quota:
+                </strong>{' '}
+                {ebayQuota.loading
+                  ? 'checking...'
+                  : ebayQuota.error
+                    ? ebayQuota.error
+                    : ebayQuota.nearLimit && quotaRule
+                      ? `${quotaRule.callName} is low${quotaRule.dailyRemaining !== null ? ` (${quotaRule.dailyRemaining} daily calls left)` : ''}${quotaReset ? ` · reset estimate ${quotaReset}` : ''}.`
+                      : 'looks okay for listing.'}
               </div>
             ) : null}
 
