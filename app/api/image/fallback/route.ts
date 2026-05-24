@@ -66,14 +66,14 @@ export async function GET(req: NextRequest) {
       </svg>
     `
 
-    const stampWidth = 360
+    const stampWidth = 420
     const stamp = await sharp(stampBuffer).resize({ width: stampWidth }).png().toBuffer()
     const output = await sharp(Buffer.from(svg))
       .composite([
         {
           input: stamp,
           top: 30,
-          left: 30,
+          left: 18,
         },
       ])
       .jpeg({ quality: 92 })
