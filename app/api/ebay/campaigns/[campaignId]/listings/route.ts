@@ -37,6 +37,24 @@ export async function POST(req: NextRequest, context: { params: Promise<{ campai
   const listingIds = rows.map(r => r.ebay_listing_id)
   let added = 0
   let failed = 0
+  const errorSamples: string[] = []  // capture actual eBay error messages
+
+  // Extract the first useful error text from an eBay error response payload
+  const extractErrorText = (text: string): string => {
+    try {
+      const parsed = JSON.parse(text)
+      const errors: Array<{ longMessage?: string; message?: string; errorId?: number; parameters?: Array<{ name?: string; value?: string }> }> =
+        parsed.errors || []
+      const first = errors[0]
+      if (first) {
+        const params = (first.parameters || []).map(p => `${p.name}=${p.value}`).join(', ')
+        return `${first.longMessage || first.message || 'eBay error'}${params ? ` [${params}]` : ''}${first.errorId ? ` (errorId ${first.errorId})` : ''}`
+      }
+      return parsed.message || text.slice(0, 200)
+    } catch {
+      return text.slice(0, 200)
+    }
+  }
 
   // eBay BulkCreateAdsByListingId: max 500 per call, body = { requests: [{listingId: "..."}] }
   // For PROMOTED_LISTINGS_STANDARD / COST_PER_SALE, bidPercentage is set at campaign level.
@@ -70,32 +88,42 @@ export async function POST(req: NextRequest, context: { params: Promise<{ campai
       if (res.ok) {
         try {
           const data = JSON.parse(text) as {
-            responses?: Array<{ errors?: unknown[] }>
+            responses?: Array<{ errors?: Array<{ longMessage?: string; message?: string; errorId?: number }>; listingId?: string; statusCode?: number }>
           }
           const responses = data.responses || []
           const batchAdded = responses.filter(r => !r.errors || r.errors.length === 0).length
-          const batchFailed = responses.filter(r => r.errors && r.errors.length > 0).length
-          // If eBay returned fewer responses than we sent, count missing as added (already in campaign)
-          added += batchAdded || batch.length
-          failed += batchFailed
+          const batchFailedItems = responses.filter(r => r.errors && r.errors.length > 0)
+          added += batchAdded || (responses.length === 0 ? batch.length : 0)
+          failed += batchFailedItems.length
+          // capture per-listing errors so we can show the real reason
+          for (const item of batchFailedItems) {
+            const e = item.errors?.[0]
+            if (!e) continue
+            const msg = `${e.longMessage || e.message}${e.errorId ? ` (errorId ${e.errorId})` : ''}`
+            if (errorSamples.length < 3 && !errorSamples.includes(msg)) errorSamples.push(msg)
+          }
         } catch {
           added += batch.length
         }
       } else {
-        // Log the actual error for debugging
-        console.error(`[campaigns/listings] error body:`, text.slice(0, 600))
+        // Capture eBay's actual error message
+        const errMsg = extractErrorText(text)
+        console.error(`[campaigns/listings] HTTP ${res.status}:`, errMsg)
+        if (errorSamples.length < 3 && !errorSamples.includes(errMsg)) errorSamples.push(`HTTP ${res.status}: ${errMsg}`)
         failed += batch.length
       }
     } catch (e) {
-      console.error('[campaigns/listings] fetch error:', e)
+      const errMsg = e instanceof Error ? e.message : String(e)
+      console.error('[campaigns/listings] fetch error:', errMsg)
+      if (errorSamples.length < 3) errorSamples.push(`Network error: ${errMsg}`)
       failed += batch.length
     }
   }
 
   const total = listingIds.length
   const message = added > 0
-    ? `${added} of ${total} listing${total !== 1 ? 's' : ''} added to campaign.${failed > 0 ? ` ${failed} already in campaign or skipped.` : ''}`
-    : `Failed to add listings. Check Vercel logs for details.`
+    ? `${added} of ${total} listing${total !== 1 ? 's' : ''} added.${failed > 0 ? ` ${failed} skipped: ${errorSamples[0] || 'unknown reason'}` : ''}`
+    : `Failed to add ${total} listings. eBay says: ${errorSamples.join(' | ') || 'no error text returned'}`
 
-  return apiOk({ added, failed, total, message })
+  return apiOk({ added, failed, total, message, errorSamples })
 }
