@@ -2101,9 +2101,12 @@ export async function POST(req: NextRequest) {
     amazon.specs
   )
 
+  // Cap at 4 images instead of 6 — each one is an eBay UploadSiteHostedPictures call,
+  // and we were burning ~33% extra quota per listing for the 5th/6th images which
+  // most buyers don't scroll to anyway. 4 well-chosen images is the eBay standard.
   const filteredImages = dedupeImageUrls(allImages)
     .filter((u): u is string => typeof u === 'string' && u.startsWith('https://'))
-    .slice(0, 6)
+    .slice(0, 4)
 
   if (filteredImages.length < MIN_LISTING_IMAGES) {
     return apiError(
@@ -2495,7 +2498,16 @@ export async function POST(req: NextRequest) {
   let verificationResponseText = ''
   let verificationError = ''
 
-  for (const categoryId of categoryCandidates) {
+  // FAST PATH: when the category came from our cache, it has already worked for this
+  // ASIN before. Skip the verify loop (which costs 1-6 eBay API calls per candidate)
+  // and go straight to AddFixedPriceItem. If the listing itself fails with a leaf or
+  // category error, the existing retry chain below still handles it.
+  // Saves ~3-15 eBay VerifyAddFixedPriceItem calls per listing.
+  const skipVerification = Boolean(cachedCategory) && !providedCategoryId
+  if (skipVerification) {
+    verifiedParams = { categoryId: cachedCategory!.categoryId, itemSpecificsXml }
+    verificationAttempts = [cachedCategory!.categoryId]
+  } else for (const categoryId of categoryCandidates) {
     const verification = await verifyCategoryCandidate({ ...xmlParams, categoryId, itemSpecificsXml })
     verificationAttempts.push(...verification.attemptedCategoryIds)
 

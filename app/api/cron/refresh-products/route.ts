@@ -4,7 +4,7 @@ import { getValidEbayAccessToken } from '@/lib/ebay-auth'
 import { queryRows, sql } from '@/lib/db'
 import { scrapeAmazonSearch } from '@/lib/amazon-scrape'
 import { deactivateUnavailableProductSourcesFromCache, ensureProductSourceTables, rebuildProductSourceFromCache, repriceProductSourceItems, refreshProductSourcePrices } from '@/lib/product-source-engine'
-import { warmAmazonProductCache } from '@/lib/amazon-product'
+import { warmAmazonProductCache, fetchAmazonProductByAsin } from '@/lib/amazon-product'
 import { checkAmazonLiveAvailability } from '@/lib/amazon-availability'
 import { getListingPolicyFlags, hasBlockedListingPolicyFlag } from '@/lib/listing-policy'
 import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getRecommendedEbayPrice } from '@/lib/listing-pricing'
@@ -881,8 +881,14 @@ async function endEbayListingAsUnavailable(
 }
 
 // ── End eBay listings where Amazon confirms product unavailable ───────────────
-// Runs alongside syncUserListings. Uses cache-confirmed unavailable rows, then calls EndItem.
-async function syncUnavailableListings(): Promise<{ ended: number; failed: number; skipped: number }> {
+// Conservative two-gate approach:
+//   1) Cache freshness gate: only consider listings where apc.available=FALSE was
+//      written in the last 6 HOURS (was 2 days — too lenient, killed listings based
+//      on stale data after the scrape-attrition leak was fixed mid-day)
+//   2) Re-verify gate: for each candidate, call RapidAPI ONCE more right before ending.
+//      If RapidAPI now says available, restore apc.available=TRUE and skip the end
+//      (it was a transient stockout). Costs ~$0.0003 per candidate.
+async function syncUnavailableListings(): Promise<{ ended: number; failed: number; skipped: number; reverified_skipped: number }> {
   await ensureListingAvailabilityAuditColumns()
   const unavailableRows = await queryRows<{
     user_id: number
@@ -895,28 +901,22 @@ async function syncUnavailableListings(): Promise<{ ended: number; failed: numbe
     WHERE la.ended_at IS NULL
       AND la.ebay_listing_id IS NOT NULL
       AND apc.available = FALSE
-      AND apc.updated_at > NOW() - INTERVAL '2 days'
+      AND apc.updated_at > NOW() - INTERVAL '6 hours'
     LIMIT 200
   `.catch(() => [])
 
-  if (unavailableRows.length === 0) return { ended: 0, failed: 0, skipped: 0 }
+  if (unavailableRows.length === 0) return { ended: 0, failed: 0, skipped: 0, reverified_skipped: 0 }
 
-  const unavailableAsins = Array.from(new Set(unavailableRows.map((row) => row.asin.toUpperCase())))
-  await sql`
-    UPDATE product_source_items
-    SET active = FALSE, last_seen_at = NOW()
-    WHERE asin = ANY(${unavailableAsins}::text[])
-  `.catch(() => {})
-
-  const byUser = new Map<number, Array<{ ebay_listing_id: string }>>()
+  const byUser = new Map<number, Array<{ ebay_listing_id: string; asin: string }>>()
   for (const row of unavailableRows) {
     const entries = byUser.get(row.user_id) || []
-    entries.push({ ebay_listing_id: row.ebay_listing_id })
+    entries.push({ ebay_listing_id: row.ebay_listing_id, asin: row.asin })
     byUser.set(row.user_id, entries)
   }
 
   const appId = process.env.EBAY_APP_ID || ''
-  let ended = 0, failed = 0, skipped = 0
+  let ended = 0, failed = 0, skipped = 0, reverifiedSkipped = 0
+  const confirmedUnavailableAsins: string[] = []
 
   for (const [userId, listings] of byUser) {
     const credentials = await getValidEbayAccessToken(String(userId)).catch(() => null)
@@ -926,6 +926,19 @@ async function syncUnavailableListings(): Promise<{ ended: number; failed: numbe
     }
 
     for (const listing of listings) {
+      // Re-verify with RapidAPI before pulling the trigger
+      const reverified = await fetchAmazonProductByAsin({ asin: listing.asin, strictAsin: true }).catch(() => null)
+      if (reverified && reverified.available === true) {
+        // Was a false positive — undo the cache flag and skip the end
+        await sql`
+          UPDATE amazon_product_cache
+          SET available = TRUE, updated_at = NOW()
+          WHERE UPPER(asin) = UPPER(${listing.asin})
+        `.catch(() => {})
+        reverifiedSkipped++
+        continue
+      }
+
       try {
         const endedListing = await endEbayListingAsUnavailable(
           userId,
@@ -935,6 +948,7 @@ async function syncUnavailableListings(): Promise<{ ended: number; failed: numbe
         )
         if (endedListing) {
           ended++
+          confirmedUnavailableAsins.push(listing.asin.toUpperCase())
         } else {
           failed++
         }
@@ -944,7 +958,16 @@ async function syncUnavailableListings(): Promise<{ ended: number; failed: numbe
     }
   }
 
-  return { ended, failed, skipped }
+  // Only deactivate source pool entries for ASINs we ACTUALLY ended (not the re-verified ones)
+  if (confirmedUnavailableAsins.length > 0) {
+    await sql`
+      UPDATE product_source_items
+      SET active = FALSE, last_seen_at = NOW()
+      WHERE asin = ANY(${confirmedUnavailableAsins}::text[])
+    `.catch(() => {})
+  }
+
+  return { ended, failed, skipped, reverified_skipped: reverifiedSkipped }
 }
 
 async function closeUnavailableLocalOnlyListings() {
