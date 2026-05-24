@@ -8,6 +8,7 @@ import { queryRows, sql } from '@/lib/db'
 import { ensureListedAsinsFinancialColumns } from '@/lib/listed-asins'
 import { getCachedCategoryByAsin, setCachedCategoryByAsin } from '@/lib/ebay-category-cache'
 import { getOrGenerateAiTitle } from '@/lib/ai-title-generator'
+import { getOrGenerateAiDescription } from '@/lib/ai-description-generator'
 import { fetchAmazonProductByAsin, loadCachedAmazonProduct, saveCachedAmazonProduct } from '@/lib/amazon-product'
 import { scrapeAmazonProduct } from '@/lib/amazon-scrape'
 import { checkAmazonLiveAvailability } from '@/lib/amazon-availability'
@@ -1038,7 +1039,19 @@ async function uploadToEPS(externalUrl: string, token: string, appId: string): P
 }
 
 // ── Description builder ──────────────────────────────────────────────────────
-function buildDescription(title: string, features: string[], about: string, images: string[], specs: Array<[string, string]> = [], listingNiche: string | null = null): string {
+// aiContent (optional): if provided, the AI-generated overview replaces the
+// rule-based intro paragraph, and the AI bullets replace the rule-based feature
+// bullets. The rest of the template (Shipping/Returns/Feedback/Contact sections)
+// stays as boilerplate.
+function buildDescription(
+  title: string,
+  features: string[],
+  about: string,
+  images: string[],
+  specs: Array<[string, string]> = [],
+  listingNiche: string | null = null,
+  aiContent?: { overview: string; bullets: string[] } | null
+): string {
   const displayTitle = decodeAllEntities(title)
   const uniqueImages = dedupeImageUrls(images)
   const mainImage = uniqueImages[0] || ''
@@ -1054,7 +1067,11 @@ function buildDescription(title: string, features: string[], about: string, imag
     .filter(([key]) => !/brand/i.test(key))
     .slice(0, 5)
     .map(([key, value]) => `${titleCaseLabel(key)}: ${value}`)
-  const finalBullets = Array.from(new Set([...sourceFeatureBullets, ...normalizedFeatures, ...specBullets])).slice(0, 5)
+  // Prefer AI-generated bullets when available. Falls back to the original rule-based
+  // mix if Claude wasn't available / output failed validation upstream.
+  const finalBullets = aiContent && aiContent.bullets.length >= 3
+    ? aiContent.bullets.slice(0, 5)
+    : Array.from(new Set([...sourceFeatureBullets, ...normalizedFeatures, ...specBullets])).slice(0, 5)
   const cleanAbout = sanitizeContent(about || '').replace(/\s+/g, ' ').trim()
   const topSpecsSentence = relevantSpecs
     .filter(([key]) => !/brand/i.test(key))
@@ -1065,9 +1082,13 @@ function buildDescription(title: string, features: string[], about: string, imag
     ? finalBullets[0].replace(/^([A-Z][A-Z0-9 &,'().]{3,}?)\s*[-:]\s*/i, '').slice(0, 92)
     : `${productType} for dependable everyday use`
   const subtitle = sanitizeContent(benefit).replace(/\.$/, '')
-  const overview = cleanAbout.length >= 80 && cleanAbout.length <= 420
-    ? cleanAbout
-    : `${displayTitle}${inferredBrand ? ` by ${inferredBrand}` : ''} is a ${productType.toLowerCase()} designed for practical everyday use, easy gifting, and reliable performance.`
+  // Prefer AI-generated overview when available — falls back to cached Amazon
+  // "about" text or a generic constructed sentence.
+  const overview = aiContent && aiContent.overview.length >= 30
+    ? aiContent.overview
+    : cleanAbout.length >= 80 && cleanAbout.length <= 420
+      ? cleanAbout
+      : `${displayTitle}${inferredBrand ? ` by ${inferredBrand}` : ''} is a ${productType.toLowerCase()} designed for practical everyday use, easy gifting, and reliable performance.`
   const details = topSpecsSentence
     ? `Specifications include ${topSpecsSentence}. See all photos and item specifics for exact style, fit, color, and included components before purchasing.`
     : 'See all photos and item specifics for exact style, fit, color, and included components before purchasing.'
@@ -2159,13 +2180,27 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  // Try Claude-rewritten description first (cached per-ASIN, ~$0.001 once).
+  // Falls back to the rule-based bullets if Claude is unavailable or output fails
+  // validation. The AI version rewrites overview + bullets in buyer-focused language,
+  // drops marketing fluff ("premium", "world-class"), and avoids Amazon references.
+  const aiDescription = await getOrGenerateAiDescription({
+    asin: String(asin).toUpperCase(),
+    title: safeTitle,
+    niche: niche,
+    amazonFeatures: amazon.features,
+    amazonDescription: amazon.description,
+    specs: amazon.specs,
+  }).catch(() => null)
+
   const description = buildDescription(
     safeTitle,
     amazon.features,
     amazon.description,
     descriptionImageUrls,
     amazon.specs,
-    niche
+    niche,
+    aiDescription,
   )
 
 
