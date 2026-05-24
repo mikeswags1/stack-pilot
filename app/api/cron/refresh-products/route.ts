@@ -907,6 +907,9 @@ async function syncUnavailableListings(): Promise<{ ended: number; failed: numbe
   `.catch(() => [])
 
   if (unavailableRows.length === 0) return { ended: 0, failed: 0, skipped: 0, reverified_skipped: 0 }
+  if (process.env.AUTO_END_UNAVAILABLE_LISTINGS !== '1') {
+    return { ended: 0, failed: 0, skipped: unavailableRows.length, reverified_skipped: 0 }
+  }
 
   const byUser = new Map<number, Array<{ ebay_listing_id: string; asin: string }>>()
   for (const row of unavailableRows) {
@@ -1023,8 +1026,6 @@ async function auditActiveAmazonListings(limit = 24): Promise<{
     return { checked: 0, available: 0, ended: 0, failed: 0, skipped: 0 }
   }
 
-  const appId = process.env.EBAY_APP_ID || ''
-  const credentialCache = new Map<number, string | null>()
   let available = 0, ended = 0, failed = 0, skipped = 0
   const BATCH = 4
 
@@ -1082,23 +1083,10 @@ async function auditActiveAmazonListings(limit = 24): Promise<{
         WHERE asin = ${row.asin.toUpperCase()}
       `.catch(() => {})
 
-      if (!credentialCache.has(row.user_id)) {
-        const credentials = await getValidEbayAccessToken(String(row.user_id)).catch(() => null)
-        credentialCache.set(row.user_id, credentials?.accessToken || null)
-      }
-      const token = credentialCache.get(row.user_id)
-      if (!token) {
-        skipped++
-        continue
-      }
-
-      try {
-        const endedListing = await endEbayListingAsUnavailable(row.user_id, row.ebay_listing_id, token, appId)
-        if (endedListing) ended++
-        else failed++
-      } catch {
-        failed++
-      }
+      // Never end live eBay listings from the background audit. The audit may
+      // mark Amazon/source status, but removing a listing must be an explicit
+      // user cleanup action.
+      skipped++
     }
   }
 
