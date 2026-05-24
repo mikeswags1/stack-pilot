@@ -2134,6 +2134,7 @@ export async function POST(req: NextRequest) {
     ...cleanGalleryUrls.slice(0, 5),
   ]
 
+  // Image pipeline: badge URL (stamped primary) goes first, then gallery images.
   const epsSourceUrls =
     filteredImages.length > 0
       ? [badgeUrl, ...cleanGalleryUrls]
@@ -2141,6 +2142,17 @@ export async function POST(req: NextRequest) {
   const pictureList = await Promise.all(
     epsSourceUrls.map((u) => uploadToEPS(u, credentials.accessToken, appId))
   )
+
+  // If badge upload failed (eBay timed out fetching our slow sharp endpoint),
+  // synchronously upload the proxied primary image (same product, no stamp) so the
+  // first image is still the primary product — not a random gallery shot. Only adds
+  // 1 extra eBay API call when badge actually failed (rare).
+  if (!pictureList[0] || pictureList[0].length > 500) {
+    const fallbackPrimary = await uploadToEPS(cleanDescriptionPrimary, credentials.accessToken, appId)
+    if (fallbackPrimary && fallbackPrimary.length <= 500) {
+      pictureList[0] = fallbackPrimary
+    }
+  }
 
   const usablePictureList = dedupeImageUrls(
     pictureList.filter((u): u is string => Boolean(u) && u.length <= 500)
