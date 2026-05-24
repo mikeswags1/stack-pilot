@@ -73,7 +73,7 @@ export async function GET(req: NextRequest) {
         {
           input: stamp,
           top: 30,
-          left: width - stampWidth - 30,
+          left: 30,
         },
       ])
       .jpeg({ quality: 92 })

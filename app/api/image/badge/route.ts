@@ -57,7 +57,7 @@ async function buildFallbackImage(title: string, asin: string) {
       {
         input: stamp.input,
         top: height - stamp.height - 42,
-        left: width - stamp.width - 32,
+        left: 32,
       },
     ])
     .jpeg({ quality: 92 })
@@ -120,7 +120,7 @@ export async function GET(req: NextRequest) {
         {
           input: stamp.input,
           top: Math.max(14, height - stamp.height - insetY),
-          left: Math.max(14, width - stamp.width - insetX),
+          left: insetX,
         },
       ])
       .jpeg({ quality: 92 })
