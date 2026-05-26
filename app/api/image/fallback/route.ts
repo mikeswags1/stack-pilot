@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import path from 'path'
+import { promises as fs } from 'fs'
 import sharp from 'sharp'
 
 export const dynamic = 'force-dynamic'
@@ -10,6 +12,27 @@ const BADGE_LABELS: Record<Exclude<BadgeVariant, 'none'>, string> = {
   'free-shipping': 'Free Shipping',
   'fast-delivery': 'Fast Delivery',
   'ships-fast': 'Ships Fast',
+}
+
+const BADGE_ASSET_FILES: Record<Exclude<BadgeVariant, 'none'>, string> = {
+  'free-2-4-day-shipping': 'free-2-4-day-shipping.png',
+  'free-shipping': 'free-shipping.png',
+  'fast-delivery': 'fast-delivery.png',
+  'ships-fast': 'ships-fast.png',
+}
+
+async function prepareBadgeAsset(variant: Exclude<BadgeVariant, 'none'>, width: number) {
+  const badgePath = path.join(process.cwd(), 'public', 'badges', BADGE_ASSET_FILES[variant])
+  const input = await sharp(await fs.readFile(badgePath))
+    .resize({ width })
+    .png()
+    .toBuffer()
+  const metadata = await sharp(input).metadata()
+  return {
+    input,
+    width: metadata.width || width,
+    height: metadata.height || Math.round(width * 0.27),
+  }
 }
 
 function escapeHtml(value: string) {
@@ -174,7 +197,7 @@ export async function GET(req: NextRequest) {
 
     let output = sharp(Buffer.from(svg)).jpeg({ quality: 92 })
     if (variant !== 'none') {
-      const badge = await buildBadgeOverlay(variant, 360)
+      const badge = await prepareBadgeAsset(variant, 360)
       output = sharp(Buffer.from(svg))
         .composite([
           {

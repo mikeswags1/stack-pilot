@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import path from 'path'
+import { promises as fs } from 'fs'
 import sharp from 'sharp'
 
 export const dynamic = 'force-dynamic'
@@ -10,6 +12,27 @@ const BADGE_LABELS: Record<Exclude<BadgeVariant, 'none'>, string> = {
   'free-shipping': 'Free Shipping',
   'fast-delivery': 'Fast Delivery',
   'ships-fast': 'Ships Fast',
+}
+
+const BADGE_ASSET_FILES: Record<Exclude<BadgeVariant, 'none'>, string> = {
+  'free-2-4-day-shipping': 'free-2-4-day-shipping.png',
+  'free-shipping': 'free-shipping.png',
+  'fast-delivery': 'fast-delivery.png',
+  'ships-fast': 'ships-fast.png',
+}
+
+async function prepareBadgeAsset(variant: Exclude<BadgeVariant, 'none'>, width: number) {
+  const badgePath = path.join(process.cwd(), 'public', 'badges', BADGE_ASSET_FILES[variant])
+  const input = await sharp(await fs.readFile(badgePath))
+    .resize({ width })
+    .png()
+    .toBuffer()
+  const metadata = await sharp(input).metadata()
+  return {
+    input,
+    width: metadata.width || width,
+    height: metadata.height || Math.round(width * 0.27),
+  }
 }
 
 function hashText(value: string) {
@@ -184,7 +207,7 @@ async function compositeBadge(source: sharp.Sharp, width: number, height: number
   if (variant === 'none') return source.jpeg({ quality: 92 }).toBuffer()
 
   const badgeWidth = Math.max(240, Math.min(430, Math.round(width * 0.31)))
-  const badge = await buildBadgeOverlay(variant, badgeWidth)
+  const badge = await prepareBadgeAsset(variant, badgeWidth)
   const insetX = Math.max(28, Math.round(width * 0.04))
   const insetY = Math.max(30, Math.round(height * 0.05))
   const badgeArea = {
@@ -194,7 +217,7 @@ async function compositeBadge(source: sharp.Sharp, width: number, height: number
     height: Math.min(badge.height, height - Math.max(insetY, height - badge.height - insetY)),
   }
 
-  if (badgeArea.width < 20 || badgeArea.height < 20 || await isBusyBadgeArea(source, badgeArea)) {
+  if (badgeArea.width < 20 || badgeArea.height < 20) {
     return source.jpeg({ quality: 92 }).toBuffer()
   }
 
