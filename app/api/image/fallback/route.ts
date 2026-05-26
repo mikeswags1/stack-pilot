@@ -197,7 +197,7 @@ export async function GET(req: NextRequest) {
 
     let output = sharp(Buffer.from(svg)).jpeg({ quality: 92 })
     if (variant !== 'none') {
-      const badge = await prepareBadgeAsset(variant, 360)
+      const badge = await prepareBadgeAsset(variant, 280)
       output = sharp(Buffer.from(svg))
         .composite([
           {
