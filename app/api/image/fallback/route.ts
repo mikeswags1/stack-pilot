@@ -5,9 +5,10 @@ import sharp from 'sharp'
 
 export const dynamic = 'force-dynamic'
 
-type BadgeVariant = 'free-2-4-day-shipping' | 'free-shipping' | 'fast-delivery' | 'ships-fast' | 'none'
+type BadgeVariant = 'classic-free-2-4-day-shipping' | 'free-2-4-day-shipping' | 'free-shipping' | 'fast-delivery' | 'ships-fast' | 'none'
 
 const BADGE_LABELS: Record<Exclude<BadgeVariant, 'none'>, string> = {
+  'classic-free-2-4-day-shipping': 'Classic Free 2-4 Day Shipping',
   'free-2-4-day-shipping': 'Free 2-4 Day Shipping',
   'free-shipping': 'Free Shipping',
   'fast-delivery': 'Fast Delivery',
@@ -15,6 +16,7 @@ const BADGE_LABELS: Record<Exclude<BadgeVariant, 'none'>, string> = {
 }
 
 const BADGE_ASSET_FILES: Record<Exclude<BadgeVariant, 'none'>, string> = {
+  'classic-free-2-4-day-shipping': 'free-shipping-stamp.png',
   'free-2-4-day-shipping': 'free-2-4-day-shipping.png',
   'free-shipping': 'free-shipping.png',
   'fast-delivery': 'fast-delivery.png',
@@ -22,9 +24,13 @@ const BADGE_ASSET_FILES: Record<Exclude<BadgeVariant, 'none'>, string> = {
 }
 
 async function prepareBadgeAsset(variant: Exclude<BadgeVariant, 'none'>, width: number) {
-  const badgePath = path.join(process.cwd(), 'public', 'badges', BADGE_ASSET_FILES[variant])
-  const input = await sharp(await fs.readFile(badgePath))
-    .resize({ width })
+  const badgePath = variant === 'classic-free-2-4-day-shipping'
+    ? path.join(process.cwd(), 'public', BADGE_ASSET_FILES[variant])
+    : path.join(process.cwd(), 'public', 'badges', BADGE_ASSET_FILES[variant])
+  const pipeline = sharp(await fs.readFile(badgePath)).ensureAlpha()
+  if (variant === 'classic-free-2-4-day-shipping') pipeline.trim({ threshold: 18 })
+  const input = await pipeline
+    .resize({ width: variant === 'classic-free-2-4-day-shipping' ? Math.round(width * 0.82) : width })
     .png()
     .toBuffer()
   const metadata = await sharp(input).metadata()
