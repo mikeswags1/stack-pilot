@@ -745,18 +745,13 @@ export async function GET(req: NextRequest) {
     product.sourceQuality !== 'stale'
 
   const prioritizePublishReadyProducts = (products: Product[]) => {
-    const reranked = rankProducts(products.filter((product) => !shouldBlockProduct(product)), {
-      randomize: true,
-      seed: `${distributionSeed}:publish-ready`,
-      nicheWeights,
-      spreadNiches: continuousMode,
-    })
-    const ready = reranked.filter(isPublishReadyProduct)
-    const fallback = reranked.filter((product) => !isPublishReadyProduct(product))
-
-    return ready.length > 0
-      ? ready
-      : fallback
+    // `products` is already ranked + deduped by getAvailableProducts. Re-ranking here
+    // ran a SECOND O(n^2) dedupe over the whole pool, which (with a large enriched pool)
+    // pushed continuous-mode requests past the 60s function limit → 504. Partition the
+    // already-ranked list in place instead.
+    const ready = products.filter(isPublishReadyProduct)
+    const fallback = products.filter((product) => !isPublishReadyProduct(product))
+    return ready.length > 0 ? ready : fallback
   }
 
   const liveFillPublishReadyProducts = async (products: Product[]) => {
@@ -1048,7 +1043,11 @@ export async function GET(req: NextRequest) {
   // When excludeAsins are supplied (refill/rotation), pass them to the DB query so the
   // source engine itself skips already-listed/excluded items â€” not just client-side filtering.
   // This is the primary mechanism that makes sequential batches genuinely different.
-  const sourceEnginePoolLimit = continuousMode ? 800 : 600
+  // Pool size drives an O(n^2) dedupe pass — keep it modest. A 200-item pool still
+  // gives a rotating 30-item shuffle plenty of variety, but caps the dedupe cost so
+  // the request finishes well under the 60s function limit (previously 800 → 2400 rows
+  // fetched → dedupe blew past 60s → 504).
+  const sourceEnginePoolLimit = continuousMode ? 200 : 400
   console.info('[product-finder] sourceEngine load', JSON.stringify({
     mode: continuousMode ? 'continuous' : 'niche',
     niche: continuousMode ? undefined : niche,
