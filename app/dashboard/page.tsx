@@ -997,7 +997,13 @@ export default function Dashboard() {
       const data = await fetchFinderProducts('', shouldForceRefresh, { mode: 'continuous', limit: FINDER_ROTATION_POOL_TARGET })
       setContinuousFinderState((prev) => ({ ...prev, results: tagFinderProducts(data.results || [], 'continuous') }))
     } catch (error) {
-      setContinuousFinderState((prev) => ({ ...prev, results: prev.results || [], error: getErrorMessage(error, 'Continuous product search failed.') }))
+      const raw = getErrorMessage(error, 'Continuous product search failed.')
+      const message = /\b50[234]\b|timeout|timed out/i.test(raw)
+        ? 'The product queue took too long to build. Tap "Load 30 Products" to try again.'
+        : raw
+      // Keep any previously loaded products visible; never coerce to [] which would
+      // misleadingly render the "No products met the current profit criteria" empty state.
+      setContinuousFinderState((prev) => ({ ...prev, results: prev.results ?? null, error: message }))
     } finally {
       setContinuousFinderState((prev) => ({ ...prev, loading: false }))
     }

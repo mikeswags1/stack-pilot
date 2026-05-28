@@ -704,7 +704,7 @@ export async function GET(req: NextRequest) {
         ORDER BY listed_at DESC
         LIMIT 2000
       `,
-      continuousMode ? 900 : 1800,
+      continuousMode ? 3000 : 1800,
       []
     )
     listedAsins = new Set(listedRows.map((r) => String(r.asin).toUpperCase()))
@@ -907,7 +907,7 @@ export async function GET(req: NextRequest) {
 
     if (cacheLookupAsins.length > 0) {
       try {
-        const cachedRows = await queryRows<{
+        const cachedRowsPromise = queryRows<{
           asin: string
           title: string | null
           primary_image: string | null
@@ -921,6 +921,7 @@ export async function GET(req: NextRequest) {
           FROM amazon_product_cache
           WHERE asin = ANY(${cacheLookupAsins}::text[])
         `
+        const cachedRows = await withTimeout(cachedRowsPromise, continuousMode ? 3000 : 4000, [])
         if (cachedRows.length > 0) {
           const cacheMap = new Map(cachedRows.map(r => [r.asin.toUpperCase(), r]))
           const unavailableAsins = new Set(
@@ -1058,13 +1059,11 @@ export async function GET(req: NextRequest) {
   }))
   const sourceEngineProducts = await withTimeout(
     loadProductSourceProducts({ niche: continuousMode ? undefined : niche, limit: sourceEnginePoolLimit, excludeAsins }),
-    continuousMode ? 900 : 1400,
+    continuousMode ? 5000 : 2500,
     []
   )
-  const sourceEngineAvailable = getAvailableProducts(sourceEngineProducts)
   console.info('[product-finder] sourceEngine result', JSON.stringify({
     totalFetched: sourceEngineProducts.length,
-    availableAfterFilter: sourceEngineAvailable.length,
     targetCount,
     excludeCount: excludeAsins.size,
   }))
