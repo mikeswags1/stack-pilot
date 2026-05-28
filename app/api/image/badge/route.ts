@@ -227,6 +227,10 @@ async function compositeBadge(source: sharp.Sharp, width: number, height: number
     return source.jpeg({ quality: 92 }).toBuffer()
   }
 
+  if (await isBusyBadgeArea(source, badgeArea)) {
+    return source.jpeg({ quality: 92 }).toBuffer()
+  }
+
   return source
     .composite([
       {

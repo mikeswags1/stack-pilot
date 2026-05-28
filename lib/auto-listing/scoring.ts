@@ -66,6 +66,14 @@ export async function getTopAutoListingCandidates(userId: string | number, setti
       AND psi.image_url <> ''
       AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
       AND COALESCE(apc.available, TRUE) <> FALSE
+      -- HARD GATE (Phase 4): only FULLY ENRICHED products are auto-list candidates.
+      -- Raw graph-discovered candidates (and enrich-failed ones) have no amazon_product_cache
+      -- row, so this cache+images join excludes them until staged enrichment pulls full detail
+      -- (cache + 2+ images). This guarantees raw candidates NEVER reach list-ready / auto-listing
+      -- until enriched + validated. The cache join is the true signal — backfill-independent.
+      AND apc.asin IS NOT NULL
+      AND jsonb_typeof(apc.images) = 'array'
+      AND jsonb_array_length(apc.images) >= 2
       AND (${nicheFilter} = FALSE OR psi.source_niche = ANY(${allowedNiches}::text[]))
       AND NOT EXISTS (
         SELECT 1 FROM listed_asins la

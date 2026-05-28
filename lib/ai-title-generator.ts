@@ -59,6 +59,9 @@ async function callClaude(userPrompt: string) {
   if (!apiKey) return null
   const model = String(process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5').trim()
 
+  const { recordApiCall } = await import('@/lib/quota-tracker')
+  const startedAt = Date.now()
+
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -75,11 +78,15 @@ async function callClaude(userPrompt: string) {
     }),
     signal: AbortSignal.timeout(15000),
   })
-  if (!res.ok) return null
+  if (!res.ok) {
+    recordApiCall({ provider: 'anthropic', callName: 'title-rewrite', success: false, durationMs: Date.now() - startedAt, errorCode: `HTTP_${res.status}`, errorMessage: (await res.text().catch(() => '')).slice(0, 200) }).catch(() => {})
+    return null
+  }
   const data = await res.json() as { content?: Array<{ text?: string }> }
   const text = Array.isArray(data.content)
     ? data.content.map((part) => part?.text || '').join('').trim()
     : ''
+  recordApiCall({ provider: 'anthropic', callName: 'title-rewrite', success: true, durationMs: Date.now() - startedAt }).catch(() => {})
   return text || null
 }
 

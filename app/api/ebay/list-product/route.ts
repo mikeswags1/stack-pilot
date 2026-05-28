@@ -9,6 +9,7 @@ import { ensureListedAsinsFinancialColumns } from '@/lib/listed-asins'
 import { getCachedCategoryByAsin, setCachedCategoryByAsin } from '@/lib/ebay-category-cache'
 import { getOrGenerateAiTitle } from '@/lib/ai-title-generator'
 import { getOrGenerateAiDescription } from '@/lib/ai-description-generator'
+import { recordApiCall, recordListingFailure, shouldBlockManualListing } from '@/lib/quota-tracker'
 import { fetchAmazonProductByAsin, loadCachedAmazonProduct, saveCachedAmazonProduct } from '@/lib/amazon-product'
 import { scrapeAmazonProduct } from '@/lib/amazon-scrape'
 import { checkAmazonLiveAvailability } from '@/lib/amazon-availability'
@@ -1003,7 +1004,8 @@ async function fetchAmazonDetails(
   }
 }
 
-async function uploadToEPS(externalUrl: string, token: string, appId: string): Promise<string> {
+async function uploadToEPS(externalUrl: string, token: string, appId: string, userId?: number | string): Promise<string> {
+  const startedAt = Date.now()
   try {
     const safeUrl = externalUrl.replace(/&/g, '&amp;').replace(/[<>]/g, '')
     const xml = `<?xml version="1.0" encoding="utf-8"?>
@@ -1029,11 +1031,25 @@ async function uploadToEPS(externalUrl: string, token: string, appId: string): P
     })
     const text = await res.text()
     const fullUrl = text.match(/<FullURL>(.*?)<\/FullURL>/)?.[1]
-    if (fullUrl) return fullUrl
+    if (fullUrl) {
+      recordApiCall({ provider: 'ebay', callName: 'UploadSiteHostedPictures', userId, success: true, durationMs: Date.now() - startedAt }).catch(() => {})
+      return fullUrl
+    }
     const err = text.match(/<LongMessage>(.*?)<\/LongMessage>/)?.[1] || text.slice(0, 300)
     console.error('[EPS]', err.slice(0, 200))
+    recordApiCall({
+      provider: 'ebay', callName: 'UploadSiteHostedPictures', userId, success: false,
+      durationMs: Date.now() - startedAt,
+      errorCode: /exceeded usage limit/i.test(err) ? 'QUOTA_EXCEEDED' : 'EPS_FAILED',
+      errorMessage: err.slice(0, 300),
+    }).catch(() => {})
   } catch (e) {
-    console.error('[EPS] fetch error:', e instanceof Error ? e.message : e)
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error('[EPS] fetch error:', msg)
+    recordApiCall({
+      provider: 'ebay', callName: 'UploadSiteHostedPictures', userId, success: false,
+      durationMs: Date.now() - startedAt, errorCode: 'NETWORK', errorMessage: msg.slice(0, 300),
+    }).catch(() => {})
   }
   return ''
 }
@@ -1350,7 +1366,8 @@ ${detailImages.map(u => `      <img src="${u}" alt="" style="width:210px;max-wid
 
 // ── Auth helper ──────────────────────────────────────────────────────────────
 // ── eBay API call ────────────────────────────────────────────────────────────
-async function callEbayTradingApi(callName: string, xml: string, appId: string, token: string): Promise<string> {
+async function callEbayTradingApi(callName: string, xml: string, appId: string, token: string, userId?: number | string): Promise<string> {
+  const startedAt = Date.now()
   const res = await fetch('https://api.ebay.com/ws/api.dll', {
     method: 'POST',
     headers: {
@@ -1365,15 +1382,159 @@ async function callEbayTradingApi(callName: string, xml: string, appId: string, 
     },
     body: xml,
   })
-  return res.text()
+  const text = await res.text()
+  // Classify success/failure from the response body (Trading API returns 200 even on errors)
+  const ack = text.match(/<Ack>(.*?)<\/Ack>/)?.[1] || ''
+  const success = ack === 'Success' || ack === 'Warning'
+  const errMsg = success ? undefined : (text.match(/<LongMessage>(.*?)<\/LongMessage>/)?.[1] || `eBay ${callName} failed`).slice(0, 300)
+  const errCode = success ? undefined :
+    /exceeded usage limit/i.test(text) ? 'QUOTA_EXCEEDED' :
+    text.match(/<ErrorCode>(.*?)<\/ErrorCode>/)?.[1] || 'EBAY_API_FAIL'
+  recordApiCall({
+    provider: 'ebay', callName, userId, success,
+    durationMs: Date.now() - startedAt, errorCode: errCode, errorMessage: errMsg,
+  }).catch(() => {})
+  return text
 }
 
-async function submitToEbay(xml: string, appId: string, token: string): Promise<string> {
-  return callEbayTradingApi('AddFixedPriceItem', xml, appId, token)
+async function submitToEbay(xml: string, appId: string, token: string, userId?: number | string): Promise<string> {
+  return callEbayTradingApi('AddFixedPriceItem', xml, appId, token, userId)
 }
 
-async function verifyToEbay(xml: string, appId: string, token: string): Promise<string> {
-  return callEbayTradingApi('VerifyAddFixedPriceItem', xml, appId, token)
+async function verifyToEbay(xml: string, appId: string, token: string, userId?: number | string): Promise<string> {
+  return callEbayTradingApi('VerifyAddFixedPriceItem', xml, appId, token, userId)
+}
+
+async function reserveListingPublishSlot(args: {
+  userId: number | string
+  asin: string
+  title: string
+  amazonPrice: number
+  ebayPrice: number
+  imageUrl?: string
+  images: string[]
+  niche?: string | null
+}) {
+  await ensureListedAsinsFinancialColumns()
+  const normalizedAsin = String(args.asin).toUpperCase()
+  const title = args.title.slice(0, 200)
+  const imageUrl = args.imageUrl || ''
+
+  await sql`
+    UPDATE listed_asins
+    SET ended_at = NOW(),
+        amazon_status_reason = 'listing_reservation_expired',
+        amazon_status_checked_at = NOW()
+    WHERE user_id = ${args.userId}
+      AND UPPER(asin) = ${normalizedAsin}
+      AND ended_at IS NULL
+      AND (ebay_listing_id IS NULL OR ebay_listing_id = '')
+      AND amazon_status_reason = 'listing_reserved'
+      AND listed_at < NOW() - INTERVAL '30 minutes'
+  `.catch(() => {})
+
+  const rows = await queryRows<{
+    kind: 'existing' | 'reserved'
+    ebay_listing_id: string | null
+    is_mine: boolean | null
+  }>`
+    WITH existing AS (
+      SELECT ebay_listing_id, (user_id = ${args.userId}) AS is_mine
+      FROM listed_asins
+      WHERE UPPER(asin) = ${normalizedAsin}
+        AND ended_at IS NULL
+      LIMIT 1
+    ),
+    reserved AS (
+      INSERT INTO listed_asins (
+        user_id,
+        asin,
+        title,
+        ebay_listing_id,
+        amazon_price,
+        ebay_price,
+        ebay_fee_rate,
+        amazon_image_url,
+        amazon_images,
+        amazon_snapshot,
+        niche,
+        category_id,
+        amazon_available,
+        amazon_status_reason,
+        amazon_status_checked_at,
+        image_count,
+        image_quality_warning,
+        listed_at,
+        ended_at
+      )
+      SELECT
+        ${args.userId},
+        ${normalizedAsin},
+        ${title},
+        '',
+        ${args.amazonPrice.toFixed(2)},
+        ${args.ebayPrice.toFixed(2)},
+        ${EBAY_DEFAULT_FEE_RATE},
+        ${imageUrl},
+        ${JSON.stringify(args.images)},
+        ${JSON.stringify({ asin: normalizedAsin, title, reserved: true })},
+        ${args.niche || null},
+        '',
+        TRUE,
+        'listing_reserved',
+        NOW(),
+        ${args.images.length},
+        FALSE,
+        NOW(),
+        NULL
+      WHERE NOT EXISTS (SELECT 1 FROM existing)
+      ON CONFLICT (user_id, asin) DO UPDATE SET
+        title = EXCLUDED.title,
+        ebay_listing_id = '',
+        amazon_price = EXCLUDED.amazon_price,
+        ebay_price = EXCLUDED.ebay_price,
+        ebay_fee_rate = EXCLUDED.ebay_fee_rate,
+        amazon_image_url = EXCLUDED.amazon_image_url,
+        amazon_images = EXCLUDED.amazon_images,
+        amazon_snapshot = EXCLUDED.amazon_snapshot,
+        niche = EXCLUDED.niche,
+        category_id = '',
+        amazon_available = TRUE,
+        amazon_status_reason = 'listing_reserved',
+        amazon_status_checked_at = NOW(),
+        image_count = EXCLUDED.image_count,
+        image_quality_warning = FALSE,
+        listed_at = NOW(),
+        ended_at = NULL
+      WHERE listed_asins.ended_at IS NOT NULL
+      RETURNING ebay_listing_id, TRUE AS is_mine
+    )
+    SELECT 'existing' AS kind, ebay_listing_id, is_mine FROM existing
+    UNION ALL
+    SELECT 'reserved' AS kind, ebay_listing_id, is_mine FROM reserved
+  `.catch(() => [])
+
+  if (rows.some((row) => row.kind === 'reserved')) return { ok: true as const }
+  const existing = rows.find((row) => row.kind === 'existing')
+  return {
+    ok: false as const,
+    listingId: existing?.ebay_listing_id || '',
+    isMine: existing?.is_mine ?? true,
+  }
+}
+
+async function releaseListingPublishSlot(userId: number | string, asin: string) {
+  await sql`
+    UPDATE listed_asins
+    SET ended_at = NOW(),
+        amazon_status_reason = 'listing_reservation_released',
+        amazon_status_checked_at = NOW()
+    WHERE user_id = ${userId}
+      AND UPPER(asin) = ${String(asin).toUpperCase()}
+      AND ended_at IS NULL
+      AND (ebay_listing_id IS NULL OR ebay_listing_id = '')
+      AND amazon_status_reason = 'listing_reserved'
+  `.catch(() => {})
 }
 
 function buildXml(params: {
@@ -1458,6 +1619,28 @@ export async function POST(req: NextRequest) {
   const effectiveAccountId = isCron ? body?.accountId : null
 
   if (!effectiveUserId) return apiError('Unauthorized', { status: 401, code: 'UNAUTHORIZED' })
+
+  // Quota gate — refuse early if eBay API is near hard limit. Prevents the user from
+  // burning a multi-minute listing flow only to fail at the last step with QUOTA_EXCEEDED.
+  // Cron-initiated requests bypass the gate (cron is throttled at the dispatcher level).
+  if (!isCron) {
+    const ebayBlocked = await shouldBlockManualListing().catch(() => false)
+    if (ebayBlocked) {
+      recordListingFailure({
+        userId: effectiveUserId,
+        asin: body?.asin,
+        niche: body?.niche,
+        errorCode: 'EBAY_QUOTA_BLOCKED',
+        errorMessage: 'eBay API daily/hourly quota at block threshold (>=90%). Listing refused to protect the rest of the queue.',
+        stage: 'preflight',
+        source: 'manual',
+      }).catch(() => {})
+      return apiError(
+        `eBay API is at its hourly/daily limit. New listings are temporarily blocked to avoid mass failures. Try again after the next quota window resets (usually within an hour, or at midnight Pacific for daily limits).`,
+        { status: 429, code: 'EBAY_QUOTA_BLOCKED' }
+      )
+    }
+  }
 
   await ensureSubscriptionRow(effectiveUserId)
   const sub = await getUserPlan(effectiveUserId)
@@ -1602,6 +1785,15 @@ export async function POST(req: NextRequest) {
       // loose enough to allow for shortened/variant titles ("TKL Keyboard" vs "87-Key TKL Keyboard")
       if (similarity < 0.42) {
         await markSourceAsinRejected()
+        recordListingFailure({
+          userId: effectiveUserId,
+          asin,
+          niche: body?.niche,
+          errorCode: 'ASIN_MISMATCH',
+          errorMessage: `Queued title "${String(title).slice(0, 60)}" vs Amazon now showing "${validatedAmazon.title.slice(0, 60)}" (similarity ${similarity.toFixed(2)}).`,
+          stage: 'asin_validation',
+          source: isCron ? 'cron' : 'manual',
+        }).catch(() => {})
         return apiError(
           `ASIN ${asin} now maps to a different product on Amazon ("${validatedAmazon.title.slice(0, 60)}"). Remove this from your queue and reload for fresh products.`,
           { status: 400, code: 'ASIN_MISMATCH' }
@@ -1639,6 +1831,15 @@ export async function POST(req: NextRequest) {
           const similarity = poolWords.size > 0 ? overlap / poolWords.size : 1
           if (similarity < 0.42) {
             await markSourceAsinRejected()
+            recordListingFailure({
+              userId: effectiveUserId,
+              asin,
+              niche: body?.niche,
+              errorCode: 'ASIN_MISMATCH',
+              errorMessage: `Pool title "${String(title).slice(0, 60)}" vs cache title "${cached.title.slice(0, 60)}" (similarity ${similarity.toFixed(2)}).`,
+              stage: 'cache_validation',
+              source: isCron ? 'cron' : 'manual',
+            }).catch(() => {})
             return apiError(
               `ASIN ${asin} now maps to a different product ("${cached.title.slice(0, 60)}"). Queue entry is stale — remove it and reload for fresh products.`,
               { status: 400, code: 'ASIN_MISMATCH' }
@@ -1739,13 +1940,24 @@ export async function POST(req: NextRequest) {
       await markSourceAsinRejected()
     }
 
+    const errorCode = liveAvailability.reason === 'CHECK_FAILED' ? 'AMAZON_LIVE_CHECK_FAILED' : 'PRODUCT_UNAVAILABLE'
+    recordListingFailure({
+      userId: effectiveUserId,
+      asin,
+      niche: body?.niche,
+      errorCode,
+      errorMessage: `Amazon live check returned reason=${liveAvailability.reason}`,
+      stage: 'amazon_live_check',
+      source: isCron ? 'cron' : 'manual',
+    }).catch(() => {})
+
     return apiError(
       liveAvailability.reason === 'CHECK_FAILED'
         ? 'Could not verify this product is currently buyable on Amazon. Remove it from your queue and reload to get a fresh product.'
         : 'This product is currently unavailable on Amazon and cannot be listed. Remove it from your queue and reload to get fresh products.',
       {
         status: 400,
-        code: liveAvailability.reason === 'CHECK_FAILED' ? 'AMAZON_LIVE_CHECK_FAILED' : 'PRODUCT_UNAVAILABLE',
+        code: errorCode,
         details: { asin, reason: liveAvailability.reason },
       }
     )
@@ -1762,6 +1974,15 @@ export async function POST(req: NextRequest) {
     const similarity = queuedWords.size > 0 ? overlap / queuedWords.size : 1
     if (similarity < 0.42) {
       await markSourceAsinRejected()
+      recordListingFailure({
+        userId: effectiveUserId,
+        asin,
+        niche: body?.niche,
+        errorCode: 'ASIN_MISMATCH',
+        errorMessage: `Live Amazon title "${liveAvailability.title.slice(0, 60)}" vs queued "${String(title).slice(0, 60)}" (similarity ${similarity.toFixed(2)}).`,
+        stage: 'live_validation',
+        source: isCron ? 'cron' : 'manual',
+      }).catch(() => {})
       return apiError(
         `ASIN ${asin} now maps to a different product on Amazon ("${liveAvailability.title.slice(0, 60)}"). Remove it from your queue and reload for fresh products.`,
         { status: 400, code: 'ASIN_MISMATCH' }
@@ -1790,6 +2011,16 @@ export async function POST(req: NextRequest) {
   if (!validatedAmazon.available) {
     await markSourceAsinRejected()
     saveCachedAmazonProduct({ ...validatedAmazon, available: false }).catch(() => {})
+
+    recordListingFailure({
+      userId: effectiveUserId,
+      asin,
+      niche: body?.niche,
+      errorCode: 'PRODUCT_UNAVAILABLE',
+      errorMessage: 'Amazon shows product as unavailable post-supplementation (no price / out of stock).',
+      stage: 'availability_recheck',
+      source: isCron ? 'cron' : 'manual',
+    }).catch(() => {})
 
     return apiError(
       `This product is currently unavailable on Amazon and cannot be listed. Remove it from your queue and reload to get fresh products.`,
@@ -2109,9 +2340,19 @@ export async function POST(req: NextRequest) {
     .slice(0, 4)
 
   if (filteredImages.length < MIN_LISTING_IMAGES) {
+    const code = filteredImages.length === 0 ? 'NO_LISTING_IMAGES' : 'INSUFFICIENT_LISTING_IMAGES'
+    recordListingFailure({
+      userId: effectiveUserId,
+      asin,
+      niche: body?.niche,
+      errorCode: code,
+      errorMessage: `Found ${filteredImages.length} usable image(s); minimum is ${MIN_LISTING_IMAGES}.`,
+      stage: 'image_collection',
+      source: isCron ? 'cron' : 'manual',
+    }).catch(() => {})
     return apiError(
       `Only ${filteredImages.length} usable product image${filteredImages.length === 1 ? '' : 's'} could be found for this ASIN. StackPilot requires at least ${MIN_LISTING_IMAGES} real product photos before publishing, so reload the queue or choose a different product.`,
-      { status: 400, code: filteredImages.length === 0 ? 'NO_LISTING_IMAGES' : 'INSUFFICIENT_LISTING_IMAGES' }
+      { status: 400, code }
     )
   }
 
@@ -2140,7 +2381,7 @@ export async function POST(req: NextRequest) {
       ? [badgeUrl, ...cleanGalleryUrls]
       : [badgeUrl]
   const pictureList = await Promise.all(
-    epsSourceUrls.map((u) => uploadToEPS(u, credentials.accessToken, appId))
+    epsSourceUrls.map((u) => uploadToEPS(u, credentials.accessToken, appId, effectiveUserId))
   )
 
   // If badge upload failed (eBay timed out fetching our slow sharp endpoint),
@@ -2148,7 +2389,7 @@ export async function POST(req: NextRequest) {
   // first image is still the primary product — not a random gallery shot. Only adds
   // 1 extra eBay API call when badge actually failed (rare).
   if (!pictureList[0] || pictureList[0].length > 500) {
-    const fallbackPrimary = await uploadToEPS(cleanDescriptionPrimary, credentials.accessToken, appId)
+    const fallbackPrimary = await uploadToEPS(cleanDescriptionPrimary, credentials.accessToken, appId, effectiveUserId)
     if (fallbackPrimary && fallbackPrimary.length <= 500) {
       pictureList[0] = fallbackPrimary
     }
@@ -2189,6 +2430,15 @@ export async function POST(req: NextRequest) {
   usablePictureList.length = 0
   usablePictureList.push(...cappedPictureList)
   if (usablePictureList.length < MIN_LISTING_IMAGES) {
+    recordListingFailure({
+      userId: effectiveUserId,
+      asin,
+      niche: body?.niche,
+      errorCode: 'INSUFFICIENT_LISTING_IMAGES',
+      errorMessage: `Only ${usablePictureList.length} publishable image(s) after eBay EPS processing (minimum ${MIN_LISTING_IMAGES}).`,
+      stage: 'eps_upload',
+      source: isCron ? 'cron' : 'manual',
+    }).catch(() => {})
     return apiError(
       `This product only produced ${usablePictureList.length} publishable image${usablePictureList.length === 1 ? '' : 's'} after eBay image processing. StackPilot requires at least ${MIN_LISTING_IMAGES} photos, so reload the queue or choose a different product.`,
       { status: 400, code: 'INSUFFICIENT_LISTING_IMAGES' }
@@ -2401,7 +2651,7 @@ export async function POST(req: NextRequest) {
 
     for (let guard = 0; guard < 6; guard += 1) {
       attemptedCategoryIds.push(activeCategoryId)
-      responseText = await verifyToEbay(buildXml({ ...params, categoryId: activeCategoryId, itemSpecificsXml: workingSpecificsXml, requestType: 'verify' }), appId, credentials.accessToken)
+      responseText = await verifyToEbay(buildXml({ ...params, categoryId: activeCategoryId, itemSpecificsXml: workingSpecificsXml, requestType: 'verify' }), appId, credentials.accessToken, effectiveUserId)
       parsed = parse(responseText)
       errorKind = errType(parsed.short, parsed.long, parsed.codes)
       const verifyAck = responseText.match(/<Ack>(.*?)<\/Ack>/)?.[1] || ''
@@ -2470,7 +2720,7 @@ export async function POST(req: NextRequest) {
         categoryId: activeCategoryId,
         shippingService: activeShippingService,
         simplifiedShipping,
-      }), appId, credentials.accessToken)
+      }), appId, credentials.accessToken, effectiveUserId)
       parsed = parse(responseText)
       errorKind = errType(parsed.short, parsed.long, parsed.codes)
 
@@ -2569,6 +2819,12 @@ export async function POST(req: NextRequest) {
     trialSlotReserved = false
     await releaseTrialListingSlot(effectiveUserId)
   }
+  let listingPublishSlotReserved = false
+  const releaseReservedListingPublishSlot = async () => {
+    if (!listingPublishSlotReserved) return
+    listingPublishSlotReserved = false
+    await releaseListingPublishSlot(effectiveUserId, asin)
+  }
 
   if (trialApplies) {
     const reservation = await reserveTrialListingSlot(effectiveUserId, trialLimit)
@@ -2581,6 +2837,27 @@ export async function POST(req: NextRequest) {
     }
     trialSlotReserved = true
   }
+
+  const publishReservation = await reserveListingPublishSlot({
+    userId: effectiveUserId,
+    asin,
+    title: listingTitle,
+    amazonPrice: listingAmazonPrice,
+    ebayPrice: Number(price),
+    imageUrl: primarySourceImage,
+    images: filteredImages,
+    niche,
+  })
+  if (!publishReservation.ok) {
+    await releaseReservedTrialSlot()
+    const message = publishReservation.isMine
+      ? publishReservation.listingId
+        ? `This product (ASIN ${asin}) is already listed on your eBay store (listing #${publishReservation.listingId}). Duplicate listings are blocked to protect your account.`
+        : `This product (ASIN ${asin}) is already being listed by another in-progress request. Duplicate listings are blocked to protect your account.`
+      : `This product (ASIN ${asin}) is already active on another StackPilot listing. Duplicate platform listings are blocked so sellers do not compete with the same Amazon source.`
+    return apiError(message, { status: 409, code: 'ALREADY_LISTED' })
+  }
+  listingPublishSlotReserved = true
 
   let attempt: Awaited<ReturnType<typeof attemptListing>>
   let responseText = ''
@@ -2648,6 +2925,7 @@ export async function POST(req: NextRequest) {
   }
 
   } catch (error) {
+    await releaseReservedListingPublishSlot()
     await releaseReservedTrialSlot()
     throw error
   }
@@ -2685,6 +2963,7 @@ export async function POST(req: NextRequest) {
       verificationError ||
       allLong[0] || allShort[0] ||
       responseText.slice(0, 400)
+    await releaseReservedListingPublishSlot()
     await releaseReservedTrialSlot()
     if (errMsg.toLowerCase().includes('expired') || errMsg.toLowerCase().includes('auth token')) {
       return apiError('Your eBay session expired. Reconnect your account in Settings.', {
@@ -2693,6 +2972,16 @@ export async function POST(req: NextRequest) {
       })
     }
     if (isEbayQuotaError(errMsg, responseText)) {
+      recordListingFailure({
+        userId: effectiveUserId,
+        asin,
+        niche: body?.niche,
+        errorCode: 'EBAY_API_QUOTA_EXCEEDED',
+        errorMessage: errMsg.slice(0, 500),
+        stage: 'ebay_submit',
+        source: isCron ? 'cron' : 'manual',
+        raw: { ebayResponseTail: responseText.slice(0, 800), categoryId: finalCategoryId },
+      }).catch(() => {})
       return apiError(
         'eBay API usage limit reached. Pause listing for now and try again after eBay resets your call allowance.',
         {
@@ -2702,6 +2991,21 @@ export async function POST(req: NextRequest) {
         },
       )
     }
+    recordListingFailure({
+      userId: effectiveUserId,
+      asin,
+      niche: body?.niche,
+      errorCode: 'EBAY_LISTING_FAILED',
+      errorMessage: errMsg.slice(0, 500),
+      stage: 'ebay_submit',
+      source: isCron ? 'cron' : 'manual',
+      raw: {
+        ebayResponseTail: responseText.slice(0, 800),
+        verificationTail: verificationResponseText.slice(0, 400),
+        finalCategoryId,
+        attemptedCategoryIds: Array.from(new Set(attemptedCategoryIds)),
+      },
+    }).catch(() => {})
     return apiError(errMsg, {
       status: 400,
       code: 'EBAY_LISTING_FAILED',
@@ -2771,6 +3075,7 @@ export async function POST(req: NextRequest) {
       listed_at = NOW(),
       ended_at = NULL
   `.catch(() => {})
+  listingPublishSlotReserved = false
 
   trialSlotReserved = false
   const latestTrialUsage = trialApplies ? await getTrialUsage(effectiveUserId) : null

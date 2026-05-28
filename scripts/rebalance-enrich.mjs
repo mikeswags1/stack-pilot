@@ -1,6 +1,5 @@
-// Rebalance enrichment: target ONLY niches under 30 enriched products.
-// Sends enrich-pool requests per-niche so each niche gets attention,
-// instead of letting the global queue cluster on top-scoring niches.
+// Rebalance enrichment v2: target ONLY niches under 30 enriched products.
+// Uses 2x buffer so we account for cron-deactivation attrition.
 import { neon } from '@neondatabase/serverless'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -14,13 +13,13 @@ const sql = neon(env.DATABASE_URL)
 const cronSecret = env.CRON_SECRET
 const url = 'https://stackpilot-app.vercel.app/api/admin/enrich-pool'
 
-// Load HOT niches from the audit
 const audit = JSON.parse(
   fs.readFileSync(path.resolve(process.cwd(), 'scripts', 'niche-audit-results.json'), 'utf-8')
 )
 const hotNiches = audit.hot.map((n) => n.niche)
+const TARGET = 30
+const BUFFER_FACTOR = 2.0 // request 2x deficit to absorb attrition
 
-// Find HOT niches currently below 30 enriched
 const underTarget = await sql(`
   SELECT psi.source_niche AS niche,
     COUNT(*) FILTER (
@@ -52,28 +51,26 @@ const underTarget = await sql(`
       AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
       AND COALESCE(apc.available, TRUE) <> FALSE
       AND NOT EXISTS (SELECT 1 FROM listed_asins la WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL)
-  ) < 30
+  ) < ${TARGET}
   ORDER BY enriched_count ASC
 `, [hotNiches])
 
-console.log(`HOT niches below 30 enriched: ${underTarget.length}\n`)
-console.log('Niche'.padEnd(30) + 'Current  Need   Pool to try')
+console.log(`HOT niches below ${TARGET}: ${underTarget.length}\n`)
+console.log('Niche'.padEnd(30) + 'Have   Need   Pool   Will request')
 for (const r of underTarget) {
-  console.log(`${r.niche.padEnd(30)}${String(r.enriched_count).padStart(7)}  ${String(30 - r.enriched_count).padStart(4)}   ${r.unenriched_candidates}`)
+  const deficit = TARGET - r.enriched_count
+  const request = Math.min(r.unenriched_candidates, Math.min(80, Math.max(deficit * BUFFER_FACTOR, deficit + 8)))
+  console.log(`${r.niche.padEnd(30)}${String(r.enriched_count).padStart(4)}  ${String(deficit).padStart(5)}  ${String(r.unenriched_candidates).padStart(5)}  ${String(request).padStart(13)}`)
 }
 
-// For each under-30 niche, send enrich requests until we have 30 enriched (or run out of candidates)
 const startedAt = Date.now()
 let totalCalls = 0, totalWarmed = 0
 
 for (const niche of underTarget) {
-  const deficit = 30 - niche.enriched_count
-  // We need to enrich ~deficit products. At 94% success, request deficit * 1.1 to cover failures.
-  // Cap at 80 per call (sane batch size for ~75s call).
-  const target = Math.min(80, Math.ceil(deficit * 1.15))
-  if (target <= 0) continue
-  if (niche.unenriched_candidates === 0) {
-    console.log(`\n${niche.niche.padEnd(30)} SKIP — no unenriched candidates`)
+  const deficit = TARGET - niche.enriched_count
+  const target = Math.min(niche.unenriched_candidates, Math.min(80, Math.max(deficit * BUFFER_FACTOR, deficit + 8)))
+  if (target <= 0) {
+    console.log(`\n${niche.niche.padEnd(30)} SKIP — no candidates`)
     continue
   }
   process.stdout.write(`\n${niche.niche.padEnd(30)} requesting ${target}: `)
@@ -103,8 +100,32 @@ for (const niche of underTarget) {
 }
 
 console.log(`\n═══════════════════════════════════════════════════`)
-console.log(`Rebalance complete.`)
 console.log(`Niches addressed: ${underTarget.length}`)
-console.log(`Total RapidAPI calls used: ${totalCalls}`)
+console.log(`RapidAPI calls used: ${totalCalls}`)
 console.log(`Total warmed: ${totalWarmed}`)
 console.log(`Elapsed: ${((Date.now() - startedAt) / 60 / 1000).toFixed(1)} min`)
+
+// Verify final state
+console.log(`\n══════ FINAL VERIFICATION ══════`)
+const verify = await sql(`
+  SELECT psi.source_niche AS niche,
+    COUNT(*) FILTER (
+      WHERE apc.asin IS NOT NULL AND jsonb_array_length(apc.images) >= 2
+        AND psi.profit >= 4 AND psi.roi >= 25 AND psi.risk <> 'HIGH'
+        AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
+        AND COALESCE(apc.available, TRUE) <> FALSE
+        AND NOT EXISTS (SELECT 1 FROM listed_asins la WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL)
+    )::int AS dashboard_visible
+  FROM product_source_items psi
+  LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
+  WHERE psi.active = TRUE AND psi.source_niche = ANY($1::text[])
+  GROUP BY 1 ORDER BY 2 DESC
+`, [underTarget.map((r) => r.niche)])
+
+let stillUnder = 0
+for (const r of verify) {
+  const flag = r.dashboard_visible >= TARGET ? '✓' : '✗'
+  if (r.dashboard_visible < TARGET) stillUnder++
+  console.log(`  ${flag} ${r.niche.padEnd(30)} ${r.dashboard_visible}`)
+}
+console.log(`\n${verify.length - stillUnder} of ${verify.length} niches reached ${TARGET}+. ${stillUnder} still under.`)

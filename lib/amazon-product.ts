@@ -358,6 +358,9 @@ export async function fetchProductDetailsFromApi(asin: string, fallbackImage?: s
   const rapidKey = getRapidApiKey()
   if (!rapidKey) return null
 
+  const { recordApiCall } = await import('@/lib/quota-tracker')
+  const startedAt = Date.now()
+
   try {
     const url = `https://real-time-amazon-data.p.rapidapi.com/product-details?asin=${asin}&country=US`
     const res = await fetch(url, {
@@ -368,12 +371,18 @@ export async function fetchProductDetailsFromApi(asin: string, fallbackImage?: s
       signal: AbortSignal.timeout(10000),
     })
 
-    if (res.status === 429 || res.status === 403) return null
+    if (res.status === 429 || res.status === 403) {
+      recordApiCall({ provider: 'rapidapi', callName: 'product-details', success: false, durationMs: Date.now() - startedAt, errorCode: 'QUOTA_EXCEEDED', errorMessage: `HTTP ${res.status}` }).catch(() => {})
+      return null
+    }
 
     const json = await res.json()
     const data = json?.data ?? json
     const quotaMsg = String(data?.message || '').toLowerCase()
-    if (quotaMsg.match(/limit|quota|exceed/)) return null
+    if (quotaMsg.match(/limit|quota|exceed/)) {
+      recordApiCall({ provider: 'rapidapi', callName: 'product-details', success: false, durationMs: Date.now() - startedAt, errorCode: 'QUOTA_EXCEEDED', errorMessage: quotaMsg.slice(0, 200) }).catch(() => {})
+      return null
+    }
 
     const rawPhotos: unknown[] = Array.isArray(data.product_photos) ? data.product_photos : []
     const realImages = dedupeImages([
@@ -398,6 +407,7 @@ export async function fetchProductDetailsFromApi(asin: string, fallbackImage?: s
     // when the pool image belongs to a different product (ASIN cross-mapping).
     const images = realImages.length > 0 ? realImages : dedupeImages([normalizeImageUrl(fallbackImage)])
 
+    recordApiCall({ provider: 'rapidapi', callName: 'product-details', success: true, durationMs: Date.now() - startedAt }).catch(() => {})
     return toProduct({
       asin,
       title: data.product_title || data.title,
@@ -426,7 +436,8 @@ export async function fetchProductDetailsFromApi(asin: string, fallbackImage?: s
         parseAmazonPrice(data.product_price || data.price) > 0,
       source: 'api',
     })
-  } catch {
+  } catch (err) {
+    recordApiCall({ provider: 'rapidapi', callName: 'product-details', success: false, durationMs: Date.now() - startedAt, errorCode: 'NETWORK', errorMessage: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200) }).catch(() => {})
     return null
   }
 }

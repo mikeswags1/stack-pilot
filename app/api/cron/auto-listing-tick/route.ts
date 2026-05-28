@@ -87,6 +87,14 @@ async function processAutoListingUser(req: NextRequest, userId: number): Promise
   if (settings.emergency_stopped) return { skipped: 'emergency_stopped' }
   if (settings.paused) return { skipped: 'paused' }
 
+  // Quota gate — soft-throttle cron when eBay quota is in warn/block range. Manual
+  // user listings still proceed (they go through list-product's own gate), but the
+  // cron auto-lister stands down to leave room for user-initiated work.
+  const { shouldSkipCronListing } = await import('@/lib/quota-tracker')
+  if (await shouldSkipCronListing().catch(() => false)) {
+    return { skipped: 'ebay_quota_throttled' }
+  }
+
   const accountId = settings.selected_account_id ?? null
 
   // Lease/lock per user so cron retries do not double-run.

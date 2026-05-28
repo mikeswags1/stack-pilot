@@ -698,6 +698,11 @@ export default function AdminPage() {
         </Link>
         <div className="admin-topbar-actions">
           <span>{session?.user?.email}</span>
+          <Link href="/admin/health" className="btn btn-ghost btn-sm">Health</Link>
+          <Link href="/admin/niches" className="btn btn-ghost btn-sm">Niches</Link>
+          <Link href="/admin/performance" className="btn btn-ghost btn-sm">Performance</Link>
+          <Link href="/admin/market" className="btn btn-ghost btn-sm">Market</Link>
+          <Link href="/admin/discovery" className="btn btn-ghost btn-sm">Discovery</Link>
           <Link href="/dashboard" className="btn btn-ghost btn-sm">Dashboard</Link>
         </div>
       </header>

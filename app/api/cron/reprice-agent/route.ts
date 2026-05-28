@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { apiError, apiOk } from '@/lib/api-response'
 import { runRepriceAgent } from '@/lib/reprice-agent'
+import { shouldSkipCronListing } from '@/lib/quota-tracker'
 
 export const maxDuration = 300
 
@@ -17,6 +18,12 @@ export async function GET(req: NextRequest) {
 
   if (userId !== undefined && !Number.isFinite(userId)) {
     return apiError('Invalid userId.', { status: 400, code: 'INVALID_USER' })
+  }
+
+  // Soft-throttle when eBay quota is high — reprice uses ReviseFixedPriceItem which
+  // shares the same hourly bucket as listing. Skip this cycle to leave room for users.
+  if (!dryRun && await shouldSkipCronListing().catch(() => false)) {
+    return apiOk({ ok: true, skipped: 'ebay_quota_throttled' })
   }
 
   const result = await runRepriceAgent({ dryRun, userId })

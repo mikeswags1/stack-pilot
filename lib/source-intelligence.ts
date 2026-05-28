@@ -235,6 +235,13 @@ export async function ensureSourceIntelligenceTables() {
   `.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS source_niche_intelligence_health_idx ON source_niche_intelligence (health_score ASC, ready_products ASC)`.catch(() => {})
 
+  // Phase 2 outcome columns — created here too so applySourceIntelligenceScores can always
+  // reference outcome_multiplier without a missing-column failure (performance-scoring also
+  // ensures these via ensureNicheOutcomeColumns, but sourcing scoring may run first).
+  await sql`ALTER TABLE source_niche_intelligence ADD COLUMN IF NOT EXISTS outcome_multiplier NUMERIC(6,3) NOT NULL DEFAULT 1`.catch(() => {})
+  await sql`ALTER TABLE source_niche_intelligence ADD COLUMN IF NOT EXISTS sell_through_rate NUMERIC(6,4)`.catch(() => {})
+  await sql`ALTER TABLE source_niche_intelligence ADD COLUMN IF NOT EXISTS sold_30d INTEGER NOT NULL DEFAULT 0`.catch(() => {})
+
   await sql`
     CREATE TABLE IF NOT EXISTS source_autopilot_locks (
       name TEXT PRIMARY KEY,
@@ -447,6 +454,7 @@ export async function applySourceIntelligenceScores(limit = 6000) {
         ROUND((
           psi.total_score
           * COALESCE(sni.learning_multiplier, 1)
+          * COALESCE(sni.outcome_multiplier, 1)
           * CASE WHEN psi.risk = 'LOW' THEN 1.07 WHEN psi.risk = 'MEDIUM' THEN 0.94 ELSE 0.68 END
           * CASE WHEN psi.image_url IS NOT NULL AND psi.image_url <> '' THEN 1.06 ELSE 0.74 END
           * CASE WHEN psi.last_seen_at > NOW() - INTERVAL '3 days' THEN 1.06
@@ -472,6 +480,12 @@ export async function applySourceIntelligenceScores(limit = 6000) {
               ELSE 0.60
             END
           * COALESCE(LEAST(GREATEST(psi.listing_outcome_score, 0.60), 1.25), 1.00)
+          -- Phase 3: inventory quality multiplier (0.75-1.15) — favors stable margins +
+          -- low saturation + healthy engagement, computed in lib/market-saturation.ts
+          * COALESCE(LEAST(GREATEST(0.75 + psi.inventory_quality_score / 100.0 * 0.40, 0.75), 1.15), 1.00)
+          -- Phase 3: duplicate suppression — heavily penalize non-best members of a near-dup
+          -- cluster so we don't flood the pool with minor variants of the same item
+          * CASE WHEN COALESCE(psi.dup_cluster_size, 1) > 1 AND COALESCE(psi.dup_rank, 1) > 1 THEN 0.55 ELSE 1 END
         )::numeric, 2) AS intelligence_score,
         CASE
           WHEN psi.active = FALSE THEN 'inactive'

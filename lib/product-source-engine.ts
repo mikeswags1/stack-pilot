@@ -417,6 +417,12 @@ export async function ensureProductSourceTables() {
   await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS listing_outcome_score NUMERIC(5,3) NOT NULL DEFAULT 1.000`.catch(() => {})
   await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS best_seller_rank INTEGER`.catch(() => {})
   await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS master_score NUMERIC(5,2)`.catch(() => {})
+  // Phase 3 market-saturation columns — created here too so applySourceIntelligenceScores can
+  // always reference inventory_quality_score / dup_* without a missing-column failure
+  // (market-saturation also ensures these via ensureMarketSaturationColumns).
+  await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS inventory_quality_score NUMERIC(6,2)`.catch(() => {})
+  await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS dup_cluster_size INTEGER NOT NULL DEFAULT 1`.catch(() => {})
+  await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS dup_rank INTEGER NOT NULL DEFAULT 1`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS product_source_items_intelligence_idx ON product_source_items (intelligence_score DESC NULLS LAST)`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS product_source_items_quality_idx ON product_source_items (active, source_quality, intelligence_score DESC NULLS LAST)`.catch(() => {})
 }
