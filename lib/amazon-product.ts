@@ -614,19 +614,33 @@ export async function fetchAmazonProductByAsin(
   if (!/^[A-Z0-9]{10}$/.test(asin)) return null
 
   const cached = await loadCachedAmazonProduct(asin)
-  // Use allSettled so a single source throwing doesn't kill the others.
-  // Previously Promise.all rejected on first failure → ~84% of warm attempts
-  // marked as failed even when 1-2 sources had usable data.
-  const settled = await Promise.allSettled([
-    fetchProductDetailsFromApi(asin, options.fallbackImage),
-    fetchProductFromSearch(asin, options.fallbackImage),
-    fetchProductFromScrape(asin, options.fallbackImage),
-  ])
-  const apiResult = settled[0].status === 'fulfilled' ? settled[0].value : null
-  const searchResult = settled[1].status === 'fulfilled' ? settled[1].value : null
-  const scrapeResult = settled[2].status === 'fulfilled' ? settled[2].value : null
 
-  const merged = mergeProducts(asin, [apiResult, searchResult, scrapeResult, cached], options)
+  // Free-scrape FIRST. In production the page scraper succeeds ~99.9% of the time
+  // with 2+ images, so leading with it lets us skip the paid RapidAPI calls on
+  // almost every product — this is what makes enrichment scale cheaply. The paid
+  // API is only used as a fallback when the scrape comes back thin (blocked, no
+  // price, unavailable, or <2 images). mergeProducts already prefers scrape data.
+  const scrapeResult = await fetchProductFromScrape(asin, options.fallbackImage).catch(() => null)
+  const scrapeIsListReady = Boolean(
+    scrapeResult &&
+    scrapeResult.images.length >= 2 &&
+    scrapeResult.amazonPrice > 0 &&
+    scrapeResult.available !== false
+  )
+
+  // Only spend paid API quota when the free scrape wasn't good enough.
+  let apiResult: ValidatedAmazonProduct | null = null
+  let searchResult: ValidatedAmazonProduct | null = null
+  if (!scrapeIsListReady) {
+    const settled = await Promise.allSettled([
+      fetchProductDetailsFromApi(asin, options.fallbackImage),
+      fetchProductFromSearch(asin, options.fallbackImage),
+    ])
+    apiResult = settled[0].status === 'fulfilled' ? settled[0].value : null
+    searchResult = settled[1].status === 'fulfilled' ? settled[1].value : null
+  }
+
+  const merged = mergeProducts(asin, [scrapeResult, apiResult, searchResult, cached], options)
   if (merged) {
     await saveCachedAmazonProduct(merged)
     return merged
