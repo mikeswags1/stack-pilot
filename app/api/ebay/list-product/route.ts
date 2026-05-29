@@ -3095,6 +3095,35 @@ export async function POST(req: NextRequest) {
         },
       )
     }
+    // eBay matches duplicates by PRODUCT identity, not Amazon ASIN — so a different
+    // ASIN of a product the user already lists keeps getting offered and rejected as
+    // "you already have this item." Our ASIN-based filter can't see that. Use eBay's
+    // own verdict as ground truth: permanently drop this ASIN from the sourcing pool so
+    // it stops being offered. This is the feedback loop that drains saturated niches.
+    if (/you already have (this item|an item)|already have .*? on ebay/i.test(errMsg)) {
+      await sql`
+        UPDATE product_source_items
+        SET active = FALSE, source_quality = 'reject', last_seen_at = NOW()
+        WHERE UPPER(asin) = UPPER(${asin})
+      `.catch(() => {})
+      recordListingFailure({
+        userId: effectiveUserId,
+        asin,
+        niche: body?.niche,
+        errorCode: 'ALREADY_ON_EBAY',
+        errorMessage: errMsg.slice(0, 500),
+        stage: 'ebay_submit',
+        source: isCron ? 'cron' : 'manual',
+        raw: { suppressedFromPool: true, ebayResponseTail: responseText.slice(0, 400) },
+      }).catch(() => {})
+      // Reserved slots were already released above (before the quota check), so we
+      // don't release again here — just return the duplicate result.
+      return apiError(errMsg, {
+        status: 409,
+        code: 'ALREADY_LISTED',
+        details: { suppressedFromPool: true },
+      })
+    }
     recordListingFailure({
       userId: effectiveUserId,
       asin,
