@@ -59,9 +59,11 @@ function chooseVariant(asin: string, title: string, override?: string | null): B
 
   const bucket = hashText(`${asin}:${title}`) % 100
   if (bucket < 20) return 'none'
-
-  const variants = Object.keys(BADGE_LABELS) as Array<Exclude<BadgeVariant, 'none'>>
-  return variants[bucket % variants.length]
+  if (bucket < 60) return 'free-2-4-day-shipping'
+  if (bucket < 70) return 'classic-free-2-4-day-shipping'
+  if (bucket < 80) return 'free-shipping'
+  if (bucket < 90) return 'fast-delivery'
+  return 'ships-fast'
 }
 
 function escapeXml(value: string) {
@@ -212,7 +214,7 @@ function buildFallbackSvg() {
 async function compositeBadge(source: sharp.Sharp, width: number, height: number, variant: BadgeVariant) {
   if (variant === 'none') return source.jpeg({ quality: 92 }).toBuffer()
 
-  const badgeWidth = Math.max(210, Math.min(360, Math.round(width * 0.26)))
+  const badgeWidth = Math.max(230, Math.min(390, Math.round(width * 0.28)))
   const badge = await prepareBadgeAsset(variant, badgeWidth)
   const insetX = Math.max(22, Math.round(width * 0.032))
   const insetY = Math.max(18, Math.round(height * 0.032))

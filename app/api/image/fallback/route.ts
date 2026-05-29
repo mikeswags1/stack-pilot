@@ -67,9 +67,11 @@ function chooseVariant(asin: string, title: string, override?: string | null): B
 
   const bucket = hashText(`${asin}:${title}`) % 100
   if (bucket < 20) return 'none'
-
-  const variants = Object.keys(BADGE_LABELS) as Array<Exclude<BadgeVariant, 'none'>>
-  return variants[bucket % variants.length]
+  if (bucket < 60) return 'free-2-4-day-shipping'
+  if (bucket < 70) return 'classic-free-2-4-day-shipping'
+  if (bucket < 80) return 'free-shipping'
+  if (bucket < 90) return 'fast-delivery'
+  return 'ships-fast'
 }
 
 function splitTitle(title: string) {
@@ -203,7 +205,7 @@ export async function GET(req: NextRequest) {
 
     let output = sharp(Buffer.from(svg)).jpeg({ quality: 92 })
     if (variant !== 'none') {
-      const badge = await prepareBadgeAsset(variant, 340)
+      const badge = await prepareBadgeAsset(variant, 370)
       output = sharp(Buffer.from(svg))
         .composite([
           {
