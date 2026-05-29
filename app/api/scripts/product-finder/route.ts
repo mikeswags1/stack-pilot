@@ -315,21 +315,34 @@ function getSourceQualityMultiplier(sourceQuality?: string) {
   }
 }
 
-function spreadProductsAcrossNiches(products: Product[]) {
-  const counts = new Map<string, number>()
-  const primary: Product[] = []
-  const overflow: Product[] = []
-  const maxInitialPerNiche = Math.max(4, Math.ceil(TARGET_STOCK / 5))
-
+function spreadProductsAcrossNiches(products: Product[], seed: string) {
+  // Group the (already quality-ranked) products by niche, preserving rank order in each.
+  const byNiche = new Map<string, Product[]>()
   for (const product of products) {
     const key = product.sourceNiche || 'Other'
-    const count = counts.get(key) || 0
-    counts.set(key, count + 1)
-    if (count < maxInitialPerNiche) primary.push(product)
-    else overflow.push(product)
+    const list = byNiche.get(key)
+    if (list) list.push(product)
+    else byNiche.set(key, [product])
   }
-
-  return [...primary, ...overflow]
+  // Randomize niche order so every queue load samples a different cross-section, then
+  // round-robin: take the top item from EVERY niche before taking a second from any.
+  // This spreads the queue evenly across all niches instead of letting whichever niche
+  // has the most pool depth (e.g. the many organizer sub-niches) dominate the 30.
+  // (Performance/sales weighting is intentionally NOT applied yet — that comes later.)
+  const nicheOrder = seededShuffle(Array.from(byNiche.keys()), `${seed}:niche-order`)
+  const result: Product[] = []
+  for (let depth = 0; ; depth += 1) {
+    let addedAny = false
+    for (const niche of nicheOrder) {
+      const list = byNiche.get(niche)
+      if (list && depth < list.length) {
+        result.push(list[depth])
+        addedAny = true
+      }
+    }
+    if (!addedAny) break
+  }
+  return result
 }
 
 function rankProducts(
@@ -360,7 +373,7 @@ function rankProducts(
     })
 
   if (!randomize) return ranked
-  return spreadNiches ? spreadProductsAcrossNiches(ranked) : ranked
+  return spreadNiches ? spreadProductsAcrossNiches(ranked, seed) : ranked
 }
 
 const BASE_NICHE_QUERIES: Record<string, string[]> = {
