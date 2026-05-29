@@ -859,6 +859,10 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
+                -- HARD SATURATION GATE (Lever 1): skip products with >50 known eBay
+                -- competitors so we stop offering listings that get crushed on price.
+                -- NULL is permissive (data backfills via the competition cron over ~24h).
+                AND (psi.ebay_competitor_count IS NULL OR psi.ebay_competitor_count <= 50)
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
@@ -897,6 +901,10 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
+                -- HARD SATURATION GATE (Lever 1): skip products with >50 known eBay
+                -- competitors so we stop offering listings that get crushed on price.
+                -- NULL is permissive (data backfills via the competition cron over ~24h).
+                AND (psi.ebay_competitor_count IS NULL OR psi.ebay_competitor_count <= 50)
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
@@ -934,6 +942,10 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
+                -- HARD SATURATION GATE (Lever 1): skip products with >50 known eBay
+                -- competitors so we stop offering listings that get crushed on price.
+                -- NULL is permissive (data backfills via the competition cron over ~24h).
+                AND (psi.ebay_competitor_count IS NULL OR psi.ebay_competitor_count <= 50)
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
@@ -971,6 +983,10 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
+                -- HARD SATURATION GATE (Lever 1): skip products with >50 known eBay
+                -- competitors so we stop offering listings that get crushed on price.
+                -- NULL is permissive (data backfills via the competition cron over ~24h).
+                AND (psi.ebay_competitor_count IS NULL OR psi.ebay_competitor_count <= 50)
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.

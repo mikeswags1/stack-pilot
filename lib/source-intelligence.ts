@@ -580,7 +580,7 @@ export async function runSourceSelfHealing(options: { applyScores?: boolean; dea
       `.catch(() => [])
 
   const outcomeFeedbackUpdated = await applyListingOutcomeFeedback().catch(() => 0)
-  const competitionEnriched = await enrichCompetitionData({ limit: 20 }).catch(() => ({ enriched: 0, failed: 0 }))
+  const competitionEnriched = await enrichCompetitionData({ limit: 80 }).catch(() => ({ enriched: 0, failed: 0 }))
   const recommendations = await getSourceRecommendations(8)
   return {
     ...intelligence,

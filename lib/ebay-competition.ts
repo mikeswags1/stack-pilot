@@ -1,8 +1,38 @@
+// eBay competition enrichment — uses the Browse API (modern, OAuth client-credentials,
+// generous quota) to count and price-check competing listings for each active product.
+// Replaced the old Finding API path which was silently failing with rate-limit errors
+// (svcs.ebay.com 10001 "Service call has exceeded the number of times allowed"), leaving
+// 99% of the pool with no competition data.
 import { queryRows, sql } from '@/lib/db'
 import { getMeaningfulTitleWords } from '@/lib/listing-quality'
 
 const MAX_PER_RUN = 80
-const COMPETITION_REFRESH_HOURS = 72
+
+// Cached app access token. Browse API tokens last ~2 hours (we refresh at -60s).
+let tokenCache: { token: string; expiresAt: number } | null = null
+
+async function getApplicationToken(): Promise<string | null> {
+  const appId = process.env.EBAY_APP_ID
+  const certId = process.env.EBAY_CERT_ID
+  if (!appId || !certId) return null
+  if (tokenCache && tokenCache.expiresAt > Date.now() + 60_000) return tokenCache.token
+
+  const basic = Buffer.from(`${appId}:${certId}`).toString('base64')
+  const res = await fetch('https://api.ebay.com/identity/v1/oauth2/token', {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${basic}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: 'grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope',
+    signal: AbortSignal.timeout(8000),
+  }).catch(() => null)
+  if (!res || !res.ok) return null
+  const j = (await res.json().catch(() => null)) as { access_token?: string; expires_in?: number } | null
+  if (!j?.access_token) return null
+  tokenCache = { token: j.access_token, expiresAt: Date.now() + (j.expires_in || 7200) * 1000 }
+  return j.access_token
+}
 
 function buildSearchKeywords(title: string): string {
   const words = getMeaningfulTitleWords(title)
@@ -11,51 +41,61 @@ function buildSearchKeywords(title: string): string {
   return words.join(' ')
 }
 
-async function queryEbayCompetitorCount(keywords: string, appId: string): Promise<number> {
-  const url = new URL('https://svcs.ebay.com/services/search/FindingService/v1')
-  url.searchParams.set('OPERATION-NAME', 'findItemsByKeywords')
-  url.searchParams.set('SERVICE-VERSION', '1.0.0')
-  url.searchParams.set('SECURITY-APPNAME', appId)
-  url.searchParams.set('RESPONSE-DATA-FORMAT', 'JSON')
-  url.searchParams.set('keywords', keywords)
-  url.searchParams.set('itemFilter(0).name', 'ListingType')
-  url.searchParams.set('itemFilter(0).value', 'FixedPrice')
-  url.searchParams.set('paginationInput.entriesPerPage', '1')
-  url.searchParams.set('paginationInput.pageNumber', '1')
+type BrowseSummary = {
+  total?: number
+  itemSummaries?: Array<{ price?: { value?: string; currency?: string } }>
+}
 
-  const res = await fetch(url, { signal: AbortSignal.timeout(8000) })
-  if (!res.ok) return -1
-
-  const data = await res.json()
-  const total = data?.findItemsByKeywordsResponse?.[0]?.paginationOutput?.[0]?.totalEntries?.[0]
-  const count = parseInt(String(total || '0'), 10)
-  return Number.isFinite(count) ? count : -1
+// Returns { count: total matching active fixed-price US listings, minPrice: lowest price
+// among the first page of results } or null on failure. minPrice is null if no prices found.
+async function queryEbayCompetition(
+  keywords: string,
+  token: string,
+): Promise<{ count: number; minPrice: number | null } | null> {
+  const url = new URL('https://api.ebay.com/buy/browse/v1/item_summary/search')
+  url.searchParams.set('q', keywords)
+  url.searchParams.set('filter', 'buyingOptions:{FIXED_PRICE},conditions:{NEW}')
+  url.searchParams.set('limit', '10')
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
+    },
+    signal: AbortSignal.timeout(8000),
+  }).catch(() => null)
+  if (!res || !res.ok) return null
+  const data = (await res.json().catch(() => null)) as BrowseSummary | null
+  if (!data) return null
+  const count = typeof data.total === 'number' ? data.total : 0
+  const prices = (data.itemSummaries || [])
+    .map((it) => parseFloat(String(it?.price?.value || '0')))
+    .filter((p) => Number.isFinite(p) && p > 0)
+  const minPrice = prices.length > 0 ? Math.min(...prices) : null
+  return { count, minPrice }
 }
 
 export async function enrichCompetitionData(options: { limit?: number } = {}) {
-  const appId = process.env.EBAY_APP_ID || ''
-  if (!appId) return { enriched: 0, failed: 0, skipped: 0 }
+  const token = await getApplicationToken()
+  if (!token) return { enriched: 0, failed: 0, skipped: 0 }
+
+  // Self-installing schema: add the min-price column once. Cheap when it already exists.
+  await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS ebay_competitor_min_price NUMERIC(10,2)`.catch(() => {})
 
   const limit = Math.max(1, Math.min(options.limit || MAX_PER_RUN, 200))
 
+  // Prioritize products that have NEVER been checked. Once that backlog is drained, the
+  // outcome-tracker or refresh cron can re-call with a stale-refresh strategy.
   const rows = await queryRows<{ asin: string; title: string }>`
     SELECT asin, title
     FROM product_source_items
     WHERE active = TRUE
-      AND (
-        ebay_competitor_count IS NULL
-        OR last_seen_at > NOW() - (${COMPETITION_REFRESH_HOURS} * INTERVAL '1 hour')
-          AND last_intelligence_at IS NOT NULL
-          AND last_intelligence_at < NOW() - (${COMPETITION_REFRESH_HOURS} * INTERVAL '1 hour')
-      )
-    ORDER BY
-      CASE WHEN ebay_competitor_count IS NULL THEN 0 ELSE 1 END,
-      last_intelligence_at ASC NULLS FIRST,
-      total_score DESC
+      AND ebay_competitor_count IS NULL
+    ORDER BY total_score DESC NULLS LAST
     LIMIT ${limit}
-  `.catch(() => [])
+  `.catch(() => [] as Array<{ asin: string; title: string }>)
 
-  let enriched = 0, failed = 0, skipped = 0
+  let enriched = 0
+  let failed = 0
   const BATCH = 5
 
   for (let i = 0; i < rows.length; i += BATCH) {
@@ -63,28 +103,32 @@ export async function enrichCompetitionData(options: { limit?: number } = {}) {
     const results = await Promise.allSettled(
       batch.map(async (row) => {
         const keywords = buildSearchKeywords(row.title)
-        if (!keywords) return { asin: row.asin, count: -1 }
-        const count = await queryEbayCompetitorCount(keywords, appId)
-        return { asin: row.asin, count }
-      })
+        if (!keywords) return null
+        const r = await queryEbayCompetition(keywords, token)
+        return r ? { asin: row.asin, count: r.count, minPrice: r.minPrice } : null
+      }),
     )
 
     for (const result of results) {
-      if (result.status === 'rejected') { failed++; continue }
-      const { asin, count } = result.value
-      if (count < 0) { failed++; continue }
+      if (result.status === 'rejected' || !result.value) {
+        failed++
+        continue
+      }
+      const { asin, count, minPrice } = result.value
       await sql`
         UPDATE product_source_items
-        SET ebay_competitor_count = ${count}
+        SET ebay_competitor_count = ${count},
+            ebay_competitor_min_price = ${minPrice},
+            last_intelligence_at = NOW()
         WHERE asin = ${asin}
       `.catch(() => {})
       enriched++
     }
 
     if (i + BATCH < rows.length) {
-      await new Promise((r) => setTimeout(r, 400))
+      await new Promise((r) => setTimeout(r, 250))
     }
   }
 
-  return { enriched, failed, skipped: rows.length === 0 ? 0 : skipped }
+  return { enriched, failed, skipped: 0 }
 }
