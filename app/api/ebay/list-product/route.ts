@@ -2835,6 +2835,7 @@ export async function POST(req: NextRequest) {
   const attemptListing = async (params: typeof xmlParams & { itemSpecificsXml: string; shippingService?: string }) => {
     let activeCategoryId = params.categoryId
     let activeShippingService = params.shippingService || 'FedEx2Day'
+    let workingSpecificsXml = params.itemSpecificsXml
     let responseText = ''
     let parsed = { short: '', long: '', codes: [] as string[], longs: [] as string[] }
     let errorKind: 'leaf' | 'specific' | 'other' = 'other'
@@ -2844,11 +2845,12 @@ export async function POST(req: NextRequest) {
     let simplifiedShipping = false
     const shippingFallbacks = ['FedEx2Day', 'USPSPriority', 'FedExHomeDelivery', 'UPSGround']
 
-    for (let guard = 0; guard < 4; guard += 1) {
+    for (let guard = 0; guard < 6; guard += 1) {
       attemptedCategoryIds.push(activeCategoryId)
       responseText = await submitToEbay(buildXml({
         ...params,
         categoryId: activeCategoryId,
+        itemSpecificsXml: workingSpecificsXml,
         shippingService: activeShippingService,
         simplifiedShipping,
       }), appId, credentials.accessToken, effectiveUserId)
@@ -2872,6 +2874,18 @@ export async function POST(req: NextRequest) {
         if (nextShippingService) {
           activeShippingService = nextShippingService
           attemptedShippingServices.push(nextShippingService)
+          continue
+        }
+      }
+
+      // eBay rejects listings missing required item-specifics ("item specific X is
+      // missing"). The verify loop fills these, but the fast path skips verification
+      // for cached categories — so fill them HERE too and retry, otherwise these fail
+      // outright. autoSpecificsXml only emits genuinely-missing names, so no duplicates.
+      if (errorKind === 'specific') {
+        const auto = autoSpecificsXml(responseText)
+        if (auto && !workingSpecificsXml.includes(auto)) {
+          workingSpecificsXml += auto
           continue
         }
       }
