@@ -2530,15 +2530,21 @@ export async function POST(req: NextRequest) {
     [primaryPictureUrl, ...secondaryPictureUrls].filter((u): u is string => Boolean(u))
   )
   if (usablePictureList.length === 0) {
-    // EPS upload failed — fall back to badge URL first (keeps the FREE SHIPPING stamp),
-    // then remaining images without the stamp
+    // Primary EPS upload failed too — restore exactly ONE primary variant (keeps the
+    // FREE SHIPPING stamp when possible), then DISTINCT gallery photos. badgeUrl, the
+    // proxied primary, and the raw primary are all the SAME photo, so we must push at
+    // most one of them or the listing shows duplicate images.
     usablePictureList.push(
-      ...(directPrimaryFallbacks.length > 0 ? directPrimaryFallbacks : [badgeUrl]),
-      ...filteredImages.slice(1).filter((u) => u.length <= 500).slice(0, 5)
+      ...(directPrimaryFallbacks.length > 0 ? directPrimaryFallbacks.slice(0, 1) : [badgeUrl]),
+      ...cleanGalleryUrls.filter((u) => u.length <= 500).slice(0, 5)
     )
   }
   if (usablePictureList.length < MIN_LISTING_IMAGES) {
-    for (const fallbackUrl of [...directPrimaryFallbacks, ...cleanGalleryUrls, ...filteredImages.slice(1)]) {
+    // Pad ONLY with distinct GALLERY photos — never primary-image variants. The primary
+    // is already in slot 0; padding with another copy of it is exactly what produced the
+    // "two identical images" listings when gallery EPS uploads failed under heavy load.
+    // If there still aren't enough distinct photos, fail below rather than ship dupes.
+    for (const fallbackUrl of [...cleanGalleryUrls, ...filteredImages.slice(1)]) {
       if (usablePictureList.length >= MIN_LISTING_IMAGES) break
       if (fallbackUrl.length > 500 || usablePictureList.includes(fallbackUrl)) continue
       usablePictureList.push(fallbackUrl)
