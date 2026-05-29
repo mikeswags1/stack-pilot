@@ -868,6 +868,17 @@ function pickRelevantSpecs(specs: Array<[string, string]>) {
     .slice(0, 14)
 }
 
+// eBay caps item-specific Name and Value at 65 characters and rejects the whole
+// listing if any value is longer ("... value is too long"). Truncate at a word
+// boundary so we emit clean, accepted values.
+function clampSpec(value: string, max = 65): string {
+  const v = value.trim()
+  if (v.length <= max) return v
+  const cut = v.slice(0, max)
+  const atWord = cut.replace(/\s+\S*$/, '').trim()
+  return (atWord.length >= 20 ? atWord : cut).trim()
+}
+
 function buildItemSpecificsXml(title: string, specs: Array<[string, string]>, fallbackXml: string, niche: string | null) {
   const relevantSpecs = pickRelevantSpecs(specs)
   const nameMap = new Map<string, string>()
@@ -894,14 +905,14 @@ function buildItemSpecificsXml(title: string, specs: Array<[string, string]>, fa
 
   for (const preferred of preferredKeys) {
     const match = relevantSpecs.find(([key]) => key.toLowerCase() === preferred.toLowerCase())
-    if (match?.[1]) nameMap.set(preferred, sanitizeContent(match[1]).slice(0, 120))
+    if (match?.[1]) nameMap.set(preferred, clampSpec(sanitizeContent(match[1])))
   }
 
   for (const [key, value] of relevantSpecs) {
     if (nameMap.size >= 8) break
-    const cleanKey = titleCaseLabel(key).slice(0, 80)
+    const cleanKey = clampSpec(titleCaseLabel(key))
     if (!cleanKey || nameMap.has(cleanKey)) continue
-    nameMap.set(cleanKey, sanitizeContent(value).slice(0, 120))
+    nameMap.set(cleanKey, clampSpec(sanitizeContent(value)))
   }
 
   if (nameMap.size === 0) {

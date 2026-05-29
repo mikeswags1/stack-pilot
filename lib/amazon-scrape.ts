@@ -338,6 +338,11 @@ export async function scrapeAmazonSearch(
       const title = extractSearchTitle(block)
       if (!title || title.length < 5 || isWeakListingTitle(title)) continue
 
+      // Skip sponsored ("Ad") results — Amazon prefixes these "Ad - ..." and their
+      // ASIN↔title pairing is unreliable, which produces wrong-product listings that
+      // fail at eBay with ASIN_MISMATCH. Drop them at the source.
+      if (/^ad\s*[-–:]\s+/i.test(title) || block.includes('AdHolder') || block.includes('s-sponsored-label')) continue
+
       const priceMatch = block.match(/"a-price-whole"[^>]*>(\d[\d,]*)</)
       const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : 0
 

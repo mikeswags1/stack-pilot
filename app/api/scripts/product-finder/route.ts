@@ -712,8 +712,12 @@ export async function GET(req: NextRequest) {
     listedTitles = listedRows.filter(r => r.is_mine).map((r) => String(r.title || '')).filter(Boolean)
   } catch { /* table may not exist yet */ }
 
+  // eBay rejects "you already have this item" by matching the product TITLE, not the
+  // ASIN — so a different ASIN for the same product slips past the asin-based block and
+  // then fails at listing time. Match titles more loosely (0.72) so near-duplicates of
+  // the user's existing listings are removed from the queue up front instead of failing.
   const matchesActiveListing = (title: string) =>
-    listedTitles.some((listedTitle) => getTitleScore(listedTitle, title) >= 0.82)
+    listedTitles.some((listedTitle) => getTitleScore(listedTitle, title) >= 0.72)
 
   const shouldBlockProduct = (product: Pick<Product, 'asin' | 'title' | 'available'>) =>
     product.available === false ||
