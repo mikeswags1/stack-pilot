@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { apiError, apiOk } from '@/lib/api-response'
 import { getValidEbayAccessToken } from '@/lib/ebay-auth'
+import { queryRows } from '@/lib/db'
 
 const MARKETING_BASE = 'https://api.ebay.com/sell/marketing/v1'
 const MARKETPLACE_HEADER = { 'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US' }
@@ -15,6 +16,26 @@ function extractEbayError(text: string, status: number): string {
     return msg || parsed.message || `eBay error ${status}`
   } catch {
     return text.match(/"message"\s*:\s*"([^"]+)"/)?.[1] || `eBay error ${status}`
+  }
+}
+
+async function getCampaignListingCount(campaignId: string, accessToken: string) {
+  try {
+    const url = new URL(`${MARKETING_BASE}/ad_campaign/${campaignId}/ad`)
+    url.searchParams.set('limit', '1')
+    url.searchParams.set('offset', '0')
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}`, ...MARKETPLACE_HEADER },
+      signal: AbortSignal.timeout(6000),
+    })
+    const text = await res.text()
+    if (!res.ok) return null
+    const data = JSON.parse(text) as { total?: number | string; ads?: unknown[] }
+    const total = Number(data.total)
+    if (Number.isFinite(total)) return total
+    return Array.isArray(data.ads) ? data.ads.length : null
+  } catch {
+    return null
   }
 }
 
@@ -39,8 +60,37 @@ export async function GET() {
       return apiError(extractEbayError(text, res.status), { status: res.status })
     }
 
-    const data = JSON.parse(text) as { campaigns?: unknown[] }
-    return apiOk({ campaigns: data.campaigns || [] })
+    const data = JSON.parse(text) as { campaigns?: Array<Record<string, unknown>> }
+    const campaigns = data.campaigns || []
+    const [activeListingRows, campaignCounts] = await Promise.all([
+      queryRows<{ count: string | number }>`
+        SELECT COUNT(*)::int AS count
+        FROM listed_asins
+        WHERE user_id = ${session.user.id}
+          AND ended_at IS NULL
+          AND ebay_listing_id IS NOT NULL
+          AND ebay_listing_id <> ''
+      `.catch(() => []),
+      Promise.all(
+        campaigns.map(async (campaign) => ({
+          campaignId: String(campaign.campaignId || ''),
+          listingCount: campaign.campaignId
+            ? await getCampaignListingCount(String(campaign.campaignId), credentials.accessToken)
+            : null,
+        }))
+      ),
+    ])
+    const countByCampaign = new Map(campaignCounts.map((item) => [item.campaignId, item.listingCount]))
+    const activeListingCount = Number(activeListingRows[0]?.count || 0)
+
+    return apiOk({
+      activeListingCount,
+      campaigns: campaigns.map((campaign) => ({
+        ...campaign,
+        listingCount: countByCampaign.get(String(campaign.campaignId || '')) ?? null,
+        activeListingCount,
+      })),
+    })
   } catch (e) {
     console.error('[campaigns GET] error:', e)
     return apiError('Failed to load campaigns.', { status: 500 })

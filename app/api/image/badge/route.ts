@@ -212,7 +212,7 @@ function buildFallbackSvg() {
 async function compositeBadge(source: sharp.Sharp, width: number, height: number, variant: BadgeVariant) {
   if (variant === 'none') return source.jpeg({ quality: 92 }).toBuffer()
 
-  const badgeWidth = Math.max(170, Math.min(300, Math.round(width * 0.22)))
+  const badgeWidth = Math.max(210, Math.min(360, Math.round(width * 0.26)))
   const badge = await prepareBadgeAsset(variant, badgeWidth)
   const insetX = Math.max(22, Math.round(width * 0.032))
   const insetY = Math.max(18, Math.round(height * 0.032))

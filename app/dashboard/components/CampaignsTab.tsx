@@ -10,6 +10,8 @@ interface Campaign {
   campaignName: string
   campaignStatus: CampaignStatus
   campaignType: string
+  listingCount?: number | null
+  activeListingCount?: number
   fundingStrategy?: {
     bidPercentage?: string
     fundingModel?: string
@@ -38,6 +40,7 @@ function statusBadge(status: CampaignStatus) {
 
 export function CampaignsTab({ connected }: { connected: boolean }) {
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
+  const [activeListingCount, setActiveListingCount] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -66,6 +69,7 @@ export function CampaignsTab({ connected }: { connected: boolean }) {
         return
       }
       setCampaigns(data.campaigns || [])
+      setActiveListingCount(Number(data.activeListingCount || 0))
     } catch {
       setError('Failed to load campaigns. Check your connection.')
     } finally {
@@ -125,6 +129,15 @@ export function CampaignsTab({ connected }: { connected: boolean }) {
       const msg = data?.message || (res.ok ? 'Done.' : 'Failed.')
       setBoostMessage(prev => ({ ...prev, [id]: msg }))
       setBoostState(prev => ({ ...prev, [id]: res.ok ? 'done' : 'error' }))
+      if (res.ok) {
+        const added = Number(data?.added || 0)
+        const total = Number(data?.total || 0)
+        setCampaigns(prev => prev.map(c =>
+          c.campaignId === id
+            ? { ...c, listingCount: Math.max(Number(c.listingCount || 0), added || total || Number(c.listingCount || 0)) }
+            : c
+        ))
+      }
     } catch {
       setBoostMessage(prev => ({ ...prev, [id]: 'Request failed.' }))
       setBoostState(prev => ({ ...prev, [id]: 'error' }))
@@ -275,6 +288,8 @@ export function CampaignsTab({ connected }: { connected: boolean }) {
               const bState = boostState[id] || 'idle'
               const bMsg = boostMessage[id]
               const toggling = toggleState[id] === 'loading'
+              const campaignListingCount = typeof campaign.listingCount === 'number' ? campaign.listingCount : null
+              const storeListingCount = campaign.activeListingCount ?? activeListingCount
 
               return (
                 <div key={id} className="card" style={{ padding: '24px' }}>
@@ -292,6 +307,15 @@ export function CampaignsTab({ connected }: { connected: boolean }) {
                       <div style={{ fontSize: '11px', color: 'var(--dim)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>Ad Rate</div>
                       <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--gold)' }}>
                         {rate ? `${parseFloat(rate).toFixed(1)}%` : '—'}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '11px', color: 'var(--dim)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>Listings</div>
+                      <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--txt)' }}>
+                        {campaignListingCount === null ? '...' : campaignListingCount}
+                      </div>
+                      <div style={{ fontSize: '10px', color: 'var(--dim)', marginTop: '2px' }}>
+                        of {storeListingCount} active
                       </div>
                     </div>
                     {campaign.startDate && (
@@ -326,7 +350,7 @@ export function CampaignsTab({ connected }: { connected: boolean }) {
                         onClick={() => handleBoost(campaign)}
                         title={!isRunning ? 'Resume the campaign first to boost listings' : undefined}
                       >
-                        {bState === 'running' ? 'Adding listings…' : bState === 'done' ? '✓ Listings Boosted' : '🚀 Boost All Listings'}
+                        {bState === 'running' ? 'Adding listings...' : bState === 'done' ? 'Listings added' : 'Add All Listings To This Campaign'}
                       </button>
                       <button
                         className={`btn btn-sm ${isRunning ? 'btn-ghost' : 'btn-gold'}`}
@@ -361,7 +385,7 @@ export function CampaignsTab({ connected }: { connected: boolean }) {
           </div>
           <div style={{ fontSize: '13px', color: 'var(--sil)', lineHeight: 1.75 }}>
             <strong style={{ color: 'var(--txt)' }}>Cost Per Sale only</strong> — you pay nothing for impressions or clicks. The ad fee (your set %) is only charged when a buyer clicks your promoted listing and purchases within 30 days.
-            &nbsp;<strong style={{ color: 'var(--txt)' }}>Boost All Listings</strong> adds every active listing in your store to the selected campaign at the campaign&apos;s ad rate.
+            &nbsp;<strong style={{ color: 'var(--txt)' }}>Add All Listings To This Campaign</strong> adds every active listing in your store to the selected campaign at the campaign&apos;s ad rate.
             &nbsp;<strong style={{ color: 'var(--txt)' }}>Recommended rate: 3–7%</strong> for most categories. Higher rates win more placements but reduce margin.
           </div>
         </div>
