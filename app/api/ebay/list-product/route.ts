@@ -2499,19 +2499,46 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  const directPrimaryFallbacks = dedupeImageUrls([
+    badgeUrl,
+    cleanDescriptionPrimary,
+    primarySourceImage,
+  ]).filter((url) => url.length <= 500)
+  const primaryPictureUrl =
+    pictureList[0] && pictureList[0].length <= 500
+      ? pictureList[0]
+      : directPrimaryFallbacks[0] || ''
+  if (!primaryPictureUrl) {
+    recordListingFailure({
+      userId: effectiveUserId,
+      asin,
+      niche: body?.niche,
+      errorCode: 'PRIMARY_IMAGE_UPLOAD_FAILED',
+      errorMessage: 'Primary image failed eBay EPS upload and no direct primary fallback URL was short enough for eBay PictureURL.',
+      stage: 'eps_upload',
+      source: isCron ? 'cron' : 'manual',
+    }).catch(() => {})
+    return apiError(
+      'The primary product image could not be uploaded to eBay. StackPilot stopped before listing so the gallery would not start with the wrong image.',
+      { status: 400, code: 'PRIMARY_IMAGE_UPLOAD_FAILED' }
+    )
+  }
+  const secondaryPictureUrls = pictureList
+    .slice(1)
+    .filter((u): u is string => Boolean(u) && u.length <= 500)
   const usablePictureList = dedupeImageUrls(
-    pictureList.filter((u): u is string => Boolean(u) && u.length <= 500)
+    [primaryPictureUrl, ...secondaryPictureUrls].filter((u): u is string => Boolean(u))
   )
   if (usablePictureList.length === 0) {
     // EPS upload failed — fall back to badge URL first (keeps the FREE SHIPPING stamp),
     // then remaining images without the stamp
     usablePictureList.push(
-      badgeUrl,
+      ...(directPrimaryFallbacks.length > 0 ? directPrimaryFallbacks : [badgeUrl]),
       ...filteredImages.slice(1).filter((u) => u.length <= 500).slice(0, 5)
     )
   }
   if (usablePictureList.length < MIN_LISTING_IMAGES) {
-    for (const fallbackUrl of [badgeUrl, ...filteredImages.slice(1)]) {
+    for (const fallbackUrl of [...directPrimaryFallbacks, ...cleanGalleryUrls, ...filteredImages.slice(1)]) {
       if (usablePictureList.length >= MIN_LISTING_IMAGES) break
       if (fallbackUrl.length > 500 || usablePictureList.includes(fallbackUrl)) continue
       usablePictureList.push(fallbackUrl)
