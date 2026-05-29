@@ -473,6 +473,93 @@ async function getComparableEbayPrices(title: string, token: string, amazonPrice
   }
 }
 
+const COMPETITOR_TITLE_STOP_WORDS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'your', 'this', 'that', 'new', 'brand',
+  'free', 'shipping', 'fast', 'usa', 'us', 'seller', 'sale', 'lot', 'bulk',
+  'item', 'items', 'pack', 'packs', 'set', 'sets', 'piece', 'pieces', 'pcs',
+])
+
+function extractCompetitorKeywords(titles: string[], sourceTitle: string) {
+  const sourceWords = new Set(canonicalWords(sourceTitle))
+  const counts = new Map<string, number>()
+
+  for (const title of titles) {
+    const uniqueWords = new Set(
+      canonicalWords(title)
+        .filter((word) => word.length > 2)
+        .filter((word) => !COMPETITOR_TITLE_STOP_WORDS.has(word))
+    )
+    for (const word of uniqueWords) {
+      const weight = sourceWords.has(word) ? 2 : 1
+      counts.set(word, (counts.get(word) || 0) + weight)
+    }
+  }
+
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
+    .map(([word]) => word)
+    .slice(0, 14)
+}
+
+async function getCompetitorTitleSignals(title: string, token: string, amazonPrice: number) {
+  const query = title
+    .split(/\s+/)
+    .slice(0, 9)
+    .join(' ')
+    .trim()
+  if (!query) return { titles: [] as string[], keywords: [] as string[] }
+
+  try {
+    const url = new URL('https://api.ebay.com/buy/browse/v1/item_summary/search')
+    url.searchParams.set('q', query)
+    url.searchParams.set('limit', '16')
+    url.searchParams.set('filter', 'buyingOptions:{FIXED_PRICE},conditions:{NEW}')
+
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(4500),
+    })
+    if (!res.ok) return { titles: [] as string[], keywords: [] as string[] }
+
+    const data = await res.json() as {
+      itemSummaries?: Array<{
+        title?: string
+        price?: { value?: string }
+        shippingOptions?: Array<{ shippingCost?: { value?: string } }>
+      }>
+    }
+    const titles: string[] = []
+
+    for (const item of data.itemSummaries || []) {
+      const candidateTitle = String(item.title || '').trim()
+      if (!candidateTitle) continue
+      const score = getCategoryTitleScore(title, candidateTitle)
+      if (score < 0.34) continue
+
+      const itemPrice = parsePriceValue(item.price?.value)
+      const shipping = parsePriceValue(item.shippingOptions?.[0]?.shippingCost?.value)
+      const landedPrice = itemPrice + shipping
+      if (landedPrice <= 0) continue
+      if (landedPrice < Math.max(3, amazonPrice * 0.55)) continue
+      if (landedPrice > Math.max(amazonPrice * 5, amazonPrice + 90)) continue
+
+      titles.push(candidateTitle.slice(0, 100))
+      if (titles.length >= 6) break
+    }
+
+    return {
+      titles: Array.from(new Set(titles)),
+      keywords: extractCompetitorKeywords(titles, title),
+    }
+  } catch {
+    return { titles: [] as string[], keywords: [] as string[] }
+  }
+}
+
 // Use categories from real active eBay listings with similar titles.
 // This catches cases where Taxonomy returns a valid but too-generic/wrong category.
 async function getCategoryByComparableListings(title: string, token: string): Promise<string | null> {
@@ -2141,11 +2228,17 @@ export async function POST(req: NextRequest) {
   // Falls back to rule-based title if Claude is unavailable or output fails validation.
   // The AI title leads with product type + buyer-search keywords instead of obscure
   // Amazon brand prefixes (SHAPON, HAPIKAY, XY-WQ, etc.) — major eBay SEO win.
+  const hasAiTitleProvider = Boolean(process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY)
+  const competitorTitleSignals = hasAiTitleProvider
+    ? await getCompetitorTitleSignals(ruleBasedTitle || rawSafeTitle, credentials.accessToken, listingAmazonPrice).catch(() => ({ titles: [], keywords: [] }))
+    : { titles: [] as string[], keywords: [] as string[] }
   const aiTitle = await getOrGenerateAiTitle({
     asin: String(asin).toUpperCase(),
     amazonTitle: validatedAmazon.title || listingTitle,
     niche: niche,
     specs: validatedAmazon.specs || [],
+    competitorTitles: competitorTitleSignals.titles,
+    competitorKeywords: competitorTitleSignals.keywords,
   }).catch(() => null)
   const safeTitle = aiTitle && !isWeakListingTitle(aiTitle) ? aiTitle : ruleBasedTitle
 

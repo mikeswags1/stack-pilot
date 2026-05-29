@@ -13,6 +13,7 @@
 import { queryRows, sql } from '@/lib/db'
 
 const CACHE_TTL_DAYS = 30
+const TITLE_PROMPT_VERSION = 'competitor-v2'
 const FORBIDDEN_PATTERNS = [
   /amazon[''']?s?\s+choice/i,
   /best\s+seller/i,
@@ -30,17 +31,21 @@ Rules:
 2. Maximum 80 characters. Aim for 70-79 chars to maximize keyword density.
 3. Lead with the product TYPE and key features (e.g. "Pool Pipe Holder Above Ground"). Buyers search by product type, not brand.
 4. If the brand is well-known to consumers (Nike, Sony, Apple, KitchenAid, etc.), keep it. If it looks obscure or like a model number (4-8 random uppercase letters, e.g. SHAPON, XY-WQ, HAPIKAY), DROP it.
-5. Include 2-3 high-value search keywords buyers actually type.
+5. Include 2-4 high-value search keywords buyers actually type.
 6. Use Title Case consistently.
 7. Never include: Amazon's Choice, Best Seller, Sponsored, Overall Pick, Climate Pledge, Limited Time Deal, Deal of the Day, or any Amazon badges.
 8. Never include the words "Amazon" or "amazon.com".
 9. Keep numeric quantities (2-Pack, 12 Pcs) when meaningful.
-10. End on a complete word/phrase. Never mid-sentence cut-offs.`
+10. Use competitor title signals when provided, but do not copy a competitor title exactly.
+11. Prioritize exact buyer-search nouns, quantity/count, size, compatibility, material, gender/use case, and "Travel" or "Portable" only when accurate.
+12. End on a complete word/phrase. Never mid-sentence cut-offs.`
 
 function buildUserPrompt(input: {
   amazonTitle: string
   niche?: string | null
   specs?: Array<[string, string]>
+  competitorTitles?: string[]
+  competitorKeywords?: string[]
 }) {
   const lines: string[] = []
   lines.push(`Amazon title: ${input.amazonTitle}`)
@@ -48,6 +53,15 @@ function buildUserPrompt(input: {
   if (input.specs && input.specs.length > 0) {
     const top = input.specs.slice(0, 6).map(([k, v]) => `${k}: ${v}`)
     lines.push(`Key specs: ${top.join('; ')}`)
+  }
+  if (input.competitorKeywords && input.competitorKeywords.length > 0) {
+    lines.push(`High-performing eBay keywords to consider: ${input.competitorKeywords.slice(0, 12).join(', ')}`)
+  }
+  if (input.competitorTitles && input.competitorTitles.length > 0) {
+    lines.push('Comparable eBay titles:')
+    for (const competitorTitle of input.competitorTitles.slice(0, 5)) {
+      lines.push(`- ${competitorTitle}`)
+    }
   }
   lines.push('')
   lines.push('Return ONLY the optimized eBay title (≤80 chars).')
@@ -88,6 +102,49 @@ async function callClaude(userPrompt: string) {
     : ''
   recordApiCall({ provider: 'anthropic', callName: 'title-rewrite', success: true, durationMs: Date.now() - startedAt }).catch(() => {})
   return text || null
+}
+
+function extractOpenAiText(data: {
+  output_text?: string
+  output?: Array<{ content?: Array<{ type?: string; text?: string }> }>
+}) {
+  if (typeof data.output_text === 'string' && data.output_text.trim()) {
+    return data.output_text.trim()
+  }
+  return (data.output || [])
+    .flatMap((item) => item.content || [])
+    .map((part) => part.text || '')
+    .join('')
+    .trim()
+}
+
+async function callOpenAi(userPrompt: string) {
+  const apiKey = String(process.env.OPENAI_API_KEY || '').trim()
+  if (!apiKey) return null
+  const model = String(process.env.OPENAI_TITLE_MODEL || 'gpt-5-nano').trim()
+
+  const res = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      instructions: SYSTEM_PROMPT,
+      input: userPrompt,
+      max_output_tokens: 120,
+      store: false,
+    }),
+    signal: AbortSignal.timeout(15000),
+  })
+  if (!res.ok) return null
+
+  const data = await res.json() as {
+    output_text?: string
+    output?: Array<{ content?: Array<{ type?: string; text?: string }> }>
+  }
+  return extractOpenAiText(data) || null
 }
 
 function sanitizeAiTitle(raw: string): string {
@@ -132,7 +189,9 @@ export async function getCachedAiTitle(asin: string): Promise<string | null> {
   const key = String(asin).toUpperCase().slice(0, 12)
   const rows = await queryRows<{ ai_title: string }>`
     SELECT ai_title FROM ebay_title_cache
-    WHERE asin = ${key} AND expires_at > NOW()
+    WHERE asin = ${key}
+      AND expires_at > NOW()
+      AND model LIKE ${`%:${TITLE_PROMPT_VERSION}`}
     LIMIT 1
   `.catch(() => [])
   return rows[0]?.ai_title || null
@@ -174,6 +233,8 @@ export async function getOrGenerateAiTitle(input: {
   amazonTitle: string
   niche?: string | null
   specs?: Array<[string, string]>
+  competitorTitles?: string[]
+  competitorKeywords?: string[]
 }): Promise<string | null> {
   if (!input.asin || !input.amazonTitle) return null
 
@@ -184,11 +245,19 @@ export async function getOrGenerateAiTitle(input: {
     amazonTitle: input.amazonTitle,
     niche: input.niche,
     specs: input.specs,
+    competitorTitles: input.competitorTitles,
+    competitorKeywords: input.competitorKeywords,
   })
 
   let raw: string | null = null
+  let providerModel = ''
   try {
     raw = await callClaude(prompt)
+    if (raw) providerModel = String(process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5').trim()
+    if (!raw) {
+      raw = await callOpenAi(prompt)
+      if (raw) providerModel = `openai:${String(process.env.OPENAI_TITLE_MODEL || 'gpt-5-nano').trim()}`
+    }
   } catch { return null }
   if (!raw) return null
 
@@ -201,7 +270,7 @@ export async function getOrGenerateAiTitle(input: {
     aiTitle: cleaned,
     sourceTitle: input.amazonTitle,
     niche: input.niche,
-    model: String(process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5').trim(),
+    model: `${providerModel || 'unknown'}:${TITLE_PROMPT_VERSION}`,
   }).catch(() => {})
 
   return cleaned
