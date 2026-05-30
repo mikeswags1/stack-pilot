@@ -14,10 +14,11 @@
 import { queryRows, sql } from '@/lib/db'
 import { getEbayAppToken } from '@/lib/ebay-app-token'
 import { scrapeAmazonSearch } from '@/lib/amazon-scrape'
-import { isWeakListingTitle } from '@/lib/listing-quality'
+import { getMeaningfulTitleWords, isWeakListingTitle } from '@/lib/listing-quality'
 import { hasBlockedListingPolicyFlag, getListingPolicyFlags } from '@/lib/listing-policy'
 import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getRecommendedEbayPrice } from '@/lib/listing-pricing'
 import { upsertProductSourceItems } from '@/lib/product-source-engine'
+import { getRapidApiKey } from '@/lib/rapidapi'
 
 // ── Demand seeds — curated for eBay's high-demand buyer demographic ─────────────
 const DEMAND_SEEDS: Array<{ niche: string; query: string }> = [
@@ -139,6 +140,52 @@ async function searchEbayDemand(query: string, token: string, limit = 15): Promi
   })
 }
 
+// Reduce a noisy eBay title to a clean 5-keyword Amazon search query. eBay listings
+// stuff titles with brand-bait keywords ("USB Charging Station, 10 USB Fast Ports
+// Charge Docking Station and Adjustable..."); Amazon search treats those as exact-AND
+// and returns nothing. The meaningful-words helper strips stopwords/punct, then we
+// take the first 5 — enough to find the matching product, not so noisy it gets 0 hits.
+function ebayTitleToAmazonQuery(ebayTitle: string): string {
+  const words = getMeaningfulTitleWords(ebayTitle)
+    .filter((w) => w.length > 2)
+    .slice(0, 5)
+  return words.join(' ')
+}
+
+// Fallback Amazon search via the paid RapidAPI when the free scraper returns nothing
+// (Amazon's anti-bot is harder on search than on product pages, especially from
+// datacenter IPs). Returns the first reasonable ASIN+title+price+image or null.
+async function searchAmazonViaRapidApi(query: string): Promise<{ asin: string; title: string; price: number; imageUrl: string; rating?: number; reviewCount?: number } | null> {
+  const key = getRapidApiKey()
+  if (!key) return null
+  const url = `https://real-time-amazon-data.p.rapidapi.com/search?query=${encodeURIComponent(query)}&country=US&category_id=aps&page=1`
+  const res = await fetch(url, {
+    headers: { 'x-rapidapi-host': 'real-time-amazon-data.p.rapidapi.com', 'x-rapidapi-key': key },
+    signal: AbortSignal.timeout(10000),
+  }).catch(() => null)
+  if (!res || !res.ok) return null
+  type Hit = { asin?: string; product_title?: string; product_price?: string; product_photo?: string; product_star_rating?: string; product_num_ratings?: number }
+  const j = (await res.json().catch(() => null)) as { data?: { products?: Hit[] } } | null
+  const products = j?.data?.products || []
+  for (const p of products) {
+    const asin = String(p?.asin || '').toUpperCase().trim()
+    if (!/^[A-Z0-9]{10}$/.test(asin)) continue
+    const price = parseFloat(String(p?.product_price || '').replace(/[^0-9.]/g, ''))
+    if (!Number.isFinite(price) || price <= 0) continue
+    const title = String(p?.product_title || '').trim()
+    if (!title) continue
+    return {
+      asin,
+      title,
+      price,
+      imageUrl: String(p?.product_photo || ''),
+      rating: p?.product_star_rating ? parseFloat(p.product_star_rating) : undefined,
+      reviewCount: p?.product_num_ratings,
+    }
+  }
+  return null
+}
+
 // Margin guard: leave room for 13% eBay fees, ~3% payment processing, $0-3 shipping,
 // AND 25%+ ROI. Empirically this means Amazon cost ≤ eBay price × 0.62.
 const MAX_AMAZON_COST_RATIO = 0.62
@@ -180,10 +227,21 @@ export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: 
       considered++
       if (hasBlockedListingPolicyFlag(getListingPolicyFlags({ title: hit.title }))) { skipped++; continue }
 
-      const amazonResults = await scrapeAmazonSearch(hit.title.slice(0, 80)).catch(() => [])
-      if (amazonResults.length === 0) { skipped++; continue }
-      const amazonTop = amazonResults[0]
-      if (!amazonTop?.asin || !amazonTop?.title || !amazonTop?.price) { skipped++; continue }
+      // Reduce the noisy eBay title to a clean 5-keyword query — both for scrape and
+      // for the RapidAPI fallback. Without this, Amazon returns 0 hits for most queries.
+      const amazonQuery = ebayTitleToAmazonQuery(hit.title)
+      if (!amazonQuery) { skipped++; continue }
+
+      // Try free scrape first; fall back to RapidAPI search when Amazon blocks the
+      // scrape (search pages are anti-bot-heavy from datacenter IPs).
+      let amazonTop: { asin: string; title: string; price: number; imageUrl: string; rating?: number; reviewCount?: number } | null = null
+      const scraped = await scrapeAmazonSearch(amazonQuery).catch(() => [])
+      if (scraped[0]?.asin && scraped[0]?.title && scraped[0]?.price > 0) {
+        amazonTop = scraped[0]
+      } else {
+        amazonTop = await searchAmazonViaRapidApi(amazonQuery)
+      }
+      if (!amazonTop) { skipped++; continue }
 
       // Already in pool? Skip — existing pipeline handles it.
       const exists = await queryRows<{ asin: string }>`SELECT asin FROM product_source_items WHERE asin = ${amazonTop.asin} LIMIT 1`.catch(() => [])
