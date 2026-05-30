@@ -239,6 +239,10 @@ interface AmazonDetails {
 // apply the same gate, but this route is the final safety net for stale tabs,
 // direct API calls, and Auto Bulk jobs.
 const MIN_LISTING_IMAGES = 2
+// Target the listing should AIM for, not just the absolute minimum. When some EPS
+// uploads fail under load, the backfill should keep adding DISTINCT gallery photos
+// up to this target instead of bailing the second it crosses MIN.
+const TARGET_LISTING_IMAGES = 4
 
 function isGenericFeature(value: string) {
   const normalized = value.toLowerCase()
@@ -2539,13 +2543,15 @@ export async function POST(req: NextRequest) {
       ...cleanGalleryUrls.filter((u) => u.length <= 500).slice(0, 5)
     )
   }
-  if (usablePictureList.length < MIN_LISTING_IMAGES) {
+  if (usablePictureList.length < TARGET_LISTING_IMAGES) {
     // Pad ONLY with distinct GALLERY photos — never primary-image variants. The primary
     // is already in slot 0; padding with another copy of it is exactly what produced the
     // "two identical images" listings when gallery EPS uploads failed under heavy load.
-    // If there still aren't enough distinct photos, fail below rather than ship dupes.
+    // Push toward TARGET (4) so partial EPS failures don't leave the listing with just
+    // the bare minimum. If there aren't enough distinct photos to reach MIN, the check
+    // further down fails the listing rather than shipping dupes.
     for (const fallbackUrl of [...cleanGalleryUrls, ...filteredImages.slice(1)]) {
-      if (usablePictureList.length >= MIN_LISTING_IMAGES) break
+      if (usablePictureList.length >= TARGET_LISTING_IMAGES) break
       if (fallbackUrl.length > 500 || usablePictureList.includes(fallbackUrl)) continue
       usablePictureList.push(fallbackUrl)
     }
