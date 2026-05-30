@@ -30,6 +30,9 @@
     },
     "app/api/cron/source-graph/route.ts": {
       "maxDuration": 300
+    },
+    "app/api/cron/demand-scout/route.ts": {
+      "maxDuration": 300
     }
   },
   "crons": [
@@ -80,6 +83,10 @@
     {
       "path": "/api/cron/source-graph",
       "schedule": "40 */3 * * *"
+    },
+    {
+      "path": "/api/cron/demand-scout?seedsPerRun=6&perSeed=15",
+      "schedule": "*/30 * * * *"
     }
   ]
 }

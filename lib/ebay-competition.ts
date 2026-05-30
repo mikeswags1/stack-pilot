@@ -5,34 +5,9 @@
 // 99% of the pool with no competition data.
 import { queryRows, sql } from '@/lib/db'
 import { getMeaningfulTitleWords } from '@/lib/listing-quality'
+import { getEbayAppToken } from '@/lib/ebay-app-token'
 
 const MAX_PER_RUN = 80
-
-// Cached app access token. Browse API tokens last ~2 hours (we refresh at -60s).
-let tokenCache: { token: string; expiresAt: number } | null = null
-
-async function getApplicationToken(): Promise<string | null> {
-  const appId = process.env.EBAY_APP_ID
-  const certId = process.env.EBAY_CERT_ID
-  if (!appId || !certId) return null
-  if (tokenCache && tokenCache.expiresAt > Date.now() + 60_000) return tokenCache.token
-
-  const basic = Buffer.from(`${appId}:${certId}`).toString('base64')
-  const res = await fetch('https://api.ebay.com/identity/v1/oauth2/token', {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${basic}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: 'grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope',
-    signal: AbortSignal.timeout(8000),
-  }).catch(() => null)
-  if (!res || !res.ok) return null
-  const j = (await res.json().catch(() => null)) as { access_token?: string; expires_in?: number } | null
-  if (!j?.access_token) return null
-  tokenCache = { token: j.access_token, expiresAt: Date.now() + (j.expires_in || 7200) * 1000 }
-  return j.access_token
-}
 
 function buildSearchKeywords(title: string): string {
   const words = getMeaningfulTitleWords(title)
@@ -75,7 +50,7 @@ async function queryEbayCompetition(
 }
 
 export async function enrichCompetitionData(options: { limit?: number } = {}) {
-  const token = await getApplicationToken()
+  const token = await getEbayAppToken()
   if (!token) return { enriched: 0, failed: 0, skipped: 0 }
 
   // Self-installing schema: add the min-price column once. Cheap when it already exists.
