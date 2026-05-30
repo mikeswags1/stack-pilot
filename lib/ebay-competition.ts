@@ -71,38 +71,23 @@ export async function enrichCompetitionData(options: { limit?: number } = {}) {
 
   let enriched = 0
   let failed = 0
-  const BATCH = 5
-
-  for (let i = 0; i < rows.length; i += BATCH) {
-    const batch = rows.slice(i, i + BATCH)
-    const results = await Promise.allSettled(
-      batch.map(async (row) => {
-        const keywords = buildSearchKeywords(row.title)
-        if (!keywords) return null
-        const r = await queryEbayCompetition(keywords, token)
-        return r ? { asin: row.asin, count: r.count, minPrice: r.minPrice } : null
-      }),
-    )
-
-    for (const result of results) {
-      if (result.status === 'rejected' || !result.value) {
-        failed++
-        continue
-      }
-      const { asin, count, minPrice } = result.value
-      await sql`
-        UPDATE product_source_items
-        SET ebay_competitor_count = ${count},
-            ebay_competitor_min_price = ${minPrice},
-            last_intelligence_at = NOW()
-        WHERE asin = ${asin}
-      `.catch(() => {})
-      enriched++
-    }
-
-    if (i + BATCH < rows.length) {
-      await new Promise((r) => setTimeout(r, 250))
-    }
+  // Throttle: eBay Browse API enforces burst protection (429 "request limit has been
+  // reached") long before the daily 5k cap. Sequential calls with a 600ms delay keeps
+  // us well under the burst threshold. ~80/run × this pacing finishes in ~50s.
+  for (const row of rows) {
+    const keywords = buildSearchKeywords(row.title)
+    if (!keywords) { failed++; continue }
+    const r = await queryEbayCompetition(keywords, token)
+    if (!r) { failed++; continue }
+    await sql`
+      UPDATE product_source_items
+      SET ebay_competitor_count = ${r.count},
+          ebay_competitor_min_price = ${r.minPrice},
+          last_intelligence_at = NOW()
+      WHERE asin = ${row.asin}
+    `.catch(() => {})
+    enriched++
+    await new Promise((res) => setTimeout(res, 600))
   }
 
   return { enriched, failed, skipped: 0 }

@@ -167,6 +167,8 @@ export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: 
   const itemsToUpsert: Parameters<typeof upsertProductSourceItems>[0] = []
 
   for (const seed of seeds) {
+    // Pace Browse API calls — eBay enforces burst protection (429) before the daily cap.
+    if (seeds.indexOf(seed) > 0) await new Promise((r) => setTimeout(r, 700))
     const hits = await searchEbayDemand(seed.query, token, perSeed)
     if (hits.length === 0) continue
 
