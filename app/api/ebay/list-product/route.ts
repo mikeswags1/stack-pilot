@@ -2488,9 +2488,17 @@ export async function POST(req: NextRequest) {
     filteredImages.length > 0
       ? [badgeUrl, ...cleanGalleryUrls]
       : [badgeUrl]
-  const pictureList = await Promise.all(
-    epsSourceUrls.map((u) => uploadToEPS(u, credentials.accessToken, appId, effectiveUserId))
-  )
+  // Sequential EPS uploads with a small pause. Firing all 4 in parallel
+  // (Promise.all) was causing eBay's EPS endpoint to silently drop some on
+  // burst-rate, producing listings with only 2 images even though we send 4.
+  // Sequential is ~4s slower per listing but the images all actually show up.
+  const pictureList: string[] = []
+  for (const epsUrl of epsSourceUrls) {
+    pictureList.push(await uploadToEPS(epsUrl, credentials.accessToken, appId, effectiveUserId))
+    if (pictureList.length < epsSourceUrls.length) {
+      await new Promise((r) => setTimeout(r, 250))
+    }
+  }
 
   // If badge upload failed (eBay timed out fetching our slow sharp endpoint),
   // synchronously upload the proxied primary image (same product, no stamp) so the
