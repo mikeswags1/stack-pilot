@@ -795,12 +795,26 @@ async function syncUserListings(userId: number) {
 
   if (!fetchSucceeded) return
 
-  // Mark any listed ASIN whose eBay listing is no longer active
+  // DISABLED 2026-05-30 — DATA-INTEGRITY HAZARD.
+  //
+  // This block compared our `ended_at IS NULL` rows against `activeIds` (built from
+  // a paginated eBay fetch above) and bulk-marked anything not in that set as ended.
+  // If pagination was incomplete for ANY reason (rate-limit, timeout, partial response,
+  // eBay flake), every live listing missing from the partial set got wrongly ended.
+  //
+  // Observed damage: 3,254 of 3,262 listings with eBay IDs were marked ended while
+  // ~2,193 were actually still active on eBay. Downstream: reprice agent, saturation
+  // refresh, dup-check, and inventory sync all started operating on near-empty data.
+  //
+  // DO NOT re-enable without ALL of these safeguards:
+  //   1. Confirm pagination completed cleanly (last page reached, no rate-limit errors)
+  //   2. Validate `activeIds.size` is within a sane minimum (e.g. ≥ 0.7 × dbRows.length)
+  //   3. Cap delta: if `toEnd.length / dbRows.length > 0.20` then abort and alert
+  //   4. Log every bulk-end with sample IDs so it's auditable
   const dbRows = await queryRows<{ id: number; ebay_listing_id: string }>`SELECT id, ebay_listing_id FROM listed_asins WHERE user_id = ${userId} AND ended_at IS NULL AND ebay_listing_id IS NOT NULL`
   const toEnd = dbRows.filter(r => !activeIds.has(String(r.ebay_listing_id)))
   if (toEnd.length > 0) {
-    const ids = toEnd.map(r => r.id)
-    await sql`UPDATE listed_asins SET ended_at = NOW() WHERE id = ANY(${ids}::int[])`
+    console.warn('[refresh-products] bulk-end disabled; would have ended', toEnd.length, 'of', dbRows.length, 'for user', userId)
   }
 }
 
