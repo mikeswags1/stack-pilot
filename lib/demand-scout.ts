@@ -186,6 +186,64 @@ async function searchAmazonViaRapidApi(query: string): Promise<{ asin: string; t
   return null
 }
 
+// ── Observability — every candidate's full pipeline trace is written here so we
+// can see exactly where the scout funnel is breaking. Outcomes: 'browse_empty',
+// 'policy_blocked', 'amazon_query_empty', 'amazon_not_found', 'already_known',
+// 'viability_failed', 'inserted'.
+async function ensureScoutTraceTable() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS demand_scout_trace (
+      id BIGSERIAL PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      outcome TEXT NOT NULL,
+      seed_query TEXT,
+      ebay_title TEXT,
+      ebay_min_price NUMERIC(10,2),
+      amazon_query TEXT,
+      amazon_asin TEXT,
+      amazon_price NUMERIC(10,2),
+      amazon_title TEXT,
+      amazon_source TEXT,
+      margin_ratio NUMERIC(6,3),
+      reason TEXT
+    )
+  `.catch(() => {})
+  await sql`CREATE INDEX IF NOT EXISTS demand_scout_trace_run_idx ON demand_scout_trace (run_id)`.catch(() => {})
+  await sql`CREATE INDEX IF NOT EXISTS demand_scout_trace_outcome_idx ON demand_scout_trace (outcome, created_at DESC)`.catch(() => {})
+}
+
+type TraceRow = {
+  outcome: 'browse_empty' | 'policy_blocked' | 'amazon_query_empty' | 'amazon_not_found' | 'already_known' | 'viability_failed' | 'inserted'
+  seed_query: string
+  ebay_title?: string
+  ebay_min_price?: number | null
+  amazon_query?: string | null
+  amazon_asin?: string | null
+  amazon_price?: number | null
+  amazon_title?: string | null
+  amazon_source?: 'scrape' | 'rapidapi' | 'none' | null
+  reason?: string | null
+}
+
+async function trace(runId: string, row: TraceRow) {
+  const marginRatio = row.amazon_price && row.ebay_min_price
+    ? Number((row.amazon_price / row.ebay_min_price).toFixed(3))
+    : null
+  await sql`
+    INSERT INTO demand_scout_trace (
+      run_id, outcome, seed_query, ebay_title, ebay_min_price,
+      amazon_query, amazon_asin, amazon_price, amazon_title, amazon_source,
+      margin_ratio, reason
+    ) VALUES (
+      ${runId}, ${row.outcome}, ${row.seed_query}, ${row.ebay_title ?? null}, ${row.ebay_min_price ?? null},
+      ${row.amazon_query ?? null}, ${row.amazon_asin ?? null}, ${row.amazon_price ?? null},
+      ${row.amazon_title ?? null}, ${row.amazon_source ?? null},
+      ${marginRatio}, ${row.reason ?? null}
+    )
+  `.catch(() => {})
+}
+
 // Margin guard: leave room for 13% eBay fees, ~3% payment processing, $0-3 shipping,
 // AND 25%+ ROI. Empirically this means Amazon cost ≤ eBay price × 0.62.
 const MAX_AMAZON_COST_RATIO = 0.62
@@ -203,7 +261,10 @@ export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: 
   const perSeed = Math.max(5, Math.min(options.perSeed ?? 15, 30))
 
   const token = await getEbayAppToken()
-  if (!token) return { discovered: 0, considered: 0, inserted: 0, alreadyKnown: 0, skipped: 0, seeds: 0 }
+  if (!token) return { discovered: 0, considered: 0, inserted: 0, alreadyKnown: 0, skipped: 0, seeds: 0, runId: null }
+
+  await ensureScoutTraceTable()
+  const runId = `r${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 
   const seeds = await nextSeedBatch(seedsPerRun)
 
@@ -217,7 +278,10 @@ export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: 
     // Pace Browse API calls — eBay enforces burst protection (429) before the daily cap.
     if (seeds.indexOf(seed) > 0) await new Promise((r) => setTimeout(r, 700))
     const hits = await searchEbayDemand(seed.query, token, perSeed)
-    if (hits.length === 0) continue
+    if (hits.length === 0) {
+      await trace(runId, { outcome: 'browse_empty', seed_query: seed.query, reason: 'Browse API returned 0 hits (rate-limit, filter mismatch, or genuinely no inventory)' })
+      continue
+    }
 
     // Min competitor price for this seed = the bottom-of-market reference.
     const ebayMinPrice = Math.min(...hits.map((h) => h.price))
@@ -225,29 +289,67 @@ export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: 
     // Look at the top ~5 hits (best demand signal) and try to source each from Amazon.
     for (const hit of hits.slice(0, 5)) {
       considered++
-      if (hasBlockedListingPolicyFlag(getListingPolicyFlags({ title: hit.title }))) { skipped++; continue }
+      const base: Pick<TraceRow, 'seed_query' | 'ebay_title' | 'ebay_min_price'> = {
+        seed_query: seed.query, ebay_title: hit.title, ebay_min_price: ebayMinPrice,
+      }
+
+      if (hasBlockedListingPolicyFlag(getListingPolicyFlags({ title: hit.title }))) {
+        skipped++
+        await trace(runId, { ...base, outcome: 'policy_blocked', reason: 'eBay title matched listing-policy blocklist (oversized/fragile/etc.)' })
+        continue
+      }
 
       // Reduce the noisy eBay title to a clean 5-keyword query — both for scrape and
       // for the RapidAPI fallback. Without this, Amazon returns 0 hits for most queries.
       const amazonQuery = ebayTitleToAmazonQuery(hit.title)
-      if (!amazonQuery) { skipped++; continue }
+      if (!amazonQuery) {
+        skipped++
+        await trace(runId, { ...base, outcome: 'amazon_query_empty', reason: 'getMeaningfulTitleWords produced no usable query' })
+        continue
+      }
 
       // Try free scrape first; fall back to RapidAPI search when Amazon blocks the
       // scrape (search pages are anti-bot-heavy from datacenter IPs).
       let amazonTop: { asin: string; title: string; price: number; imageUrl: string; rating?: number; reviewCount?: number } | null = null
+      let amazonSource: 'scrape' | 'rapidapi' | 'none' = 'none'
       const scraped = await scrapeAmazonSearch(amazonQuery).catch(() => [])
       if (scraped[0]?.asin && scraped[0]?.title && scraped[0]?.price > 0) {
         amazonTop = scraped[0]
+        amazonSource = 'scrape'
       } else {
         amazonTop = await searchAmazonViaRapidApi(amazonQuery)
+        if (amazonTop) amazonSource = 'rapidapi'
       }
-      if (!amazonTop) { skipped++; continue }
+      if (!amazonTop) {
+        skipped++
+        await trace(runId, { ...base, outcome: 'amazon_not_found', amazon_query: amazonQuery, amazon_source: 'none', reason: `Both scrape and RapidAPI returned 0 valid Amazon results for query "${amazonQuery}"` })
+        continue
+      }
+
+      const candidate = { ...base, amazon_query: amazonQuery, amazon_asin: amazonTop.asin, amazon_price: amazonTop.price, amazon_title: amazonTop.title, amazon_source: amazonSource }
 
       // Already in pool? Skip — existing pipeline handles it.
       const exists = await queryRows<{ asin: string }>`SELECT asin FROM product_source_items WHERE asin = ${amazonTop.asin} LIMIT 1`.catch(() => [])
-      if (exists.length > 0) { alreadyKnown++; continue }
+      if (exists.length > 0) {
+        alreadyKnown++
+        await trace(runId, { ...candidate, outcome: 'already_known', reason: 'ASIN already in product_source_items' })
+        continue
+      }
 
-      if (!isViableProduct(amazonTop.price, ebayMinPrice, amazonTop.title)) { skipped++; continue }
+      if (!isViableProduct(amazonTop.price, ebayMinPrice, amazonTop.title)) {
+        skipped++
+        const ratio = (amazonTop.price / ebayMinPrice).toFixed(2)
+        const reason = amazonTop.price < 8
+          ? `Amazon price $${amazonTop.price} below $8 floor`
+          : amazonTop.price > ebayMinPrice * MAX_AMAZON_COST_RATIO
+            ? `Amazon $${amazonTop.price} > ${MAX_AMAZON_COST_RATIO} × eBay min $${ebayMinPrice} (ratio ${ratio})`
+            : isWeakListingTitle(amazonTop.title)
+              ? 'Amazon title flagged as weak/junk'
+              : 'Amazon title matched listing-policy blocklist'
+        await trace(runId, { ...candidate, outcome: 'viability_failed', reason })
+        continue
+      }
+      await trace(runId, { ...candidate, outcome: 'inserted' })
 
       const ebayPrice = getRecommendedEbayPrice(amazonTop.price, EBAY_DEFAULT_FEE_RATE)
       const { profit, roi } = getListingMetrics(amazonTop.price, ebayPrice, EBAY_DEFAULT_FEE_RATE)
@@ -290,5 +392,5 @@ export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: 
     inserted = await upsertProductSourceItems(itemsToUpsert).catch(() => 0)
   }
 
-  return { discovered: itemsToUpsert.length, considered, inserted, alreadyKnown, skipped, seeds: seeds.length }
+  return { discovered: itemsToUpsert.length, considered, inserted, alreadyKnown, skipped, seeds: seeds.length, runId }
 }
