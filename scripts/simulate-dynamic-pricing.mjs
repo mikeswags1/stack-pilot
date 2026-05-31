@@ -110,31 +110,103 @@ console.log(`  Newly competitive listings:              +${newCompetitive - cur}
 // === PER-NICHE BREAKDOWN ===
 const byNiche = new Map()
 for (const p of proposals) {
-  if (!byNiche.has(p.niche)) byNiche.set(p.niche, { total: 0, END: 0, REPRICE_DOWN: 0, REPRICE_UP: 0, KEEP: 0 })
+  if (!byNiche.has(p.niche)) {
+    byNiche.set(p.niche, {
+      total: 0, END: 0, REPRICE_DOWN: 0, REPRICE_UP: 0, KEEP: 0,
+      sum_comp: 0, sum_margin_delta: 0, sum_amazon: 0,
+      currently_competitive: 0,
+    })
+  }
   const b = byNiche.get(p.niche)
   b.total++
   b[p.outcome]++
+  b.sum_comp += Number(p.comp_count || 0)
+  b.sum_margin_delta += p.profit_delta
+  b.sum_amazon += Number(p.amazon_cost || 0)
+  if (p.current_price / p.comp_min <= 1.05) b.currently_competitive++
 }
 const niches = [...byNiche.entries()]
-  .map(([niche, b]) => ({ niche, ...b, end_pct: b.END * 100 / b.total }))
+  .map(([niche, b]) => ({
+    niche,
+    total: b.total,
+    END: b.END,
+    REPRICE_DOWN: b.REPRICE_DOWN,
+    REPRICE_UP: b.REPRICE_UP,
+    KEEP: b.KEEP,
+    currently_competitive: b.currently_competitive,
+    avg_comp_count: Math.round(b.sum_comp / b.total),
+    avg_margin_delta: Number((b.sum_margin_delta / b.total).toFixed(2)),
+    avg_amazon_cost: Number((b.sum_amazon / b.total).toFixed(2)),
+    end_pct: b.END * 100 / b.total,
+    viable_pct: (b.REPRICE_DOWN + b.REPRICE_UP + b.KEEP) * 100 / b.total,
+  }))
   .filter((n) => n.total >= 5) // ignore noise
 
-console.log('\n=== TOP NICHES BY END% (sourcing should avoid these — they cannot win) ===')
-const worstNiches = [...niches].sort((a, b) => b.end_pct - a.end_pct).slice(0, 10)
-console.log(`  niche                              total   END   REPRICE  END%`)
+console.log('\n=== PER-NICHE SOURCE-QUALITY ANALYSIS (worst 15 by END%) ===')
+const worstNiches = [...niches].sort((a, b) => b.end_pct - a.end_pct).slice(0, 15)
+console.log(`  niche                              n   END  REPR   END%   avgComp  avgAmazon  avgΔ`)
 for (const n of worstNiches) {
-  console.log(`  ${n.niche.padEnd(34).slice(0, 34)} ${String(n.total).padStart(5)} ${String(n.END).padStart(5)} ${String(n.REPRICE_DOWN + n.REPRICE_UP).padStart(8)}   ${n.end_pct.toFixed(0)}%`)
+  console.log(
+    `  ${n.niche.padEnd(34).slice(0, 34)}` +
+    ` ${String(n.total).padStart(3)}` +
+    ` ${String(n.END).padStart(4)}` +
+    ` ${String(n.REPRICE_DOWN + n.REPRICE_UP).padStart(5)}` +
+    `   ${String(n.end_pct.toFixed(0)).padStart(3)}%` +
+    `   ${String(n.avg_comp_count).padStart(6)}` +
+    `   $${String(n.avg_amazon_cost.toFixed(2)).padStart(7)}` +
+    `  $${String(n.avg_margin_delta.toFixed(2)).padStart(5)}`)
 }
 
-console.log('\n=== TOP NICHES BY VIABLE REPRICES (sourcing CAN win here) ===')
-const bestNiches = [...niches]
-  .map((n) => ({ ...n, viable: n.REPRICE_DOWN + n.REPRICE_UP + n.KEEP }))
-  .sort((a, b) => b.viable - a.viable)
-  .slice(0, 10)
-console.log(`  niche                              total   END   REPRICE  END%`)
+console.log('\n=== PER-NICHE SOURCE-QUALITY ANALYSIS (best 15 by viable %) ===')
+const bestNiches = [...niches].sort((a, b) => b.viable_pct - a.viable_pct).slice(0, 15)
+console.log(`  niche                              n   END  REPR   END%   avgComp  avgAmazon  avgΔ`)
 for (const n of bestNiches) {
-  console.log(`  ${n.niche.padEnd(34).slice(0, 34)} ${String(n.total).padStart(5)} ${String(n.END).padStart(5)} ${String(n.REPRICE_DOWN + n.REPRICE_UP).padStart(8)}   ${n.end_pct.toFixed(0)}%`)
+  console.log(
+    `  ${n.niche.padEnd(34).slice(0, 34)}` +
+    ` ${String(n.total).padStart(3)}` +
+    ` ${String(n.END).padStart(4)}` +
+    ` ${String(n.REPRICE_DOWN + n.REPRICE_UP).padStart(5)}` +
+    `   ${String(n.end_pct.toFixed(0)).padStart(3)}%` +
+    `   ${String(n.avg_comp_count).padStart(6)}` +
+    `   $${String(n.avg_amazon_cost.toFixed(2)).padStart(7)}` +
+    `  $${String(n.avg_margin_delta.toFixed(2)).padStart(5)}`)
 }
+
+// === DERIVED SOURCING RULES ===
+console.log('\n=== DATA-DERIVED SOURCING RULES ===')
+const skipNiches = niches.filter((n) => n.end_pct >= 70 && n.total >= 10).map((n) => n.niche)
+console.log(`\n  RULE A: Stop sourcing these niches (≥70% END rate, n≥10):`)
+if (skipNiches.length === 0) console.log(`    (none meet the threshold yet)`)
+for (const n of skipNiches) console.log(`    - ${n}`)
+
+const highSatNiches = niches.filter((n) => n.avg_comp_count >= 200 && n.end_pct >= 50)
+console.log(`\n  RULE B: Saturation guard — niches with avg competitors ≥200 AND END% ≥50%:`)
+if (highSatNiches.length === 0) console.log(`    (none meet the threshold)`)
+for (const n of highSatNiches) console.log(`    - ${n.niche} (avg ${n.avg_comp_count} competitors)`)
+
+const allEnded = byOutcome.END
+const endedAvgAmazon = allEnded.length ? allEnded.reduce((s, p) => s + Number(p.amazon_cost || 0), 0) / allEnded.length : 0
+const endedAvgCompMin = allEnded.length ? allEnded.reduce((s, p) => s + Number(p.comp_min || 0), 0) / allEnded.length : 0
+const endedRatio = endedAvgCompMin > 0 ? endedAvgAmazon / endedAvgCompMin : 0
+console.log(`\n  RULE C: Per-product cost-vs-market floor (derived from END distribution):`)
+console.log(`    Across all ${allEnded.length} ENDED listings: avg Amazon cost $${endedAvgAmazon.toFixed(2)}, avg competitor min $${endedAvgCompMin.toFixed(2)}, ratio ${endedRatio.toFixed(2)}`)
+console.log(`    → Sourcing rule: SKIP any product where Amazon cost ≥ ${endedRatio.toFixed(2)} × competitor min on eBay`)
+
+console.log(`\n  RULE D: Minimum gross margin floor (informed by ${MIN_PROFIT} threshold):`)
+console.log(`    Require (proposed_ebay_price × 0.86) - amazon_cost ≥ $${MIN_PROFIT} before allowing a listing`)
+console.log(`    (the 0.86 accounts for eBay 13% + payment 3% fees)`)
+
+// === LISTING SLOT EFFICIENCY ===
+const totalActive = await sql(`SELECT COUNT(*)::int n FROM listed_asins WHERE ended_at IS NULL`)
+const slotsToFree = byOutcome.END.length
+const slotsRemaining = totalActive[0].n - slotsToFree
+console.log('\n=== LISTING SLOT EFFICIENCY (impact of ending unwinnables) ===')
+console.log(`  Active listings now:                ${totalActive[0].n}`)
+console.log(`  Slots freed by ending unwinnables:  ${slotsToFree}`)
+console.log(`  Active listings after:              ${slotsRemaining}`)
+console.log(`  Reprice API calls saved per cycle:  ~${slotsToFree} (Trading API, ~1 per listing per repricer pass)`)
+console.log(`  Browse refresh saved per 72h cycle: ~${slotsToFree} (saturation re-check)`)
+console.log(`  Weekly maintenance touches saved:   ~${slotsToFree * 7} (across availability/image/reprice checks)`)
 
 console.log('\n=== SAMPLE: 6 worst-overpriced (will REPRICE_DOWN) ===')
 const worst = [...byOutcome.REPRICE_DOWN]
