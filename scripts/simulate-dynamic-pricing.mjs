@@ -172,6 +172,33 @@ for (const n of bestNiches) {
     `  $${String(n.avg_margin_delta.toFixed(2)).padStart(5)}`)
 }
 
+console.log('\n=== TOP NICHES BY AVG PROFIT OPPORTUNITY (Δprofit per repriced listing) ===')
+const byProfitOpp = [...niches]
+  .filter((n) => (n.REPRICE_DOWN + n.REPRICE_UP + n.KEEP) >= 5) // only niches that ARE winnable somewhere
+  .sort((a, b) => b.avg_margin_delta - a.avg_margin_delta)
+  .slice(0, 10)
+console.log(`  niche                              n   END%   avgComp   avgAmazon   avgΔprofit`)
+for (const n of byProfitOpp) {
+  console.log(
+    `  ${n.niche.padEnd(34).slice(0, 34)}` +
+    ` ${String(n.total).padStart(3)}` +
+    `   ${String(n.end_pct.toFixed(0)).padStart(3)}%` +
+    `   ${String(n.avg_comp_count).padStart(6)}` +
+    `   $${String(n.avg_amazon_cost.toFixed(2)).padStart(7)}` +
+    `  $${String(n.avg_margin_delta.toFixed(2)).padStart(6)}`)
+}
+
+console.log('\n=== TOP NICHES BY HIGHEST COMPETITIVE-LISTING RATE (sourcing winners) ===')
+const byCompetitiveRate = [...niches]
+  .filter((n) => n.total >= 10)
+  .sort((a, b) => (b.currently_competitive / b.total) - (a.currently_competitive / a.total))
+  .slice(0, 10)
+console.log(`  niche                              n   competitive   rate`)
+for (const n of byCompetitiveRate) {
+  const rate = n.currently_competitive * 100 / n.total
+  console.log(`  ${n.niche.padEnd(34).slice(0, 34)} ${String(n.total).padStart(3)}   ${String(n.currently_competitive).padStart(11)}   ${rate.toFixed(0)}%`)
+}
+
 // === DERIVED SOURCING RULES ===
 console.log('\n=== DATA-DERIVED SOURCING RULES ===')
 const skipNiches = niches.filter((n) => n.end_pct >= 70 && n.total >= 10).map((n) => n.niche)
