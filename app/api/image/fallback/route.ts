@@ -30,7 +30,7 @@ async function prepareBadgeAsset(variant: Exclude<BadgeVariant, 'none'>, width: 
   const pipeline = sharp(await fs.readFile(badgePath)).ensureAlpha()
   if (variant === 'classic-free-2-4-day-shipping') pipeline.trim({ threshold: 18 })
   const input = await pipeline
-    .resize({ width: variant === 'classic-free-2-4-day-shipping' ? Math.round(width * 0.82) : width })
+    .resize({ width: variant === 'classic-free-2-4-day-shipping' ? Math.round(width * 0.92) : width })
     .png()
     .toBuffer()
   const metadata = await sharp(input).metadata()
@@ -66,11 +66,11 @@ function chooseVariant(asin: string, title: string, override?: string | null): B
   }
 
   const bucket = hashText(`${asin}:${title}`) % 100
-  if (bucket < 20) return 'none'
-  if (bucket < 60) return 'free-2-4-day-shipping'
-  if (bucket < 70) return 'classic-free-2-4-day-shipping'
-  if (bucket < 80) return 'free-shipping'
-  if (bucket < 90) return 'fast-delivery'
+  if (bucket < 10) return 'none'
+  if (bucket < 60) return 'classic-free-2-4-day-shipping'
+  if (bucket < 80) return 'free-2-4-day-shipping'
+  if (bucket < 87) return 'free-shipping'
+  if (bucket < 94) return 'fast-delivery'
   return 'ships-fast'
 }
 
@@ -205,7 +205,7 @@ export async function GET(req: NextRequest) {
 
     let output = sharp(Buffer.from(svg)).jpeg({ quality: 92 })
     if (variant !== 'none') {
-      const badge = await prepareBadgeAsset(variant, 370)
+      const badge = await prepareBadgeAsset(variant, 415)
       output = sharp(Buffer.from(svg))
         .composite([
           {

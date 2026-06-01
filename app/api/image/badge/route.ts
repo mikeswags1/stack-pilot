@@ -30,7 +30,7 @@ async function prepareBadgeAsset(variant: Exclude<BadgeVariant, 'none'>, width: 
   const pipeline = sharp(await fs.readFile(badgePath)).ensureAlpha()
   if (variant === 'classic-free-2-4-day-shipping') pipeline.trim({ threshold: 18 })
   const input = await pipeline
-    .resize({ width: variant === 'classic-free-2-4-day-shipping' ? Math.round(width * 0.82) : width })
+    .resize({ width: variant === 'classic-free-2-4-day-shipping' ? Math.round(width * 0.92) : width })
     .png()
     .toBuffer()
   const metadata = await sharp(input).metadata()
@@ -58,11 +58,11 @@ function chooseVariant(asin: string, title: string, override?: string | null): B
   }
 
   const bucket = hashText(`${asin}:${title}`) % 100
-  if (bucket < 20) return 'none'
-  if (bucket < 60) return 'free-2-4-day-shipping'
-  if (bucket < 70) return 'classic-free-2-4-day-shipping'
-  if (bucket < 80) return 'free-shipping'
-  if (bucket < 90) return 'fast-delivery'
+  if (bucket < 10) return 'none'
+  if (bucket < 60) return 'classic-free-2-4-day-shipping'
+  if (bucket < 80) return 'free-2-4-day-shipping'
+  if (bucket < 87) return 'free-shipping'
+  if (bucket < 94) return 'fast-delivery'
   return 'ships-fast'
 }
 
@@ -214,7 +214,7 @@ function buildFallbackSvg() {
 async function compositeBadge(source: sharp.Sharp, width: number, height: number, variant: BadgeVariant) {
   if (variant === 'none') return source.jpeg({ quality: 92 }).toBuffer()
 
-  const badgeWidth = Math.max(230, Math.min(390, Math.round(width * 0.28)))
+  const badgeWidth = Math.max(250, Math.min(430, Math.round(width * 0.31)))
   const badge = await prepareBadgeAsset(variant, badgeWidth)
   const insetX = Math.max(22, Math.round(width * 0.032))
   const insetY = Math.max(18, Math.round(height * 0.032))
