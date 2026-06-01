@@ -9,6 +9,45 @@ import { getSourcingTrendMultiplier, getSourcingTrendSignals } from '@/lib/sourc
 /** Minimum master score for a product to enter the active pool. Below this = auto-reject. */
 const MIN_MASTER_SCORE = 38
 
+/**
+ * Source-time rule gates derived from the 2026-05-31 audit (docs/postmortem-bulk-end-bug.md
+ * and the dynamic-pricing simulation). These are HARD filters applied in the list-ready
+ * SQL query so junk products never reach the dashboard or auto-listing queue.
+ *
+ * Rule A: niches with >=70% END rate (n>=10) under the Balanced pricing model. Sourcing
+ * here is structurally unwinnable — used-book/collectible undercutters, hyper-saturated
+ * mass commodities, or markets where Amazon retail can't beat eBay liquidation prices.
+ *
+ * Rule C: cost-to-market ratio. Across 852 ENDed listings, average Amazon cost was 1.65×
+ * the cheapest eBay competitor — meaning we paid retail for products eBay sellers liquidate.
+ * Anything at or above this ratio cannot return $4+ net profit at a competitive price.
+ */
+const SOURCING_NICHE_BLACKLIST = new Set<string>([
+  'Beach & Sunny Day',
+  'Vintage & Antiques',
+  'Fishing & Hunting',
+  'Coins & Currency',
+  'Industrial Equipment',
+  'Cycling',
+  'Desk Drawer Organizers',
+  'Closet & Wardrobe Organizers',
+  'Safety Gear',
+  'Desk Monitor Arm & Cable Clip Bundles',
+  'Pet Supplies',
+  'Camping & Hiking',
+  'Office Supplies',
+  'Trading Cards',
+  'Personal Care',
+  'Closet Rod & Shelf Divider Spring Refresh Bundle',
+  'Bathroom Cabinet & Vanity Organizers',
+  'Gaming Gear',
+  'Drawer Dividers & Inserts',
+  'Entryway & Mudroom Organizer Systems',
+  'Toys & Games',
+])
+
+const MAX_COST_TO_COMP_MIN_RATIO = 1.65
+
 export type ProductScores = {
   profitScore: number       // 0–100  (20% weight)
   roiScore: number          // 0–100  (15% weight)
@@ -863,6 +902,23 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).
                 AND (psi.ebay_competitor_count IS NULL OR psi.ebay_competitor_count <= 50)
+                -- RULE A — Source-time niche blacklist (audit 2026-05-31): 21 niches
+                -- with >=70% END rate under Balanced pricing model. Structurally unwinnable.
+                AND (psi.source_niche IS NULL OR psi.source_niche NOT IN (
+                  'Beach & Sunny Day','Vintage & Antiques','Fishing & Hunting',
+                  'Coins & Currency','Industrial Equipment','Cycling',
+                  'Desk Drawer Organizers','Closet & Wardrobe Organizers','Safety Gear',
+                  'Desk Monitor Arm & Cable Clip Bundles','Pet Supplies','Camping & Hiking',
+                  'Office Supplies','Trading Cards','Personal Care',
+                  'Closet Rod & Shelf Divider Spring Refresh Bundle',
+                  'Bathroom Cabinet & Vanity Organizers','Gaming Gear',
+                  'Drawer Dividers & Inserts','Entryway & Mudroom Organizer Systems',
+                  'Toys & Games'
+                ))
+                -- RULE C — Cost-to-market ratio. Skip if Amazon cost >= 1.65x eBay min.
+                -- NULL is permissive while competitor data is still enriching.
+                AND (psi.ebay_competitor_min_price IS NULL
+                     OR psi.amazon_price < psi.ebay_competitor_min_price * 1.65)
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
@@ -905,6 +961,23 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).
                 AND (psi.ebay_competitor_count IS NULL OR psi.ebay_competitor_count <= 50)
+                -- RULE A — Source-time niche blacklist (audit 2026-05-31): 21 niches
+                -- with >=70% END rate under Balanced pricing model. Structurally unwinnable.
+                AND (psi.source_niche IS NULL OR psi.source_niche NOT IN (
+                  'Beach & Sunny Day','Vintage & Antiques','Fishing & Hunting',
+                  'Coins & Currency','Industrial Equipment','Cycling',
+                  'Desk Drawer Organizers','Closet & Wardrobe Organizers','Safety Gear',
+                  'Desk Monitor Arm & Cable Clip Bundles','Pet Supplies','Camping & Hiking',
+                  'Office Supplies','Trading Cards','Personal Care',
+                  'Closet Rod & Shelf Divider Spring Refresh Bundle',
+                  'Bathroom Cabinet & Vanity Organizers','Gaming Gear',
+                  'Drawer Dividers & Inserts','Entryway & Mudroom Organizer Systems',
+                  'Toys & Games'
+                ))
+                -- RULE C — Cost-to-market ratio. Skip if Amazon cost >= 1.65x eBay min.
+                -- NULL is permissive while competitor data is still enriching.
+                AND (psi.ebay_competitor_min_price IS NULL
+                     OR psi.amazon_price < psi.ebay_competitor_min_price * 1.65)
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
@@ -946,6 +1019,23 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).
                 AND (psi.ebay_competitor_count IS NULL OR psi.ebay_competitor_count <= 50)
+                -- RULE A — Source-time niche blacklist (audit 2026-05-31): 21 niches
+                -- with >=70% END rate under Balanced pricing model. Structurally unwinnable.
+                AND (psi.source_niche IS NULL OR psi.source_niche NOT IN (
+                  'Beach & Sunny Day','Vintage & Antiques','Fishing & Hunting',
+                  'Coins & Currency','Industrial Equipment','Cycling',
+                  'Desk Drawer Organizers','Closet & Wardrobe Organizers','Safety Gear',
+                  'Desk Monitor Arm & Cable Clip Bundles','Pet Supplies','Camping & Hiking',
+                  'Office Supplies','Trading Cards','Personal Care',
+                  'Closet Rod & Shelf Divider Spring Refresh Bundle',
+                  'Bathroom Cabinet & Vanity Organizers','Gaming Gear',
+                  'Drawer Dividers & Inserts','Entryway & Mudroom Organizer Systems',
+                  'Toys & Games'
+                ))
+                -- RULE C — Cost-to-market ratio. Skip if Amazon cost >= 1.65x eBay min.
+                -- NULL is permissive while competitor data is still enriching.
+                AND (psi.ebay_competitor_min_price IS NULL
+                     OR psi.amazon_price < psi.ebay_competitor_min_price * 1.65)
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
@@ -987,6 +1077,23 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).
                 AND (psi.ebay_competitor_count IS NULL OR psi.ebay_competitor_count <= 50)
+                -- RULE A — Source-time niche blacklist (audit 2026-05-31): 21 niches
+                -- with >=70% END rate under Balanced pricing model. Structurally unwinnable.
+                AND (psi.source_niche IS NULL OR psi.source_niche NOT IN (
+                  'Beach & Sunny Day','Vintage & Antiques','Fishing & Hunting',
+                  'Coins & Currency','Industrial Equipment','Cycling',
+                  'Desk Drawer Organizers','Closet & Wardrobe Organizers','Safety Gear',
+                  'Desk Monitor Arm & Cable Clip Bundles','Pet Supplies','Camping & Hiking',
+                  'Office Supplies','Trading Cards','Personal Care',
+                  'Closet Rod & Shelf Divider Spring Refresh Bundle',
+                  'Bathroom Cabinet & Vanity Organizers','Gaming Gear',
+                  'Drawer Dividers & Inserts','Entryway & Mudroom Organizer Systems',
+                  'Toys & Games'
+                ))
+                -- RULE C — Cost-to-market ratio. Skip if Amazon cost >= 1.65x eBay min.
+                -- NULL is permissive while competitor data is still enriching.
+                AND (psi.ebay_competitor_min_price IS NULL
+                     OR psi.amazon_price < psi.ebay_competitor_min_price * 1.65)
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
