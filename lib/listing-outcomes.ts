@@ -149,6 +149,9 @@ export async function pullSaleOutcomes(opts: { userId?: number; daysBack?: numbe
 
           // Successful sale — write sale_price, sold_at, quantity_sold, realized_profit.
           // realized_profit = sale_price - amazon_cost - (sale_price * ebay_fee_rate)
+          // Use RETURNING so we can count rows ACTUALLY updated (previous
+          // `if (result)` check was always truthy because neon returns [] on
+          // 0-row updates — counter was bogus, real updates may have been 0).
           const result = await sql`
             UPDATE listed_asins
             SET
@@ -165,8 +168,18 @@ export async function pullSaleOutcomes(opts: { userId?: number; daysBack?: numbe
             WHERE user_id::text = ${row.user_id}
               AND ebay_listing_id = ${legacyItemId}
               AND (sold_at IS NULL OR quantity_sold = 0)
+            RETURNING ebay_listing_id
           `.catch(() => null)
-          if (result) listingsUpdated++
+          const rowsAffected = Array.isArray(result) ? result.length : 0
+          if (rowsAffected > 0) {
+            listingsUpdated++
+          } else {
+            // Mismatch — eBay sale's legacyItemId doesn't match our listed_asins.
+            // Most often: user listed manually outside StackPilot OR ID format drift.
+            console.warn('[outcome-tracker] sale unmatched', JSON.stringify({
+              user_id: row.user_id, legacyItemId, quantity, linePrice,
+            }))
+          }
         }
       }
     } catch (err) {
