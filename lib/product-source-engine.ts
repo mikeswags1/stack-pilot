@@ -48,6 +48,37 @@ const SOURCING_NICHE_BLACKLIST = new Set<string>([
 
 const MAX_COST_TO_COMP_MIN_RATIO = 1.65
 
+/**
+ * RULE E — Title-pattern blocklist (added 2026-06-02 after 30/30 fail-rate event).
+ *
+ * Empirically, these patterns produce hard eBay-side rejections in list-product/route.ts:
+ *   - Oversized/fragile/high-return (couch, sofa, TV, etc.) → rejected by drop-shipping guardrails
+ *   - Amazon-owned brands (kindle, echo, fire tv) → rejected by cross-listing guardrails
+ *   - Apparel → fails on missing "Department" specific (auto-fill gap; #28 fix planned)
+ *
+ * These products survived the niche-blacklist (Rule A) because their source_niche was
+ * something generic like "Television" or "Furniture". Title-pattern matching catches them
+ * directly. Each pattern is a Postgres ILIKE pattern (case-insensitive).
+ *
+ * When #28 (Department auto-fill) ships, we'll remove the apparel patterns from this list.
+ */
+const LISTING_TITLE_BLOCKLIST = [
+  // Oversized / fragile / high-return — drop-shipping guardrail rejects
+  '%television%', '% tv %', '%couch%', '%sofa%', '%mattress%', '%recliner%',
+  '%refrigerator%', '%washing machine%', '%dishwasher%', '%dryer%', '%treadmill%',
+  '%piano%', '%aquarium%', '%fish tank%', '%lawn mower%',
+  // Amazon-owned brands — cross-listing guardrail rejects
+  '%kindle%', '%echo dot%', '%echo show%', '%fire tv%', '%fire tablet%',
+  '%ring doorbell%', '%ring camera%', '%blink camera%', '%amazon basics%',
+  // Apparel — fails on missing Department specific (until #28 ships)
+  '%t-shirt%', '%t shirt%', '%tshirt%', '%hoodie%', '%sweatshirt%',
+  '%pants%', '%jeans%', '%dress%', '%blouse%', '%halter%', '%tank top%',
+  '%jacket%', '%coat%', '%sweater%', '%cardigan%', '%leggings%',
+  '%skirt%', '%shorts%', '%bikini%', '%swimsuit%',
+] as const
+
+const LISTING_TITLE_BLOCKLIST_ARRAY = [...LISTING_TITLE_BLOCKLIST]
+
 export type ProductScores = {
   profitScore: number       // 0–100  (20% weight)
   roiScore: number          // 0–100  (15% weight)
@@ -919,6 +950,10 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- NULL is permissive while competitor data is still enriching.
                 AND (psi.ebay_competitor_min_price IS NULL
                      OR psi.amazon_price < psi.ebay_competitor_min_price * 1.65)
+                -- RULE E — Title-pattern blocklist (2026-06-02). Blocks oversized items
+                -- (couch/sofa/TV), Amazon-owned brands (kindle/echo/fire), and apparel
+                -- (until #28 Department auto-fill ships). These produce hard eBay rejects.
+                AND (psi.title IS NULL OR NOT (LOWER(psi.title) LIKE ANY(${LISTING_TITLE_BLOCKLIST_ARRAY}::text[])))
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
@@ -978,6 +1013,10 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- NULL is permissive while competitor data is still enriching.
                 AND (psi.ebay_competitor_min_price IS NULL
                      OR psi.amazon_price < psi.ebay_competitor_min_price * 1.65)
+                -- RULE E — Title-pattern blocklist (2026-06-02). Blocks oversized items
+                -- (couch/sofa/TV), Amazon-owned brands (kindle/echo/fire), and apparel
+                -- (until #28 Department auto-fill ships). These produce hard eBay rejects.
+                AND (psi.title IS NULL OR NOT (LOWER(psi.title) LIKE ANY(${LISTING_TITLE_BLOCKLIST_ARRAY}::text[])))
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
@@ -1036,6 +1075,10 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- NULL is permissive while competitor data is still enriching.
                 AND (psi.ebay_competitor_min_price IS NULL
                      OR psi.amazon_price < psi.ebay_competitor_min_price * 1.65)
+                -- RULE E — Title-pattern blocklist (2026-06-02). Blocks oversized items
+                -- (couch/sofa/TV), Amazon-owned brands (kindle/echo/fire), and apparel
+                -- (until #28 Department auto-fill ships). These produce hard eBay rejects.
+                AND (psi.title IS NULL OR NOT (LOWER(psi.title) LIKE ANY(${LISTING_TITLE_BLOCKLIST_ARRAY}::text[])))
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
@@ -1094,6 +1137,10 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- NULL is permissive while competitor data is still enriching.
                 AND (psi.ebay_competitor_min_price IS NULL
                      OR psi.amazon_price < psi.ebay_competitor_min_price * 1.65)
+                -- RULE E — Title-pattern blocklist (2026-06-02). Blocks oversized items
+                -- (couch/sofa/TV), Amazon-owned brands (kindle/echo/fire), and apparel
+                -- (until #28 Department auto-fill ships). These produce hard eBay rejects.
+                AND (psi.title IS NULL OR NOT (LOWER(psi.title) LIKE ANY(${LISTING_TITLE_BLOCKLIST_ARRAY}::text[])))
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
