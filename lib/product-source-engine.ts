@@ -1163,6 +1163,14 @@ export async function loadProductSourceProducts(options: { niche?: string | null
     return rows
       .map(rowToProduct)
       .filter((product) => !isWeakListingTitle(product.title))
+      // RULE F — Apply the EXACT same listing-policy check the eBay listing route uses
+      // (lib/listing-policy.ts). This guarantees the source pool matches what list-product
+      // will actually accept. Catches oversized/Amazon-brand/apparel matches that survived
+      // Rule E's title-only SQL filter because they matched via niche or description.
+      .filter((product) => !hasBlockedListingPolicyFlag(getListingPolicyFlags({
+        title: product.title,
+        niche: product.sourceNiche || null,
+      })))
       .sort((a, b) => (b.qualityScore || 0) - (a.qualityScore || 0))
       .slice(0, limit)
   } catch {
