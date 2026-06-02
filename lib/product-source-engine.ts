@@ -952,8 +952,24 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                      OR psi.amazon_price < psi.ebay_competitor_min_price * 1.65)
                 -- RULE E — Title-pattern blocklist (2026-06-02). Blocks oversized items
                 -- (couch/sofa/TV), Amazon-owned brands (kindle/echo/fire), and apparel
-                -- (until #28 Department auto-fill ships). These produce hard eBay rejects.
-                AND (psi.title IS NULL OR NOT (LOWER(psi.title) LIKE ANY(${LISTING_TITLE_BLOCKLIST_ARRAY}::text[])))
+                -- (until #28 Department auto-fill ships). Using explicit ILIKE chain
+                -- because LIKE ANY(text[]) array binding wasn't reliably filtering.
+                AND (psi.title IS NULL OR (
+                  psi.title NOT ILIKE '%television%' AND psi.title NOT ILIKE '% tv %'
+                  AND psi.title NOT ILIKE '%couch%' AND psi.title NOT ILIKE '%sofa%'
+                  AND psi.title NOT ILIKE '%mattress%' AND psi.title NOT ILIKE '%recliner%'
+                  AND psi.title NOT ILIKE '%refrigerator%' AND psi.title NOT ILIKE '%treadmill%'
+                  AND psi.title NOT ILIKE '%kindle%' AND psi.title NOT ILIKE '%echo dot%'
+                  AND psi.title NOT ILIKE '%fire tv%' AND psi.title NOT ILIKE '%ring doorbell%'
+                  AND psi.title NOT ILIKE '%t-shirt%' AND psi.title NOT ILIKE '%hoodie%'
+                  AND psi.title NOT ILIKE '%pants%' AND psi.title NOT ILIKE '%jeans%'
+                  AND psi.title NOT ILIKE '%dress%' AND psi.title NOT ILIKE '%halter%'
+                  AND psi.title NOT ILIKE '%tank top%' AND psi.title NOT ILIKE '%jacket%'
+                  AND psi.title NOT ILIKE '%leggings%' AND psi.title NOT ILIKE '%skirt%'
+                  AND psi.title NOT ILIKE '%blouse%' AND psi.title NOT ILIKE '%bikini%'
+                  AND psi.title NOT ILIKE '%swimsuit%' AND psi.title NOT ILIKE '%sweater%'
+                  AND psi.title NOT ILIKE '%cardigan%'
+                ))
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
@@ -1015,8 +1031,24 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                      OR psi.amazon_price < psi.ebay_competitor_min_price * 1.65)
                 -- RULE E — Title-pattern blocklist (2026-06-02). Blocks oversized items
                 -- (couch/sofa/TV), Amazon-owned brands (kindle/echo/fire), and apparel
-                -- (until #28 Department auto-fill ships). These produce hard eBay rejects.
-                AND (psi.title IS NULL OR NOT (LOWER(psi.title) LIKE ANY(${LISTING_TITLE_BLOCKLIST_ARRAY}::text[])))
+                -- (until #28 Department auto-fill ships). Using explicit ILIKE chain
+                -- because LIKE ANY(text[]) array binding wasn't reliably filtering.
+                AND (psi.title IS NULL OR (
+                  psi.title NOT ILIKE '%television%' AND psi.title NOT ILIKE '% tv %'
+                  AND psi.title NOT ILIKE '%couch%' AND psi.title NOT ILIKE '%sofa%'
+                  AND psi.title NOT ILIKE '%mattress%' AND psi.title NOT ILIKE '%recliner%'
+                  AND psi.title NOT ILIKE '%refrigerator%' AND psi.title NOT ILIKE '%treadmill%'
+                  AND psi.title NOT ILIKE '%kindle%' AND psi.title NOT ILIKE '%echo dot%'
+                  AND psi.title NOT ILIKE '%fire tv%' AND psi.title NOT ILIKE '%ring doorbell%'
+                  AND psi.title NOT ILIKE '%t-shirt%' AND psi.title NOT ILIKE '%hoodie%'
+                  AND psi.title NOT ILIKE '%pants%' AND psi.title NOT ILIKE '%jeans%'
+                  AND psi.title NOT ILIKE '%dress%' AND psi.title NOT ILIKE '%halter%'
+                  AND psi.title NOT ILIKE '%tank top%' AND psi.title NOT ILIKE '%jacket%'
+                  AND psi.title NOT ILIKE '%leggings%' AND psi.title NOT ILIKE '%skirt%'
+                  AND psi.title NOT ILIKE '%blouse%' AND psi.title NOT ILIKE '%bikini%'
+                  AND psi.title NOT ILIKE '%swimsuit%' AND psi.title NOT ILIKE '%sweater%'
+                  AND psi.title NOT ILIKE '%cardigan%'
+                ))
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
@@ -1077,8 +1109,24 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                      OR psi.amazon_price < psi.ebay_competitor_min_price * 1.65)
                 -- RULE E — Title-pattern blocklist (2026-06-02). Blocks oversized items
                 -- (couch/sofa/TV), Amazon-owned brands (kindle/echo/fire), and apparel
-                -- (until #28 Department auto-fill ships). These produce hard eBay rejects.
-                AND (psi.title IS NULL OR NOT (LOWER(psi.title) LIKE ANY(${LISTING_TITLE_BLOCKLIST_ARRAY}::text[])))
+                -- (until #28 Department auto-fill ships). Using explicit ILIKE chain
+                -- because LIKE ANY(text[]) array binding wasn't reliably filtering.
+                AND (psi.title IS NULL OR (
+                  psi.title NOT ILIKE '%television%' AND psi.title NOT ILIKE '% tv %'
+                  AND psi.title NOT ILIKE '%couch%' AND psi.title NOT ILIKE '%sofa%'
+                  AND psi.title NOT ILIKE '%mattress%' AND psi.title NOT ILIKE '%recliner%'
+                  AND psi.title NOT ILIKE '%refrigerator%' AND psi.title NOT ILIKE '%treadmill%'
+                  AND psi.title NOT ILIKE '%kindle%' AND psi.title NOT ILIKE '%echo dot%'
+                  AND psi.title NOT ILIKE '%fire tv%' AND psi.title NOT ILIKE '%ring doorbell%'
+                  AND psi.title NOT ILIKE '%t-shirt%' AND psi.title NOT ILIKE '%hoodie%'
+                  AND psi.title NOT ILIKE '%pants%' AND psi.title NOT ILIKE '%jeans%'
+                  AND psi.title NOT ILIKE '%dress%' AND psi.title NOT ILIKE '%halter%'
+                  AND psi.title NOT ILIKE '%tank top%' AND psi.title NOT ILIKE '%jacket%'
+                  AND psi.title NOT ILIKE '%leggings%' AND psi.title NOT ILIKE '%skirt%'
+                  AND psi.title NOT ILIKE '%blouse%' AND psi.title NOT ILIKE '%bikini%'
+                  AND psi.title NOT ILIKE '%swimsuit%' AND psi.title NOT ILIKE '%sweater%'
+                  AND psi.title NOT ILIKE '%cardigan%'
+                ))
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
@@ -1139,8 +1187,24 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                      OR psi.amazon_price < psi.ebay_competitor_min_price * 1.65)
                 -- RULE E — Title-pattern blocklist (2026-06-02). Blocks oversized items
                 -- (couch/sofa/TV), Amazon-owned brands (kindle/echo/fire), and apparel
-                -- (until #28 Department auto-fill ships). These produce hard eBay rejects.
-                AND (psi.title IS NULL OR NOT (LOWER(psi.title) LIKE ANY(${LISTING_TITLE_BLOCKLIST_ARRAY}::text[])))
+                -- (until #28 Department auto-fill ships). Using explicit ILIKE chain
+                -- because LIKE ANY(text[]) array binding wasn't reliably filtering.
+                AND (psi.title IS NULL OR (
+                  psi.title NOT ILIKE '%television%' AND psi.title NOT ILIKE '% tv %'
+                  AND psi.title NOT ILIKE '%couch%' AND psi.title NOT ILIKE '%sofa%'
+                  AND psi.title NOT ILIKE '%mattress%' AND psi.title NOT ILIKE '%recliner%'
+                  AND psi.title NOT ILIKE '%refrigerator%' AND psi.title NOT ILIKE '%treadmill%'
+                  AND psi.title NOT ILIKE '%kindle%' AND psi.title NOT ILIKE '%echo dot%'
+                  AND psi.title NOT ILIKE '%fire tv%' AND psi.title NOT ILIKE '%ring doorbell%'
+                  AND psi.title NOT ILIKE '%t-shirt%' AND psi.title NOT ILIKE '%hoodie%'
+                  AND psi.title NOT ILIKE '%pants%' AND psi.title NOT ILIKE '%jeans%'
+                  AND psi.title NOT ILIKE '%dress%' AND psi.title NOT ILIKE '%halter%'
+                  AND psi.title NOT ILIKE '%tank top%' AND psi.title NOT ILIKE '%jacket%'
+                  AND psi.title NOT ILIKE '%leggings%' AND psi.title NOT ILIKE '%skirt%'
+                  AND psi.title NOT ILIKE '%blouse%' AND psi.title NOT ILIKE '%bikini%'
+                  AND psi.title NOT ILIKE '%swimsuit%' AND psi.title NOT ILIKE '%sweater%'
+                  AND psi.title NOT ILIKE '%cardigan%'
+                ))
                 -- HARD GATE: only return products that are FULLY enriched (cache + 2+ images).
                 -- This matches user's mental model: dashboard = pre-vetted, list-ready pool.
                 -- Unenriched products are kept in DB but hidden from dashboard until cron enriches them.
@@ -1160,17 +1224,32 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 psi.last_seen_at DESC
               LIMIT ${fetchLimit}
             `)
-    return rows
-      .map(rowToProduct)
-      .filter((product) => !isWeakListingTitle(product.title))
-      // RULE F — Apply the EXACT same listing-policy check the eBay listing route uses
-      // (lib/listing-policy.ts). This guarantees the source pool matches what list-product
-      // will actually accept. Catches oversized/Amazon-brand/apparel matches that survived
-      // Rule E's title-only SQL filter because they matched via niche or description.
-      .filter((product) => !hasBlockedListingPolicyFlag(getListingPolicyFlags({
+    const allProducts = rows.map(rowToProduct)
+    const afterWeakTitle = allProducts.filter((product) => !isWeakListingTitle(product.title))
+    // RULE F — Apply the EXACT same listing-policy check the eBay listing route uses
+    // (lib/listing-policy.ts). This guarantees the source pool matches what list-product
+    // will actually accept. Catches oversized/Amazon-brand/apparel matches that survived
+    // Rule E's title-only SQL filter because they matched via niche or description.
+    const blockedSamples: string[] = []
+    const afterPolicy = afterWeakTitle.filter((product) => {
+      const flags = getListingPolicyFlags({
         title: product.title,
         niche: product.sourceNiche || null,
-      })))
+      })
+      const blocked = hasBlockedListingPolicyFlag(flags)
+      if (blocked && blockedSamples.length < 5) {
+        blockedSamples.push(`${product.asin}: ${flags.find((f) => f.severity === 'block')?.match || '?'}`)
+      }
+      return !blocked
+    })
+    console.info('[source-engine] Rule F filter result', JSON.stringify({
+      total: allProducts.length,
+      afterWeakTitle: afterWeakTitle.length,
+      afterPolicy: afterPolicy.length,
+      blockedByPolicy: afterWeakTitle.length - afterPolicy.length,
+      blockedSamples,
+    }))
+    return afterPolicy
       .sort((a, b) => (b.qualityScore || 0) - (a.qualityScore || 0))
       .slice(0, limit)
   } catch {
