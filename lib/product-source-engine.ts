@@ -118,6 +118,9 @@ export type SourceEngineProduct = {
   bestSellerRank?: number
   ebayCompetitorCount?: number
   listingOutcomeScore?: number
+  /** Freshly-scraped Amazon title from amazon_product_cache. Used alongside title for
+   *  policy checks since psi.title can be stale and Amazon may have updated the listing. */
+  cachedTitle?: string
 }
 
 type SourceProductInput = Partial<SourceEngineProduct> & {
@@ -431,6 +434,7 @@ function rowToProduct(row: ProductSourceRow): SourceEngineProduct {
     bestSellerRank: row.cached_bsr ?? undefined,
     ebayCompetitorCount: row.ebay_competitor_count !== null && row.ebay_competitor_count !== undefined ? Number(row.ebay_competitor_count) : undefined,
     listingOutcomeScore: row.listing_outcome_score !== null && row.listing_outcome_score !== undefined ? parseNumber(row.listing_outcome_score) : undefined,
+    cachedTitle: row.cached_title || undefined,
   }
   product.qualityScore = parseNumber(row.intelligence_score) || scoreProduct(product)
   return product
@@ -1232,8 +1236,14 @@ export async function loadProductSourceProducts(options: { niche?: string | null
     // Rule E's title-only SQL filter because they matched via niche or description.
     const blockedSamples: string[] = []
     const afterPolicy = afterWeakTitle.filter((product) => {
+      // Check BOTH the stored title (psi.title) AND the freshly-scraped Amazon title
+      // (cached_title from amazon_product_cache). Amazon may have updated the product
+      // (e.g., ASIN reassigned from "Tool" to "Couch"), and we want either match to block.
+      const combinedTitle = product.cachedTitle && product.cachedTitle !== product.title
+        ? `${product.title} ${product.cachedTitle}`
+        : product.title
       const flags = getListingPolicyFlags({
-        title: product.title,
+        title: combinedTitle,
         niche: product.sourceNiche || null,
       })
       const blocked = hasBlockedListingPolicyFlag(flags)

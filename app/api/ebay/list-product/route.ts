@@ -919,6 +919,43 @@ function buildItemSpecificsXml(title: string, specs: Array<[string, string]>, fa
     nameMap.set(cleanKey, clampSpec(sanitizeContent(value)))
   }
 
+  // Dimension fallbacks — eBay requires Item Width/Length/Height in many categories
+  // (furniture, organizers, storage, kitchenware) and rejects listings without them.
+  // Try to extract from title using common patterns (e.g., "10x8x4", "Length: 10in"),
+  // fall back to "See Description" so eBay accepts the listing.
+  const dimensionExtract = (label: 'Length' | 'Width' | 'Height') => {
+    const labelLower = label.toLowerCase()
+    const t = title
+    // Pattern: "Length: 10in" / "Length 10 inches" / "L: 10"
+    const labeled = t.match(new RegExp(`${labelLower}\\s*[:\\-=]?\\s*(\\d+(?:\\.\\d+)?)\\s*(?:in|inch|inches|"|cm|mm|ft|feet)?`, 'i'))
+    if (labeled?.[1]) return `${labeled[1]} in`
+    // Pattern: "10 x 8 x 4 inch" → assume order L x W x H
+    const lxwxh = t.match(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(?:in|inch|inches|"|cm)?/i)
+    if (lxwxh) {
+      const idx = label === 'Length' ? 1 : label === 'Width' ? 2 : 3
+      return `${lxwxh[idx]} in`
+    }
+    return null
+  }
+  for (const dim of ['Length', 'Width', 'Height'] as const) {
+    const specName = `Item ${dim}`
+    if (!nameMap.has(specName)) {
+      const extracted = dimensionExtract(dim)
+      nameMap.set(specName, clampSpec(extracted || 'See Description'))
+    }
+  }
+  // Department fallback for apparel categories (failing on Halter, Hoodie, etc.)
+  if (!nameMap.has('Department')) {
+    const t = title.toLowerCase()
+    const dept = /\b(men|mens|men'?s|male)\b/.test(t) ? 'Men'
+      : /\b(women|womens|women'?s|female|ladies)\b/.test(t) ? 'Women'
+      : /\b(boys?|boy'?s)\b/.test(t) ? 'Boys'
+      : /\b(girls?|girl'?s)\b/.test(t) ? 'Girls'
+      : /\b(kids?|child|children)\b/.test(t) ? 'Kids'
+      : 'Unisex Adults'
+    nameMap.set('Department', dept)
+  }
+
   if (nameMap.size === 0) {
     return `<NameValueList><Name>Brand</Name><Value>${inferBrandFromProduct(title, specs) || 'Generic'}</Value></NameValueList>
       <NameValueList><Name>Type</Name><Value>${inferTypeFromProduct(title, niche, specs)}</Value></NameValueList>${fallbackXml}`
