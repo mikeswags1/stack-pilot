@@ -31,7 +31,10 @@ const COUNTERFEIT_RULES: PolicyRule[] = [
 ]
 
 const HIGH_RISK_BRAND_RULES: PolicyRule[] = [
-  { code: 'luxury_brand', reason: 'Luxury and designer brands are blocked from automated listing because of VeRO risk.', pattern: /\b(louis vuitton|lv bag|gucci|chanel|prada|burberry|versace|fendi|christian dior|dior|yves saint laurent|saint laurent|ysl|hermes|balenciaga|givenchy|bottega veneta|celine|valentino|off-?white|supreme box logo)\b/i },
+  // NOTE: "off-?white" was removed 2026-06-03 — too many false positives on the
+  // color "off-white" in furniture, paint, clothing, etc. Off-White brand listings
+  // are rare enough that blocking thousands of valid items wasn't worth catching them.
+  { code: 'luxury_brand', reason: 'Luxury and designer brands are blocked from automated listing because of VeRO risk.', pattern: /\b(louis vuitton|lv bag|gucci|chanel|prada|burberry|versace|fendi|christian dior|dior|yves saint laurent|saint laurent|ysl|hermes|balenciaga|givenchy|bottega veneta|celine|valentino|supreme box logo)\b/i },
   { code: 'watch_brand', reason: 'Luxury watch brands are blocked from automated listing because of VeRO risk.', pattern: /\b(rolex|omega watch|patek philippe|audemars piguet|hublot|cartier watch|breitling|tag heuer|iwc schaffhausen)\b/i },
   { code: 'eyewear_brand', reason: 'High-risk branded eyewear is blocked from automated listing.', pattern: /\b(ray-?ban|oakley sunglasses?)\b/i },
   { code: 'outerwear_brand', reason: 'High-risk branded outerwear is blocked from automated listing.', pattern: /\b(canada goose|moncler|ugg boots?)\b/i },

@@ -888,7 +888,7 @@ function buildItemSpecificsXml(title: string, specs: Array<[string, string]>, fa
   const nameMap = new Map<string, string>()
 
   const brand = inferBrandFromProduct(title, relevantSpecs)
-  nameMap.set('Brand', brand || 'Generic')
+  nameMap.set('Brand', brand || 'Unbranded')
   nameMap.set('Type', inferTypeFromProduct(title, niche, relevantSpecs))
 
   const preferredKeys = [
@@ -957,7 +957,7 @@ function buildItemSpecificsXml(title: string, specs: Array<[string, string]>, fa
   }
 
   if (nameMap.size === 0) {
-    return `<NameValueList><Name>Brand</Name><Value>${inferBrandFromProduct(title, specs) || 'Generic'}</Value></NameValueList>
+    return `<NameValueList><Name>Brand</Name><Value>${inferBrandFromProduct(title, specs) || 'Unbranded'}</Value></NameValueList>
       <NameValueList><Name>Type</Name><Value>${inferTypeFromProduct(title, niche, specs)}</Value></NameValueList>${fallbackXml}`
   }
 
@@ -1933,8 +1933,17 @@ export async function POST(req: NextRequest) {
           stage: 'asin_validation',
           source: isCron ? 'cron' : 'manual',
         }).catch(() => {})
+        // Auto-deactivate this ASIN in the source pool so it never re-enters the queue
+        // (added 2026-06-03). Without this, the same stale ASIN keeps appearing in shuffles
+        // and burning Trading API quota on guaranteed-fail attempts.
+        await sql`
+          UPDATE product_source_items
+          SET active = FALSE, last_seen_at = NOW(),
+              source_quality = 'reject'
+          WHERE UPPER(asin) = UPPER(${asin})
+        `.catch(() => {})
         return apiError(
-          `ASIN ${asin} now maps to a different product on Amazon ("${validatedAmazon.title.slice(0, 60)}"). Remove this from your queue and reload for fresh products.`,
+          `ASIN ${asin} now maps to a different product on Amazon ("${validatedAmazon.title.slice(0, 60)}"). Removed from queue automatically.`,
           { status: 400, code: 'ASIN_MISMATCH' }
         )
       }
