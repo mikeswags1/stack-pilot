@@ -944,6 +944,19 @@ function buildItemSpecificsXml(title: string, specs: Array<[string, string]>, fa
       nameMap.set(specName, clampSpec(extracted || 'See Description'))
     }
   }
+  // Language fallback for Books/Music/Movies categories (eBay requires it).
+  // Detect from title (rare cases like "Spanish edition") or default to English.
+  if (!nameMap.has('Language')) {
+    const t = title.toLowerCase()
+    const language = /\bspanish\b/.test(t) ? 'Spanish'
+      : /\bfrench\b/.test(t) ? 'French'
+      : /\bgerman\b/.test(t) ? 'German'
+      : /\bjapanese\b/.test(t) ? 'Japanese'
+      : /\bchinese\b|\bmandarin\b/.test(t) ? 'Chinese'
+      : /\bkorean\b/.test(t) ? 'Korean'
+      : 'English'
+    nameMap.set('Language', language)
+  }
   // Department fallback for apparel categories (failing on Halter, Hoodie, etc.)
   if (!nameMap.has('Department')) {
     const t = title.toLowerCase()
@@ -1846,6 +1859,12 @@ export async function POST(req: NextRequest) {
 
   const initialPolicyFlags = getListingPolicyFlags({ title, description: inputDescription, niche })
   if (hasBlockedListingPolicyFlag(initialPolicyFlags)) {
+    // Auto-deactivate so this ASIN never re-enters the queue (2026-06-03).
+    await sql`
+      UPDATE product_source_items
+      SET active = FALSE, last_seen_at = NOW(), source_quality = 'reject'
+      WHERE UPPER(asin) = UPPER(${asin})
+    `.catch(() => {})
     return apiError(getListingPolicyBlockReason(initialPolicyFlags), {
       status: 400,
       code: 'LISTING_POLICY_BLOCKED',
@@ -2457,6 +2476,13 @@ export async function POST(req: NextRequest) {
     niche,
   })
   if (hasBlockedListingPolicyFlag(validatedPolicyFlags)) {
+    // Auto-deactivate — fresh Amazon scrape revealed the product violates policy
+    // even though the stored title didn't (2026-06-03). Keeps stale ASINs out.
+    await sql`
+      UPDATE product_source_items
+      SET active = FALSE, last_seen_at = NOW(), source_quality = 'reject'
+      WHERE UPPER(asin) = UPPER(${asin})
+    `.catch(() => {})
     return apiError(getListingPolicyBlockReason(validatedPolicyFlags), {
       status: 400,
       code: 'LISTING_POLICY_BLOCKED',
