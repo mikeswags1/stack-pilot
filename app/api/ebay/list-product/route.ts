@@ -2379,8 +2379,15 @@ export async function POST(req: NextRequest) {
           } else if (finalEbayPrice < median * 0.62) {
             // Our price is 38%+ below what every competitor charges — cached Amazon cost is
             // almost certainly stale or wrong. Listing at this price means buying at a loss.
+            // Auto-deactivate (2026-06-03) so this ASIN doesn't re-shuffle and fail again.
+            // Refresh-products cron will pick it back up after re-scraping Amazon for fresh price.
+            await sql`
+              UPDATE product_source_items
+              SET active = FALSE, last_seen_at = NOW(), source_quality = 'reject'
+              WHERE UPPER(asin) = UPPER(${asin})
+            `.catch(() => {})
             return apiError(
-              `Blocked — your listing price ($${finalEbayPrice.toFixed(2)}) is well below similar eBay listings (~$${median.toFixed(2)}). The Amazon cost in your queue is likely outdated. Remove this product and reload your queue to get a fresh price.`,
+              `Blocked — your listing price ($${finalEbayPrice.toFixed(2)}) is well below similar eBay listings (~$${median.toFixed(2)}). The Amazon cost in your queue is likely outdated. Removed from queue automatically.`,
               { status: 400, code: 'PRICE_BELOW_MARKET' }
             )
           }
@@ -2530,8 +2537,14 @@ export async function POST(req: NextRequest) {
       stage: 'image_collection',
       source: isCron ? 'cron' : 'manual',
     }).catch(() => {})
+    // Auto-deactivate (2026-06-03) so the same image-broken ASIN doesn't shuffle back in.
+    await sql`
+      UPDATE product_source_items
+      SET active = FALSE, last_seen_at = NOW(), source_quality = 'reject'
+      WHERE UPPER(asin) = UPPER(${asin})
+    `.catch(() => {})
     return apiError(
-      `Only ${filteredImages.length} usable product image${filteredImages.length === 1 ? '' : 's'} could be found for this ASIN. StackPilot requires at least ${MIN_LISTING_IMAGES} real product photos before publishing, so reload the queue or choose a different product.`,
+      `Only ${filteredImages.length} usable product image${filteredImages.length === 1 ? '' : 's'} could be found for this ASIN. Removed from queue automatically.`,
       { status: 400, code }
     )
   }
@@ -2829,7 +2842,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Extract every "item specific X is missing" from eBay's error response and build XML for them
-  const inferredBrandValue = inferBrandFromProduct(listingTitle, amazon.specs) || 'Generic'
+  const inferredBrandValue = inferBrandFromProduct(listingTitle, amazon.specs) || 'Unbranded'
   const inferredTypeValue = inferTypeFromProduct(listingTitle, niche, amazon.specs)
 
   const autoSpecificsXml = (r: string): string => {
