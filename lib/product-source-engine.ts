@@ -940,7 +940,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- RULE A — Source-time niche blacklist (audit 2026-05-31): 21 niches
                 -- with >=70% END rate under Balanced pricing model. Structurally unwinnable.
                 AND (psi.source_niche IS NULL OR psi.source_niche NOT IN (
-                  'Beach & Sunny Day','Vintage & Antiques','Fishing & Hunting',
+                  'Beach & Sunny Day','Vintage & Antiques',
                   'Coins & Currency','Industrial Equipment','Cycling',
                   'Desk Drawer Organizers','Closet & Wardrobe Organizers','Safety Gear',
                   'Desk Monitor Arm & Cable Clip Bundles','Pet Supplies','Camping & Hiking',
@@ -1019,7 +1019,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- RULE A — Source-time niche blacklist (audit 2026-05-31): 21 niches
                 -- with >=70% END rate under Balanced pricing model. Structurally unwinnable.
                 AND (psi.source_niche IS NULL OR psi.source_niche NOT IN (
-                  'Beach & Sunny Day','Vintage & Antiques','Fishing & Hunting',
+                  'Beach & Sunny Day','Vintage & Antiques',
                   'Coins & Currency','Industrial Equipment','Cycling',
                   'Desk Drawer Organizers','Closet & Wardrobe Organizers','Safety Gear',
                   'Desk Monitor Arm & Cable Clip Bundles','Pet Supplies','Camping & Hiking',
@@ -1097,7 +1097,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- RULE A — Source-time niche blacklist (audit 2026-05-31): 21 niches
                 -- with >=70% END rate under Balanced pricing model. Structurally unwinnable.
                 AND (psi.source_niche IS NULL OR psi.source_niche NOT IN (
-                  'Beach & Sunny Day','Vintage & Antiques','Fishing & Hunting',
+                  'Beach & Sunny Day','Vintage & Antiques',
                   'Coins & Currency','Industrial Equipment','Cycling',
                   'Desk Drawer Organizers','Closet & Wardrobe Organizers','Safety Gear',
                   'Desk Monitor Arm & Cable Clip Bundles','Pet Supplies','Camping & Hiking',
@@ -1175,7 +1175,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- RULE A — Source-time niche blacklist (audit 2026-05-31): 21 niches
                 -- with >=70% END rate under Balanced pricing model. Structurally unwinnable.
                 AND (psi.source_niche IS NULL OR psi.source_niche NOT IN (
-                  'Beach & Sunny Day','Vintage & Antiques','Fishing & Hunting',
+                  'Beach & Sunny Day','Vintage & Antiques',
                   'Coins & Currency','Industrial Equipment','Cycling',
                   'Desk Drawer Organizers','Closet & Wardrobe Organizers','Safety Gear',
                   'Desk Monitor Arm & Cable Clip Bundles','Pet Supplies','Camping & Hiking',
