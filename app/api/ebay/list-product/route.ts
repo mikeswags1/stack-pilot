@@ -353,6 +353,85 @@ function decodeAllEntities(input: string): string {
     .replace(/&[a-z]+;/gi, ' ') // strip any remaining named entities
 }
 
+function escapeXmlText(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function cleanItemSpecificName(value: string) {
+  return decodeAllEntities(value)
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[:：]+$/, '')
+    .slice(0, 65)
+}
+
+function cleanItemSpecificValue(value: string) {
+  const cleaned = sanitizeContent(value)
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return clampSpec(cleaned || 'See Description')
+}
+
+function itemSpecificXml(name: string, value: string) {
+  const cleanName = cleanItemSpecificName(name)
+  const cleanValue = cleanItemSpecificValue(value)
+  if (!cleanName || !cleanValue) return ''
+  return `\n      <NameValueList><Name>${escapeXmlText(cleanName)}</Name><Value>${escapeXmlText(cleanValue)}</Value></NameValueList>`
+}
+
+const GENERIC_BRAND_VALUES = new Set([
+  'replacement',
+  'compatible',
+  'universal',
+  'generic',
+  'new',
+  'brand',
+  'for',
+])
+
+function normalizeBrandValue(value: string) {
+  const clean = cleanItemSpecificValue(value)
+  return clean && !GENERIC_BRAND_VALUES.has(clean.toLowerCase()) ? clean : 'Unbranded'
+}
+
+function inferColorValue(title: string, specs: Array<[string, string]>) {
+  const fromSpec = getSpecValue(specs, /^colou?r$/i)
+  if (fromSpec) return fromSpec
+
+  const normalizedTitle = sanitizeContent(title).toLowerCase()
+  const colors = [
+    'Black',
+    'White',
+    'Gray',
+    'Grey',
+    'Silver',
+    'Blue',
+    'Red',
+    'Green',
+    'Yellow',
+    'Pink',
+    'Purple',
+    'Orange',
+    'Brown',
+    'Gold',
+    'Beige',
+    'Clear',
+  ]
+  for (const color of colors) {
+    if (new RegExp(`\\b${color.toLowerCase()}\\b`).test(normalizedTitle)) {
+      return color === 'Grey' ? 'Gray' : color
+    }
+  }
+  if (/\bmulti(?:color| color|-color| coloured| colored)\b/i.test(title)) return 'Multicolor'
+  return 'Multicolor'
+}
+
 function sanitizeDescriptionText(input: string) {
   return decodeAllEntities(input)
     .split(/\n+/)
@@ -827,9 +906,9 @@ function getSpecValue(specs: Array<[string, string]>, pattern: RegExp) {
 
 function inferBrandFromProduct(title: string, specs: Array<[string, string]>) {
   const brandSpec = specs.find(([key]) => /brand/i.test(key))
-  if (brandSpec?.[1]) return sanitizeContent(brandSpec[1]).slice(0, 80)
+  if (brandSpec?.[1]) return normalizeBrandValue(brandSpec[1]).slice(0, 80)
   const firstWord = sanitizeContent(title).split(/\s+/)[0] || ''
-  return firstWord.length > 1 ? firstWord.slice(0, 80) : ''
+  return firstWord.length > 1 ? normalizeBrandValue(firstWord).slice(0, 80) : ''
 }
 
 function inferTypeFromProduct(title: string, niche: string | null, specs: Array<[string, string]>) {
@@ -911,6 +990,9 @@ function buildItemSpecificsXml(title: string, specs: Array<[string, string]>, fa
     const match = relevantSpecs.find(([key]) => key.toLowerCase() === preferred.toLowerCase())
     if (match?.[1]) nameMap.set(preferred, clampSpec(sanitizeContent(match[1])))
   }
+  if (!nameMap.has('Color')) {
+    nameMap.set('Color', inferColorValue(title, relevantSpecs))
+  }
 
   for (const [key, value] of relevantSpecs) {
     if (nameMap.size >= 8) break
@@ -970,12 +1052,16 @@ function buildItemSpecificsXml(title: string, specs: Array<[string, string]>, fa
   }
 
   if (nameMap.size === 0) {
-    return `<NameValueList><Name>Brand</Name><Value>${inferBrandFromProduct(title, specs) || 'Unbranded'}</Value></NameValueList>
-      <NameValueList><Name>Type</Name><Value>${inferTypeFromProduct(title, niche, specs)}</Value></NameValueList>${fallbackXml}`
+    return [
+      itemSpecificXml('Brand', inferBrandFromProduct(title, specs) || 'Unbranded'),
+      itemSpecificXml('Type', inferTypeFromProduct(title, niche, specs)),
+      fallbackXml,
+    ].join('')
   }
 
   return Array.from(nameMap.entries())
-    .map(([name, value]) => `\n      <NameValueList><Name>${name}</Name><Value>${value}</Value></NameValueList>`)
+    .map(([name, value]) => itemSpecificXml(name, value))
+    .filter(Boolean)
     .join('')
 }
 
@@ -2417,7 +2503,8 @@ export async function POST(req: NextRequest) {
 
   const price = finalEbayPrice.toFixed(2)
   const fallbackSpecificsXml = (NICHE_SPECIFICS[niche] || [])
-    .map(([n, v]) => `\n      <NameValueList><Name>${n}</Name><Value>${v}</Value></NameValueList>`)
+    .map(([n, v]) => itemSpecificXml(n, v))
+    .filter(Boolean)
     .join('')
 
   const rapidKey = getRapidApiKey()
@@ -2851,17 +2938,20 @@ export async function POST(req: NextRequest) {
     return longs.flatMap(l => {
       const m = l.match(/item specific (.+?) is missing/i)
       if (!m) return []
-      const name = m[1].trim()
+      const name = cleanItemSpecificName(m[1])
       if (seen.has(name)) return []
       seen.add(name)
       // Use sensible defaults for common required fields
       const defaults: Record<string, string> = {
-        'Type': inferredTypeValue, 'Model': 'See Description', 'Color': 'See Description',
+        'Type': inferredTypeValue, 'Model': 'See Description', 'Color': inferColorValue(listingTitle, amazon.specs),
         'Connectivity': 'See Description', 'Compatible Brand': 'Universal',
         'Screen Size': 'See Description', 'Processor': 'See Description',
         'Storage Capacity': 'See Description', 'Operating System': 'See Description',
         'Sport': 'See Description', 'Department': 'Unisex Adults', 'Size': 'One Size',
         'Material': 'See Description', 'Style': 'See Description', 'Brand': inferredBrandValue,
+        'Language': 'English', 'Item Length': 'See Description', 'Item Width': 'See Description',
+        'Item Height': 'See Description', 'Theme': 'See Description', 'Occasion': 'Everyday',
+        'Character': 'Does Not Apply', 'Pattern': 'See Description',
       }
       const normalizedName = name.toLowerCase()
       const val =
@@ -2869,10 +2959,12 @@ export async function POST(req: NextRequest) {
         ?? (normalizedName.includes('brand') ? inferredBrandValue : null)
         ?? (normalizedName.includes('type') ? inferredTypeValue : null)
         ?? (normalizedName.includes('department') ? 'Unisex Adults' : null)
+        ?? (normalizedName.includes('color') ? inferColorValue(listingTitle, amazon.specs) : null)
+        ?? (normalizedName.includes('language') ? 'English' : null)
         ?? (normalizedName.includes('size') ? 'One Size' : null)
         ?? (normalizedName.includes('material') ? 'See Description' : null)
         ?? 'See Description'
-      return [`\n      <NameValueList><Name>${name}</Name><Value>${val}</Value></NameValueList>`]
+      return [itemSpecificXml(name, val)]
     }).join('')
   }
 
