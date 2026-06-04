@@ -1149,26 +1149,56 @@ export default function Dashboard() {
         .filter((product) => !listed.has(product.asin.toUpperCase()))
         .map((product) => product.asin)
 
-      const excludeForFetch = [...remainingAsins, ...(fetchExcludeAsins ?? removeAsins)]
+      // Keep DB excludes focused on terminal products. Excluding the 7-20 cards that
+      // remain on-screen makes the source-engine query heavier and can turn a refill
+      // into a 504/short result. mergeRefilledProducts already dedupes against the
+      // visible cards, so the fetch can be broader and faster.
+      const excludeForFetch = Array.from(new Set((fetchExcludeAsins ?? removeAsins).map((asin) => asin.toUpperCase())))
       console.info('[refillContinuous] fetching', { removeCount: removeAsins.length, remainingCount: remainingAsins.length, fetchExcludeCount: excludeForFetch.length })
 
       try {
-        const refreshed = await fetchFinderProducts('', true, {
+        const fetchTopup = async (excludeAsins: string[]) => fetchFinderProducts('', true, {
           mode: 'continuous',
           limit: FINDER_ROTATION_POOL_TARGET,
-          excludeAsins: excludeForFetch,
+          excludeAsins,
         })
+
+        let refreshed = await fetchTopup(excludeForFetch)
         console.info('[refillContinuous] received', { count: refreshed.results?.length ?? 0, source: (refreshed as { source?: string }).source })
         setContinuousFinderState((prev) => {
           const merged = mergeRefilledProducts(prev.results, refreshed.results || [], removeAsins, 'continuous')
           console.info('[refillContinuous] merged pool', { before: prev.results?.length ?? 0, after: merged?.length ?? 0 })
           return { ...prev, results: merged }
         })
+
+        const mergedCount = mergeRefilledProducts(currentResults, refreshed.results || [], removeAsins, 'continuous')?.length ?? 0
+        if (mergedCount < FINDER_STOCK_TARGET) {
+          const topupExclude = Array.from(new Set([...excludeForFetch, ...(refreshed.results || []).map((product) => product.asin.toUpperCase())]))
+          refreshed = await fetchTopup(topupExclude)
+          console.info('[refillContinuous] topup received', { count: refreshed.results?.length ?? 0, source: (refreshed as { source?: string }).source })
+          setContinuousFinderState((prev) => {
+            const merged = mergeRefilledProducts(prev.results, refreshed.results || [], removeAsins, 'continuous')
+            console.info('[refillContinuous] topup merged pool', { before: prev.results?.length ?? 0, after: merged?.length ?? 0 })
+            return { ...prev, results: merged }
+          })
+        }
       } catch {
-        setContinuousFinderState((prev) => ({
-          ...prev,
-          results: prev.results ? prev.results.filter((product) => !listed.has(product.asin.toUpperCase())) : prev.results,
-        }))
+        try {
+          const fallback = await fetchFinderProducts('', true, {
+            mode: 'continuous',
+            limit: FINDER_ROTATION_POOL_TARGET,
+            excludeAsins: fetchExcludeAsins ?? removeAsins,
+          })
+          setContinuousFinderState((prev) => ({
+            ...prev,
+            results: mergeRefilledProducts(prev.results, fallback.results || [], removeAsins, 'continuous'),
+          }))
+        } catch {
+          setContinuousFinderState((prev) => ({
+            ...prev,
+            results: prev.results ? prev.results.filter((product) => !listed.has(product.asin.toUpperCase())) : prev.results,
+          }))
+        }
       }
     },
     [continuousFinderState.results]
