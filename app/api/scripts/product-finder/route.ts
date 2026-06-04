@@ -1064,7 +1064,12 @@ export async function GET(req: NextRequest) {
   // gives a rotating 30-item shuffle plenty of variety, but caps the dedupe cost so
   // the request finishes well under the 60s function limit (previously 800 → 2400 rows
   // fetched → dedupe blew past 60s → 504).
-  const sourceEnginePoolLimit = continuousMode ? 200 : 400
+  // Continuous Listing is a warm-pool DB read, but the query has several safety
+  // gates (duplicates, saturation, cache images, policy, price ratio). Five seconds
+  // was too tight in production and silently returned [] via withTimeout, making the
+  // dashboard claim no products existed while the DB still had 800+ ready rows.
+  const sourceEnginePoolLimit = continuousMode ? 160 : 400
+  const sourceEngineTimeoutMs = continuousMode ? 20_000 : 2_500
   console.info('[product-finder] sourceEngine load', JSON.stringify({
     mode: continuousMode ? 'continuous' : 'niche',
     niche: continuousMode ? undefined : niche,
@@ -1075,7 +1080,7 @@ export async function GET(req: NextRequest) {
   }))
   const sourceEngineProducts = await withTimeout(
     loadProductSourceProducts({ niche: continuousMode ? undefined : niche, limit: sourceEnginePoolLimit, excludeAsins }),
-    continuousMode ? 5000 : 2500,
+    sourceEngineTimeoutMs,
     []
   )
   console.info('[product-finder] sourceEngine result', JSON.stringify({
