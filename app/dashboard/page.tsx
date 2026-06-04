@@ -1310,7 +1310,23 @@ export default function Dashboard() {
       return
     }
 
-    const visibleProducts = tagFinderProducts(visibleContinuousResults || [], 'continuous')
+    let visibleProducts = tagFinderProducts(visibleContinuousResults || [], 'continuous')
+    if (visibleProducts.length < FINDER_STOCK_TARGET) {
+      try {
+        const topup = await fetchFinderProducts('', true, {
+          mode: 'continuous',
+          limit: FINDER_ROTATION_POOL_TARGET,
+          excludeAsins: visibleProducts.map((product) => product.asin),
+        })
+        const merged = mergeRefilledProducts(visibleProducts, topup.results || [], [], 'continuous') || []
+        if (merged.length > visibleProducts.length) {
+          visibleProducts = tagFinderProducts(merged, 'continuous')
+          setContinuousFinderState((prev) => ({ ...prev, results: merged }))
+        }
+      } catch {
+        // If top-up fails, continue with the visible queue instead of blocking manual control.
+      }
+    }
     let products = getPublishReadyFinderProducts(visibleProducts)
     if (subscriptionState.plan === 'trial') {
       products = products.slice(0, Math.max(0, subscriptionState.trialRemaining))
