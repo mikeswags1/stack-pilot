@@ -14,40 +14,10 @@ const MIN_MASTER_SCORE = 38
  * and the dynamic-pricing simulation). These are HARD filters applied in the list-ready
  * SQL query so junk products never reach the dashboard or auto-listing queue.
  *
- * Rule A: niches with >=70% END rate (n>=10) under the Balanced pricing model. Sourcing
- * here is structurally unwinnable — used-book/collectible undercutters, hyper-saturated
- * mass commodities, or markets where Amazon retail can't beat eBay liquidation prices.
- *
  * Rule C: cost-to-market ratio. Across 852 ENDed listings, average Amazon cost was 1.65×
  * the cheapest eBay competitor — meaning we paid retail for products eBay sellers liquidate.
  * Anything at or above this ratio cannot return $4+ net profit at a competitive price.
  */
-const SOURCING_NICHE_BLACKLIST = new Set<string>([
-  'Beach & Sunny Day',
-  'Vintage & Antiques',
-  'Fishing & Hunting',
-  'Coins & Currency',
-  'Industrial Equipment',
-  'Cycling',
-  'Desk Drawer Organizers',
-  'Closet & Wardrobe Organizers',
-  'Safety Gear',
-  'Desk Monitor Arm & Cable Clip Bundles',
-  'Pet Supplies',
-  'Camping & Hiking',
-  'Office Supplies',
-  'Trading Cards',
-  'Personal Care',
-  'Closet Rod & Shelf Divider Spring Refresh Bundle',
-  'Bathroom Cabinet & Vanity Organizers',
-  'Gaming Gear',
-  'Drawer Dividers & Inserts',
-  'Entryway & Mudroom Organizer Systems',
-  'Toys & Games',
-])
-
-const MAX_COST_TO_COMP_MIN_RATIO = 1.65
-
 /**
  * RULE E — Title-pattern blocklist (added 2026-06-02 after 30/30 fail-rate event).
  *
@@ -76,8 +46,6 @@ const LISTING_TITLE_BLOCKLIST = [
   '%jacket%', '%coat%', '%sweater%', '%cardigan%', '%leggings%',
   '%skirt%', '%shorts%', '%bikini%', '%swimsuit%',
 ] as const
-
-const LISTING_TITLE_BLOCKLIST_ARRAY = [...LISTING_TITLE_BLOCKLIST]
 
 export type ProductScores = {
   profitScore: number       // 0–100  (20% weight)
@@ -170,6 +138,48 @@ function parseNumber(value: unknown) {
   if (!value) return 0
   const parsed = Number.parseFloat(String(value).replace(/[^0-9.-]/g, ''))
   return Number.isFinite(parsed) ? parsed : 0
+}
+
+function normalizeComparableTitle(value: string) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/&#x27;|&#39;|&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\b(pack|set|piece|pcs|count|for|with|and|the|a|an|of|to|in)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function getTitleMatchScore(sourceTitle: string, cachedTitle?: string) {
+  if (!cachedTitle) return 1
+  const sourceWords = new Set(normalizeComparableTitle(sourceTitle).split(' ').filter(Boolean))
+  const cachedWords = new Set(normalizeComparableTitle(cachedTitle).split(' ').filter(Boolean))
+  if (sourceWords.size === 0 || cachedWords.size === 0) return 0
+  let overlap = 0
+  for (const word of sourceWords) {
+    if (cachedWords.has(word)) overlap += 1
+  }
+  return overlap / Math.max(sourceWords.size, cachedWords.size)
+}
+
+function canonicalImageKey(value: string) {
+  return String(value || '')
+    .replace(/\?.*$/, '')
+    .replace(/\._[^./]+(?=\.[a-z0-9]+$)/i, '')
+    .toLowerCase()
+}
+
+function hasAtLeastDistinctImages(product: SourceEngineProduct, minimum = 2) {
+  const images = Array.isArray(product.images) ? product.images : []
+  const keys = new Set(
+    images
+      .filter((url) => typeof url === 'string' && url.startsWith('http'))
+      .map(canonicalImageKey)
+      .filter(Boolean)
+  )
+  return keys.size >= minimum
 }
 
 /** Cap parsed “sold” counts so bogus listing text cannot dominate log-scored demand. */
@@ -1177,7 +1187,26 @@ export async function loadProductSourceProducts(options: { niche?: string | null
               LIMIT ${fetchLimit}
             `)
     const allProducts = rows.map(rowToProduct)
-    const afterWeakTitle = allProducts.filter((product) => !isWeakListingTitle(product.title))
+    const staleSamples: string[] = []
+    const afterFreshMapping = allProducts.filter((product) => {
+      const score = getTitleMatchScore(product.title, product.cachedTitle)
+      const stale = Boolean(product.cachedTitle && score < 0.45)
+      if (stale && staleSamples.length < 5) {
+        staleSamples.push(`${product.asin}: ${score.toFixed(2)}`)
+      }
+      return !stale
+    })
+
+    const sparseImageSamples: string[] = []
+    const afterDistinctImages = afterFreshMapping.filter((product) => {
+      const ok = hasAtLeastDistinctImages(product, 2)
+      if (!ok && sparseImageSamples.length < 5) {
+        sparseImageSamples.push(product.asin)
+      }
+      return ok
+    })
+
+    const afterWeakTitle = afterDistinctImages.filter((product) => !isWeakListingTitle(product.title))
     // RULE F — Apply the EXACT same listing-policy check the eBay listing route uses
     // (lib/listing-policy.ts). This guarantees the source pool matches what list-product
     // will actually accept. Catches oversized/Amazon-brand/apparel matches that survived
@@ -1202,6 +1231,12 @@ export async function loadProductSourceProducts(options: { niche?: string | null
     })
     console.info('[source-engine] Rule F filter result', JSON.stringify({
       total: allProducts.length,
+      afterFreshMapping: afterFreshMapping.length,
+      staleMappingDrops: allProducts.length - afterFreshMapping.length,
+      staleSamples,
+      afterDistinctImages: afterDistinctImages.length,
+      sparseImageDrops: afterFreshMapping.length - afterDistinctImages.length,
+      sparseImageSamples,
       afterWeakTitle: afterWeakTitle.length,
       afterPolicy: afterPolicy.length,
       blockedByPolicy: afterWeakTitle.length - afterPolicy.length,
