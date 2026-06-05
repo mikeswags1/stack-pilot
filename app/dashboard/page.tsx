@@ -1331,6 +1331,17 @@ export default function Dashboard() {
     if (subscriptionState.plan === 'trial') {
       products = products.slice(0, Math.max(0, subscriptionState.trialRemaining))
     }
+    const requiredContinuousBatch = subscriptionState.plan === 'trial'
+      ? Math.min(FINDER_STOCK_TARGET, Math.max(1, subscriptionState.trialRemaining))
+      : FINDER_STOCK_TARGET
+    if (products.length < requiredContinuousBatch) {
+      setContinuousFinderState((prev) => ({ ...prev, results: visibleProducts, listAllProgress: null }))
+      setBanner({
+        tone: 'error',
+        text: `Continuous Listing only has ${products.length} publish-ready product${products.length === 1 ? '' : 's'} after refilling. I stopped before listing a tiny batch. Hit Shuffle Queue once more while StackPilot pulls replacements.`,
+      })
+      return
+    }
     if (products.length === 0) {
       setBanner({
         tone: 'error',

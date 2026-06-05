@@ -361,6 +361,12 @@ function escapeXmlText(value: string) {
     .replace(/"/g, '&quot;')
 }
 
+function xmlCdata(value: string) {
+  return String(value || '')
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    .replace(/]]>/g, ']]]]><![CDATA[>')
+}
+
 function cleanItemSpecificName(value: string) {
   return decodeAllEntities(value)
     .replace(/\u00a0/g, ' ')
@@ -430,6 +436,14 @@ function inferColorValue(title: string, specs: Array<[string, string]>) {
   }
   if (/\bmulti(?:color| color|-color| coloured| colored)\b/i.test(title)) return 'Multicolor'
   return 'Multicolor'
+}
+
+function inferAuthorValue(title: string, specs: Array<[string, string]>) {
+  const fromSpec = getSpecValue(specs, /^(author|writer|creator)$/i)
+  if (fromSpec) return fromSpec
+  const byline = sanitizeContent(title).match(/\bby\s+([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,3})\b/)
+  if (byline?.[1]) return byline[1]
+  return 'Unknown'
 }
 
 function sanitizeDescriptionText(input: string) {
@@ -1811,9 +1825,9 @@ function buildXml(params: {
   <ErrorLanguage>en_US</ErrorLanguage>
   <WarningLevel>High</WarningLevel>
   <Item>
-    <Title>${params.safeTitle}</Title>
+    <Title>${escapeXmlText(params.safeTitle)}</Title>
     ${params.sourceAsin ? `<SKU>EBAYDASH-${params.sourceAsin}</SKU>` : ''}
-    <Description>${params.description}</Description>
+    <Description><![CDATA[${xmlCdata(params.description)}]]></Description>
     <PrimaryCategory><CategoryID>${params.categoryId}</CategoryID></PrimaryCategory>
     <StartPrice>${params.price}</StartPrice>
     <ConditionID>1000</ConditionID>
@@ -2933,10 +2947,11 @@ export async function POST(req: NextRequest) {
   const inferredTypeValue = inferTypeFromProduct(listingTitle, niche, amazon.specs)
 
   const autoSpecificsXml = (r: string): string => {
-    const longs = [...r.matchAll(/<LongMessage>(.*?)<\/LongMessage>/g)].map(m => m[1])
+    const longs = [...r.matchAll(/<LongMessage>(.*?)<\/LongMessage>/g)]
+      .map(m => decodeAllEntities(m[1]).replace(/\u00a0/g, ' ').replace(/\s+/g, ' '))
     const seen = new Set<string>()
     return longs.flatMap(l => {
-      const m = l.match(/item specific (.+?) is missing/i)
+      const m = l.match(/item specific\s+(.+?)\s+is missing/i)
       if (!m) return []
       const name = cleanItemSpecificName(m[1])
       if (seen.has(name)) return []
@@ -2949,6 +2964,7 @@ export async function POST(req: NextRequest) {
         'Storage Capacity': 'See Description', 'Operating System': 'See Description',
         'Sport': 'See Description', 'Department': 'Unisex Adults', 'Size': 'One Size',
         'Material': 'See Description', 'Style': 'See Description', 'Brand': inferredBrandValue,
+        'Author': inferAuthorValue(listingTitle, amazon.specs),
         'Language': 'English', 'Item Length': 'See Description', 'Item Width': 'See Description',
         'Item Height': 'See Description', 'Theme': 'See Description', 'Occasion': 'Everyday',
         'Character': 'Does Not Apply', 'Pattern': 'See Description',
@@ -2960,6 +2976,7 @@ export async function POST(req: NextRequest) {
         ?? (normalizedName.includes('type') ? inferredTypeValue : null)
         ?? (normalizedName.includes('department') ? 'Unisex Adults' : null)
         ?? (normalizedName.includes('color') ? inferColorValue(listingTitle, amazon.specs) : null)
+        ?? (normalizedName.includes('author') ? inferAuthorValue(listingTitle, amazon.specs) : null)
         ?? (normalizedName.includes('language') ? 'English' : null)
         ?? (normalizedName.includes('size') ? 'One Size' : null)
         ?? (normalizedName.includes('material') ? 'See Description' : null)
