@@ -937,19 +937,6 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).
                 AND (psi.ebay_competitor_count IS NULL OR psi.ebay_competitor_count <= 50)
-                -- RULE A — Source-time niche blacklist (audit 2026-05-31): 21 niches
-                -- with >=70% END rate under Balanced pricing model. Structurally unwinnable.
-                AND (psi.source_niche IS NULL OR psi.source_niche NOT IN (
-                  'Beach & Sunny Day','Vintage & Antiques',
-                  'Coins & Currency','Industrial Equipment','Cycling',
-                  'Desk Drawer Organizers','Closet & Wardrobe Organizers','Safety Gear',
-                  'Desk Monitor Arm & Cable Clip Bundles','Pet Supplies','Camping & Hiking',
-                  'Office Supplies','Trading Cards','Personal Care',
-                  'Closet Rod & Shelf Divider Spring Refresh Bundle',
-                  'Bathroom Cabinet & Vanity Organizers','Gaming Gear',
-                  'Drawer Dividers & Inserts','Entryway & Mudroom Organizer Systems',
-                  'Toys & Games'
-                ))
                 -- RULE C — Cost-to-market ratio. Skip if Amazon cost >= 1.65x eBay min.
                 -- NULL is permissive while competitor data is still enriching.
                 AND (psi.ebay_competitor_min_price IS NULL
@@ -1016,19 +1003,6 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).
                 AND (psi.ebay_competitor_count IS NULL OR psi.ebay_competitor_count <= 50)
-                -- RULE A — Source-time niche blacklist (audit 2026-05-31): 21 niches
-                -- with >=70% END rate under Balanced pricing model. Structurally unwinnable.
-                AND (psi.source_niche IS NULL OR psi.source_niche NOT IN (
-                  'Beach & Sunny Day','Vintage & Antiques',
-                  'Coins & Currency','Industrial Equipment','Cycling',
-                  'Desk Drawer Organizers','Closet & Wardrobe Organizers','Safety Gear',
-                  'Desk Monitor Arm & Cable Clip Bundles','Pet Supplies','Camping & Hiking',
-                  'Office Supplies','Trading Cards','Personal Care',
-                  'Closet Rod & Shelf Divider Spring Refresh Bundle',
-                  'Bathroom Cabinet & Vanity Organizers','Gaming Gear',
-                  'Drawer Dividers & Inserts','Entryway & Mudroom Organizer Systems',
-                  'Toys & Games'
-                ))
                 -- RULE C — Cost-to-market ratio. Skip if Amazon cost >= 1.65x eBay min.
                 -- NULL is permissive while competitor data is still enriching.
                 AND (psi.ebay_competitor_min_price IS NULL
@@ -1094,19 +1068,6 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).
                 AND (psi.ebay_competitor_count IS NULL OR psi.ebay_competitor_count <= 50)
-                -- RULE A — Source-time niche blacklist (audit 2026-05-31): 21 niches
-                -- with >=70% END rate under Balanced pricing model. Structurally unwinnable.
-                AND (psi.source_niche IS NULL OR psi.source_niche NOT IN (
-                  'Beach & Sunny Day','Vintage & Antiques',
-                  'Coins & Currency','Industrial Equipment','Cycling',
-                  'Desk Drawer Organizers','Closet & Wardrobe Organizers','Safety Gear',
-                  'Desk Monitor Arm & Cable Clip Bundles','Pet Supplies','Camping & Hiking',
-                  'Office Supplies','Trading Cards','Personal Care',
-                  'Closet Rod & Shelf Divider Spring Refresh Bundle',
-                  'Bathroom Cabinet & Vanity Organizers','Gaming Gear',
-                  'Drawer Dividers & Inserts','Entryway & Mudroom Organizer Systems',
-                  'Toys & Games'
-                ))
                 -- RULE C — Cost-to-market ratio. Skip if Amazon cost >= 1.65x eBay min.
                 -- NULL is permissive while competitor data is still enriching.
                 AND (psi.ebay_competitor_min_price IS NULL
@@ -1172,19 +1133,6 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).
                 AND (psi.ebay_competitor_count IS NULL OR psi.ebay_competitor_count <= 50)
-                -- RULE A — Source-time niche blacklist (audit 2026-05-31): 21 niches
-                -- with >=70% END rate under Balanced pricing model. Structurally unwinnable.
-                AND (psi.source_niche IS NULL OR psi.source_niche NOT IN (
-                  'Beach & Sunny Day','Vintage & Antiques',
-                  'Coins & Currency','Industrial Equipment','Cycling',
-                  'Desk Drawer Organizers','Closet & Wardrobe Organizers','Safety Gear',
-                  'Desk Monitor Arm & Cable Clip Bundles','Pet Supplies','Camping & Hiking',
-                  'Office Supplies','Trading Cards','Personal Care',
-                  'Closet Rod & Shelf Divider Spring Refresh Bundle',
-                  'Bathroom Cabinet & Vanity Organizers','Gaming Gear',
-                  'Drawer Dividers & Inserts','Entryway & Mudroom Organizer Systems',
-                  'Toys & Games'
-                ))
                 -- RULE C — Cost-to-market ratio. Skip if Amazon cost >= 1.65x eBay min.
                 -- NULL is permissive while competitor data is still enriching.
                 AND (psi.ebay_competitor_min_price IS NULL
