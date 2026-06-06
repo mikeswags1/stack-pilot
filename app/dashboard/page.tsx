@@ -184,6 +184,22 @@ function getPublishReadyFinderProducts(products: FinderProduct[]) {
   return products.filter((product) => !getBulkPreflightIssue(product))
 }
 
+function normalizeAsin(value: string) {
+  return String(value || '').trim().toUpperCase()
+}
+
+function dedupeFinderProducts(products: FinderProduct[], sourceMode: 'niche' | 'continuous') {
+  const seen = new Set<string>()
+  const deduped: FinderProduct[] = []
+  for (const product of products) {
+    const asin = normalizeAsin(product.asin)
+    if (!asin || seen.has(asin)) continue
+    seen.add(asin)
+    deduped.push({ ...product, sourceMode })
+  }
+  return deduped
+}
+
 function getRotatingFinderProducts(products: FinderProduct[] | null, tick: number, limit = FINDER_STOCK_TARGET) {
   if (!products) return null
   const publishReadyProducts = getPublishReadyFinderProducts(products)
@@ -332,6 +348,159 @@ export default function Dashboard() {
   // the same deterministic first-30 slice — no variety for the user on first load).
   const [finderRotationTick, setFinderRotationTick] = useState(1)
   const continuousReseedTimerRef = useRef<number>(0)
+  const continuousRejectedAsinsRef = useRef<Set<string>>(new Set())
+
+  const ensureContinuousQueueTarget = useCallback(
+    async (
+      reason: string,
+      options: {
+        baseProducts?: FinderProduct[] | null
+        removeAsins?: string[]
+        failedAsins?: string[]
+        forceRefresh?: boolean
+        setLoading?: boolean
+      } = {}
+    ) => {
+      const removeSet = new Set((options.removeAsins || []).map(normalizeAsin).filter(Boolean))
+      for (const asin of options.failedAsins || []) {
+        const normalized = normalizeAsin(asin)
+        if (normalized) continuousRejectedAsinsRef.current.add(normalized)
+      }
+
+      let queue = dedupeFinderProducts(
+        (options.baseProducts ?? continuousFinderState.results ?? [])
+          .filter((product) => !removeSet.has(normalizeAsin(product.asin))),
+        'continuous'
+      )
+      let readyQueue = getPublishReadyFinderProducts(queue)
+        .filter((product) => !continuousRejectedAsinsRef.current.has(normalizeAsin(product.asin)))
+      queue = dedupeFinderProducts([
+        ...readyQueue,
+        ...queue.filter((product) => !readyQueue.some((ready) => normalizeAsin(ready.asin) === normalizeAsin(product.asin))),
+      ], 'continuous')
+
+      const logQueue = (event: string, extra: Record<string, unknown> = {}) => {
+        console.info('[continuousQueue]', {
+          event,
+          reason,
+          ready_count: readyQueue.length,
+          source_pool_available: extra.source_pool_available ?? null,
+          products_added_to_queue: extra.products_added_to_queue ?? 0,
+          reason_if_less_than_30: readyQueue.length >= FINDER_STOCK_TARGET
+            ? null
+            : extra.reason_if_less_than_30 || 'backfill still running',
+          rejected_count: continuousRejectedAsinsRef.current.size,
+          queue_count: queue.length,
+          ...extra,
+        })
+      }
+
+      if (options.setLoading) {
+        setContinuousFinderState((prev) => ({ ...prev, loading: true, error: null }))
+      }
+
+      try {
+        logQueue('start')
+        let lastSourceAvailable = 0
+        let lastAdded = 0
+
+        for (let attempt = 0; attempt < 8 && readyQueue.length < FINDER_STOCK_TARGET; attempt += 1) {
+          const excludeAsins = Array.from(new Set([
+            ...queue.map((product) => normalizeAsin(product.asin)),
+            ...Array.from(continuousRejectedAsinsRef.current),
+            ...Array.from(removeSet),
+          ].filter(Boolean)))
+
+          const beforeReady = readyQueue.length
+          const response = await fetchFinderProducts('', options.forceRefresh ?? true, {
+            mode: 'continuous',
+            limit: FINDER_ROTATION_POOL_TARGET,
+            excludeAsins,
+          })
+          const incoming = tagFinderProducts(response.results || [], 'continuous')
+          lastSourceAvailable = Number(response.available ?? incoming.length)
+
+          const invalidIncomingAsins: string[] = []
+          const additions: FinderProduct[] = []
+          const seen = new Set(queue.map((product) => normalizeAsin(product.asin)))
+          for (const product of incoming) {
+            const asin = normalizeAsin(product.asin)
+            if (!asin || seen.has(asin) || removeSet.has(asin) || continuousRejectedAsinsRef.current.has(asin)) continue
+            if (getBulkPreflightIssue(product)) {
+              invalidIncomingAsins.push(asin)
+              continue
+            }
+            seen.add(asin)
+            additions.push({ ...product, sourceMode: 'continuous' })
+          }
+
+          for (const asin of invalidIncomingAsins) {
+            continuousRejectedAsinsRef.current.add(asin)
+          }
+
+          queue = dedupeFinderProducts([...readyQueue, ...additions, ...queue], 'continuous')
+          readyQueue = getPublishReadyFinderProducts(queue)
+            .filter((product) => !continuousRejectedAsinsRef.current.has(normalizeAsin(product.asin)))
+          lastAdded = Math.max(0, readyQueue.length - beforeReady)
+
+          logQueue('backfill_attempt', {
+            attempt: attempt + 1,
+            source_pool_available: lastSourceAvailable + beforeReady,
+            products_added_to_queue: lastAdded,
+            fetched_count: incoming.length,
+            invalid_fetched_count: invalidIncomingAsins.length,
+            exclude_count: excludeAsins.length,
+            reason_if_less_than_30: readyQueue.length >= FINDER_STOCK_TARGET
+              ? null
+              : lastSourceAvailable <= 0
+                ? 'source pool exhausted after excludes'
+                : lastAdded === 0
+                  ? 'source returned only duplicates or products that failed validation'
+                  : 'continuing backfill',
+          })
+
+          if (lastSourceAvailable <= 0 || (lastAdded === 0 && invalidIncomingAsins.length === 0)) break
+        }
+
+        const finalResults = dedupeFinderProducts(readyQueue.slice(0, FINDER_STOCK_TARGET), 'continuous')
+        const reasonIfLess = finalResults.length >= FINDER_STOCK_TARGET
+          ? null
+          : lastSourceAvailable <= 0
+            ? 'source pool exhausted'
+            : lastAdded === 0
+              ? 'source pool did not return more unique publish-ready products'
+              : 'source pool returned fewer than 30 eligible products'
+
+        logQueue('complete', {
+          ready_count: finalResults.length,
+          source_pool_available: finalResults.length + lastSourceAvailable,
+          products_added_to_queue: Math.max(0, finalResults.length - getPublishReadyFinderProducts(options.baseProducts || []).length),
+          reason_if_less_than_30: reasonIfLess,
+        })
+
+        setContinuousFinderState((prev) => ({
+          ...prev,
+          loading: false,
+          error: finalResults.length < FINDER_STOCK_TARGET && reasonIfLess
+            ? `Continuous Listing has ${finalResults.length} ready products because ${reasonIfLess}.`
+            : null,
+          results: finalResults,
+        }))
+
+        return finalResults
+      } catch (error) {
+        console.warn('[continuousQueue] backfill failed', { reason, error })
+        setContinuousFinderState((prev) => ({
+          ...prev,
+          loading: false,
+          results: queue.slice(0, FINDER_STOCK_TARGET),
+          error: getErrorMessage(error, 'Continuous queue backfill failed.'),
+        }))
+        return queue.slice(0, FINDER_STOCK_TARGET)
+      }
+    },
+    [continuousFinderState.results]
+  )
 
   const visibleFinderResults = useMemo(() => {
     const rotated = getRotatingFinderProducts(finderState.results, finderRotationTick)
@@ -356,20 +525,14 @@ export default function Dashboard() {
           results: prev.results ? prev.results.filter((entry) => !listed.has(entry.asin.toUpperCase())) : prev.results,
         }))
 
-        const remainingAsins = (continuousFinderState.results || [])
-          .filter((entry) => !listed.has(entry.asin.toUpperCase()))
-          .map((entry) => entry.asin)
-
         try {
-          const refreshed = await fetchFinderProducts('', true, {
-            mode: 'continuous',
-            limit: FINDER_ROTATION_POOL_TARGET,
-            excludeAsins: [...remainingAsins, ...removeAsins],
+          await ensureContinuousQueueTarget('product_removed_or_unavailable', {
+            baseProducts: continuousFinderState.results,
+            removeAsins,
+            failedAsins: removeAsins,
+            forceRefresh: true,
+            setLoading: true,
           })
-          setContinuousFinderState((prev) => ({
-            ...prev,
-            results: mergeRefilledProducts(prev.results || continuousFinderState.results, refreshed.results || [], removeAsins, 'continuous'),
-          }))
         } catch {
           setContinuousFinderState((prev) => ({
             ...prev,
@@ -405,7 +568,7 @@ export default function Dashboard() {
         }))
       }
     },
-    [continuousFinderState.results, finderState.results, nicheState.value]
+    [continuousFinderState.results, ensureContinuousQueueTarget, finderState.results, nicheState.value]
   )
 
   const validateListingProduct = useCallback(async (product: FinderProduct) => {
@@ -561,6 +724,13 @@ export default function Dashboard() {
         awaiting: (data.awaiting || []).filter((order) => !isRefundedOrder(order)),
         syncTime: new Date().toLocaleTimeString(),
       }))
+      if (tab === 'continuous') {
+        await ensureContinuousQueueTarget('sync_ebay', {
+          baseProducts: continuousFinderState.results,
+          forceRefresh: true,
+          setLoading: true,
+        })
+      }
     } catch (error) {
       const reconnectRequired = isReconnectError(error)
       setConnectionState((prev) => ({
@@ -577,7 +747,7 @@ export default function Dashboard() {
     } finally {
       setConnectionState((prev) => ({ ...prev, syncing: false }))
     }
-  }, [])
+  }, [continuousFinderState.results, ensureContinuousQueueTarget, tab])
 
   const loadFinancials = useCallback(async (period?: string) => {
     setFinancialState((prev) => ({ ...prev, loading: true, error: null }))
@@ -995,7 +1165,10 @@ export default function Dashboard() {
     try {
       const shouldForceRefresh = Boolean(continuousFinderState.results?.length)
       const data = await fetchFinderProducts('', shouldForceRefresh, { mode: 'continuous', limit: FINDER_ROTATION_POOL_TARGET })
-      setContinuousFinderState((prev) => ({ ...prev, results: tagFinderProducts(data.results || [], 'continuous') }))
+      await ensureContinuousQueueTarget(shouldForceRefresh ? 'shuffle_or_refresh' : 'page_load', {
+        baseProducts: tagFinderProducts(data.results || [], 'continuous'),
+        forceRefresh: true,
+      })
     } catch (error) {
       const raw = getErrorMessage(error, 'Continuous product search failed.')
       const message = /\b50[234]\b|timeout|timed out/i.test(raw)
@@ -1007,7 +1180,7 @@ export default function Dashboard() {
     } finally {
       setContinuousFinderState((prev) => ({ ...prev, loading: false }))
     }
-  }, [continuousFinderState.results])
+  }, [continuousFinderState.results, ensureContinuousQueueTarget])
 
   useEffect(() => {
     if (tab === 'continuous' && !continuousFinderState.results && !continuousFinderState.loading && !continuousFinderState.error) {
@@ -1045,29 +1218,17 @@ export default function Dashboard() {
       const now = Date.now()
       if (now - continuousReseedTimerRef.current < 45_000) return  // debounce: max 1 reseed per 45s
       continuousReseedTimerRef.current = now
-      // When the pool is already tiny, replace it from the full continuous source
-      // instead of excluding the few leftovers and narrowing the refill query.
-      const currentQueueAsins = (continuousFinderState.results || []).map((p) => p.asin)
-      console.info('[continuousAutoReseed] pool below threshold, reseeding', { poolSize: continuousPoolSize, excludeCount: currentQueueAsins.length })
-      setContinuousFinderState((prev) => ({ ...prev, loading: true, error: null }))
-      fetchFinderProducts('', true, {
-        mode: 'continuous',
-        limit: FINDER_ROTATION_POOL_TARGET,
-        excludeAsins: [],
-      }).then((data) => {
-        console.info('[continuousAutoReseed] received', { count: data.results?.length ?? 0, source: (data as { source?: string }).source })
-        setContinuousFinderState((prev) => ({
-          ...prev,
-          loading: false,
-          results: tagFinderProducts(data.results || [], 'continuous'),
-        }))
+      ensureContinuousQueueTarget('auto_reseed_below_30', {
+        baseProducts: continuousFinderState.results,
+        forceRefresh: true,
+        setLoading: true,
       }).catch((err: unknown) => {
         console.warn('[continuousAutoReseed] error', err)
         setContinuousFinderState((prev) => ({ ...prev, loading: false }))
       })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [continuousPoolSize, tab])
+  }, [continuousPoolSize, tab, ensureContinuousQueueTarget])
 
   const publishFinderProduct = useCallback(
     async (product: FinderProduct, opts?: { trusted?: boolean; categoryId?: string }) => {
@@ -1143,78 +1304,15 @@ export default function Dashboard() {
     async (removeAsins: string[], fetchExcludeAsins?: string[]) => {
       if (removeAsins.length === 0) return
 
-      const listed = new Set(removeAsins.map((asin) => asin.toUpperCase()))
-      const currentResults = continuousFinderState.results || []
-      const remainingAsins = currentResults
-        .filter((product) => !listed.has(product.asin.toUpperCase()))
-        .map((product) => product.asin)
-
-      // Keep DB excludes focused on terminal products. Excluding the 7-20 cards that
-      // remain on-screen makes the source-engine query heavier and can turn a refill
-      // into a 504/short result. mergeRefilledProducts already dedupes against the
-      // visible cards, so the fetch can be broader and faster.
-      const excludeForFetch = Array.from(new Set((fetchExcludeAsins ?? removeAsins).map((asin) => asin.toUpperCase())))
-      console.info('[refillContinuous] fetching', { removeCount: removeAsins.length, remainingCount: remainingAsins.length, fetchExcludeCount: excludeForFetch.length })
-
-      try {
-        const fetchTopup = async (excludeAsins: string[]) => fetchFinderProducts('', true, {
-          mode: 'continuous',
-          limit: FINDER_ROTATION_POOL_TARGET,
-          excludeAsins,
-        })
-
-        const replaceTinyPool = async () => {
-          const replacement = await fetchTopup(excludeForFetch)
-          console.info('[refillContinuous] replacing tiny pool', { count: replacement.results?.length ?? 0, source: (replacement as { source?: string }).source })
-          setContinuousFinderState((prev) => ({
-            ...prev,
-            results: tagFinderProducts(replacement.results || [], 'continuous'),
-          }))
-        }
-
-        let refreshed = await fetchTopup(excludeForFetch)
-        console.info('[refillContinuous] received', { count: refreshed.results?.length ?? 0, source: (refreshed as { source?: string }).source })
-        setContinuousFinderState((prev) => {
-          const merged = mergeRefilledProducts(prev.results, refreshed.results || [], removeAsins, 'continuous')
-          console.info('[refillContinuous] merged pool', { before: prev.results?.length ?? 0, after: merged?.length ?? 0 })
-          return { ...prev, results: merged }
-        })
-
-        const mergedCount = mergeRefilledProducts(currentResults, refreshed.results || [], removeAsins, 'continuous')?.length ?? 0
-        if (mergedCount < FINDER_STOCK_TARGET) {
-          const topupExclude = Array.from(new Set([...excludeForFetch, ...(refreshed.results || []).map((product) => product.asin.toUpperCase())]))
-          refreshed = await fetchTopup(topupExclude)
-          console.info('[refillContinuous] topup received', { count: refreshed.results?.length ?? 0, source: (refreshed as { source?: string }).source })
-          setContinuousFinderState((prev) => {
-            const merged = mergeRefilledProducts(prev.results, refreshed.results || [], removeAsins, 'continuous')
-            console.info('[refillContinuous] topup merged pool', { before: prev.results?.length ?? 0, after: merged?.length ?? 0 })
-            return { ...prev, results: merged }
-          })
-          const topupMergedCount = mergeRefilledProducts(currentResults, refreshed.results || [], removeAsins, 'continuous')?.length ?? 0
-          if (topupMergedCount < FINDER_STOCK_TARGET) {
-            await replaceTinyPool()
-          }
-        }
-      } catch {
-        try {
-          const fallback = await fetchFinderProducts('', true, {
-            mode: 'continuous',
-            limit: FINDER_ROTATION_POOL_TARGET,
-            excludeAsins: fetchExcludeAsins ?? removeAsins,
-          })
-          setContinuousFinderState((prev) => ({
-            ...prev,
-            results: mergeRefilledProducts(prev.results, fallback.results || [], removeAsins, 'continuous'),
-          }))
-        } catch {
-          setContinuousFinderState((prev) => ({
-            ...prev,
-            results: prev.results ? prev.results.filter((product) => !listed.has(product.asin.toUpperCase())) : prev.results,
-          }))
-        }
-      }
+      await ensureContinuousQueueTarget('post_listing_or_removal', {
+        baseProducts: continuousFinderState.results,
+        removeAsins,
+        failedAsins: fetchExcludeAsins ?? removeAsins,
+        forceRefresh: true,
+        setLoading: true,
+      })
     },
-    [continuousFinderState.results]
+    [continuousFinderState.results, ensureContinuousQueueTarget]
   )
 
   const handleListAll = useCallback(async () => {
@@ -1323,22 +1421,13 @@ export default function Dashboard() {
       return
     }
 
-    let visibleProducts = tagFinderProducts(visibleContinuousResults || [], 'continuous')
+    let visibleProducts: FinderProduct[] = tagFinderProducts(visibleContinuousResults || [], 'continuous')
     if (visibleProducts.length < FINDER_STOCK_TARGET) {
-      try {
-        const topup = await fetchFinderProducts('', true, {
-          mode: 'continuous',
-          limit: FINDER_ROTATION_POOL_TARGET,
-          excludeAsins: visibleProducts.map((product) => product.asin),
-        })
-        const merged = mergeRefilledProducts(visibleProducts, topup.results || [], [], 'continuous') || []
-        if (merged.length > visibleProducts.length) {
-          visibleProducts = tagFinderProducts(merged, 'continuous')
-          setContinuousFinderState((prev) => ({ ...prev, results: merged }))
-        }
-      } catch {
-        // If top-up fails, continue with the visible queue instead of blocking manual control.
-      }
+      visibleProducts = await ensureContinuousQueueTarget('pre_list_guard', {
+        baseProducts: continuousFinderState.results || visibleProducts,
+        forceRefresh: true,
+        setLoading: true,
+      })
     }
     let products = getPublishReadyFinderProducts(visibleProducts)
     if (subscriptionState.plan === 'trial') {
@@ -1413,7 +1502,7 @@ export default function Dashboard() {
       tone: 'success',
       text: summarizeBulkListResult(result),
     })
-  }, [connectionState.ebayConnected, ebayQuotaState.nearLimit, guardEbayQuotaBeforeListing, publishFinderProduct, refillContinuousProducts, refreshEbayQuotaStatus, refreshSubscriptionStatus, subscriptionState.loading, subscriptionState.plan, subscriptionState.trialRemaining, visibleContinuousResults])
+  }, [connectionState.ebayConnected, continuousFinderState.results, ebayQuotaState.nearLimit, ensureContinuousQueueTarget, guardEbayQuotaBeforeListing, publishFinderProduct, refillContinuousProducts, refreshEbayQuotaStatus, refreshSubscriptionStatus, subscriptionState.loading, subscriptionState.plan, subscriptionState.trialRemaining, visibleContinuousResults])
 
   const handleRunScript = useCallback(async (file: string) => {
     setScriptRunning(file)

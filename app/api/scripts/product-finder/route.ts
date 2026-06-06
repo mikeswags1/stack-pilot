@@ -1042,6 +1042,12 @@ export async function GET(req: NextRequest) {
       source,
       count: Math.min(ranked.length, targetCount),
       available: ranked.length,
+      ready_count: Math.min(ranked.filter(isPublishReadyProduct).length, targetCount),
+      source_pool_available: ranked.length,
+      products_added_to_queue: Math.min(ranked.filter(isPublishReadyProduct).length, targetCount),
+      reason_if_less_than_30: ranked.filter(isPublishReadyProduct).length >= targetCount
+        ? null
+        : `source engine returned ${ranked.filter(isPublishReadyProduct).length} publish-ready products after eligibility filters`,
       durationMs: Date.now() - startedAt,
     }))
     return apiOk({
