@@ -191,6 +191,8 @@ const BULKY_OR_HIGH_RETURN_TERMS = [
   'generator', 'chainsaw', 'tv ', 'television', 'monitor', 'laptop', 'tablet',
   'apparel', 'dress', 'jeans', 'shoes', 'cosmetic', 'makeup foundation', 'perfume',
   'supplement', 'vitamin', 'medical', 'fragile', 'glass set',
+  'tow bar', 'towing bar', 'trailer hitch', 'hitch receiver', 'flat dinghy towing',
+  'bumper mounted tow', 'universal towing bar',
 ]
 
 function uniqueQueries(values: string[]) {

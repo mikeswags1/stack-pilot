@@ -52,7 +52,7 @@ const RESTRICTED_ITEM_RULES: PolicyRule[] = [
 ]
 
 const HIGH_RETURN_OPERATIONAL_RULES: PolicyRule[] = [
-  { code: 'oversized_or_high_return_item', reason: 'Oversized, fragile, or high-return items are blocked for automated drop-shipping workflows.', pattern: /\b(treadmill|elliptical|mattress|sofa|couch|television|computer monitor|gaming monitor|pc monitor|generator|chainsaw|pressure washer|e-bike|electric bike|rc plane|rc airplane|drone)\b/i },
+  { code: 'oversized_or_high_return_item', reason: 'Oversized, fragile, or high-return items are blocked for automated drop-shipping workflows.', pattern: /\b(treadmill|elliptical|mattress|sofa|couch|television|computer monitor|gaming monitor|pc monitor|generator|chainsaw|pressure washer|e-bike|electric bike|rc plane|rc airplane|drone|tow bar|towing bar|trailer hitch|hitch receiver|bumper mount(?:ed)? tow|flat dinghy towing|universal towing bar)\b/i },
   { code: 'standalone_computer_or_tablet', reason: 'Standalone computers/tablets are blocked; accessories are allowed when clearly described as accessories.', pattern: /\b(laptop|tablet)\b/i, allowAccessoryContext: true },
 ]
 

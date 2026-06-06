@@ -1795,6 +1795,13 @@ function buildXml(params: {
 }) {
   const rootTag = params.requestType === 'verify' ? 'VerifyAddFixedPriceItemRequest' : 'AddFixedPriceItemRequest'
   const shippingService = params.shippingService || 'FedEx2Day'
+  const remoteShipToExclusions = process.env.EBAY_ALLOW_REMOTE_US_SHIPPING === '1'
+    ? ''
+    : `
+      <ExcludeShipToLocation>Alaska/Hawaii</ExcludeShipToLocation>
+      <ExcludeShipToLocation>APO/FPO</ExcludeShipToLocation>
+      <ExcludeShipToLocation>PO Box</ExcludeShipToLocation>
+      <ExcludeShipToLocation>US Protectorates</ExcludeShipToLocation>`
   const shippingDetailsXml = params.simplifiedShipping
     ? `<ShippingDetails>
       <ShippingType>Flat</ShippingType>
@@ -1805,6 +1812,7 @@ function buildXml(params: {
         <FreeShipping>true</FreeShipping>
         <ExpeditedService>true</ExpeditedService>
       </ShippingServiceOptions>
+      ${remoteShipToExclusions}
     </ShippingDetails>`
     : `<ShippingDetails>
       <ShippingType>Flat</ShippingType>
@@ -1816,6 +1824,7 @@ function buildXml(params: {
         <ExpeditedService>true</ExpeditedService>
         <ShippingServiceAdditionalCost currencyID="USD">0.00</ShippingServiceAdditionalCost>
       </ShippingServiceOptions>
+      ${remoteShipToExclusions}
     </ShippingDetails>`
   return `<?xml version="1.0" encoding="utf-8"?>
 <${rootTag} xmlns="urn:ebay:apis:eBLBaseComponents">

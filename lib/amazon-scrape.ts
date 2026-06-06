@@ -24,6 +24,28 @@ export interface AmazonProduct {
   bestSellerRank?: number
 }
 
+const SLOW_FULFILLMENT_PATTERNS = [
+  /\busually ships within\s+(?:[2-9]|[1-9]\d+)\s+(?:weeks?|months?)\b/i,
+  /\bships within\s+(?:[2-9]|[1-9]\d+)\s+(?:weeks?|months?)\b/i,
+  /\btemporarily out of stock\b/i,
+  /\bthis item cannot be shipped to your selected delivery location\b/i,
+  /\bcannot be shipped to the address you selected\b/i,
+]
+
+function hasSlowOrBlockedFulfillmentSignal(html: string) {
+  const text = stripTags(decodeHtmlEntities(html)).toLowerCase()
+  if (SLOW_FULFILLMENT_PATTERNS.some((pattern) => pattern.test(text))) return true
+
+  const deliveryWindows = Array.from(text.matchAll(/\b(?:delivery|arrives?|get it|estimated delivery)[^.!?]{0,120}\b(?:in\s+)?(\d{1,2})\s*(?:-|to)\s*(\d{1,2})\s+(days?|weeks?|months?)\b/gi))
+  return deliveryWindows.some((match) => {
+    const upper = Number.parseInt(match[2] || match[1] || '0', 10)
+    const unit = String(match[3] || '').toLowerCase()
+    if (!Number.isFinite(upper)) return false
+    if (unit.startsWith('month') || unit.startsWith('week')) return true
+    return unit.startsWith('day') && upper > 10
+  })
+}
+
 function extractBetween(html: string, open: string, close: string): string {
   const start = html.indexOf(open)
   if (start === -1) return ''
@@ -292,7 +314,8 @@ export async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct |
       availabilityText.includes('not currently available')
     const hasBuyBox =
       /id="add-to-cart-button"|name="submit\.add-to-cart"|id="buy-now-button"|name="submit\.buy-now"/i.test(html)
-    const available = !hasUnavailableSignal && hasBuyBox && price > 0
+    const hasFulfillmentRisk = hasSlowOrBlockedFulfillmentSignal(html)
+    const available = !hasUnavailableSignal && !hasFulfillmentRisk && hasBuyBox && price > 0
 
     return {
       asin,
