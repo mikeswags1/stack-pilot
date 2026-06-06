@@ -13,6 +13,8 @@ import { isWeakListingTitle } from '@/lib/listing-quality'
 import { getSeasonalQueryExpansions, getSourcingTrendMultiplier, loadActiveCustomSourceNicheQueries, mergeTrendingNicheQueries } from '@/lib/source-niches'
 
 export const maxDuration = 60
+export const dynamic = 'force-dynamic'
+export const revalidate = 0
 
 const MAX_COST   = 180  // tightened from 300 â€” products >$180 have thin dropship margins and high return risk
 const CACHE_TTL  = 23 * 60 * 60 * 1000 // 23 hours â€” refresh once per day
