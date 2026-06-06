@@ -2663,12 +2663,12 @@ export async function POST(req: NextRequest) {
   // New listings are blocked above if they have fewer than MIN_LISTING_IMAGES.
   const imageQualityWarning = filteredImages.length < 2
 
-  const fallbackListingImage = `${siteUrl}/api/image/fallback?asin=${encodeURIComponent(asin)}&title=${encodeURIComponent(listingTitle)}&badge=v9`
+  const fallbackListingImage = `${siteUrl}/api/image/fallback?asin=${encodeURIComponent(asin)}&title=${encodeURIComponent(listingTitle)}&badge=v10`
   const primarySourceImage = filteredImages[0] || validatedAmazon.imageUrl || fallbackListingImage
   const primaryProxyImage = primarySourceImage.includes('/api/image/')
     ? primarySourceImage
     : `${siteUrl}/api/image/proxy?url=${encodeURIComponent(primarySourceImage)}`
-  const badgeUrl = `${siteUrl}/api/image/badge?url=${encodeURIComponent(primaryProxyImage)}&asin=${encodeURIComponent(asin)}&title=${encodeURIComponent(listingTitle)}&badge=v9`
+  const badgeUrl = `${siteUrl}/api/image/badge?url=${encodeURIComponent(primaryProxyImage)}&asin=${encodeURIComponent(asin)}&title=${encodeURIComponent(listingTitle)}&badge=v10`
   const cleanDescriptionPrimary = primarySourceImage.includes('/api/image/')
     ? primarySourceImage
     : `${siteUrl}/api/image/proxy?url=${encodeURIComponent(primarySourceImage)}`

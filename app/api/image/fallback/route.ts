@@ -66,14 +66,14 @@ function chooseVariant(asin: string, title: string, override?: string | null): B
   }
 
   const bucket = hashText(`${asin}:${title}`) % 100
-  // Rotation (badge=v9): 10% no-badge / 40% classic red stamp / 20% clean free 2-4 day /
-  // 10% free shipping / 10% fast delivery / 10% ships fast.
-  if (bucket < 10) return 'none'
-  if (bucket < 50) return 'classic-free-2-4-day-shipping'
-  if (bucket < 70) return 'free-2-4-day-shipping'
-  if (bucket < 80) return 'free-shipping'
-  if (bucket < 90) return 'fast-delivery'
-  return 'ships-fast'
+  // Rotation (badge=v10): 85% classic red stamp / 5% clean free 2-4 day /
+  // 4% free shipping / 3% fast delivery / 2% ships fast / 1% no-badge.
+  if (bucket < 85) return 'classic-free-2-4-day-shipping'
+  if (bucket < 90) return 'free-2-4-day-shipping'
+  if (bucket < 94) return 'free-shipping'
+  if (bucket < 97) return 'fast-delivery'
+  if (bucket < 99) return 'ships-fast'
+  return 'none'
 }
 
 function splitTitle(title: string) {

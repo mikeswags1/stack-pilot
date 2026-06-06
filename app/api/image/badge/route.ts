@@ -58,12 +58,14 @@ function chooseVariant(asin: string, title: string, override?: string | null): B
   }
 
   const bucket = hashText(`${asin}:${title}`) % 100
-  if (bucket < 10) return 'none'
-  if (bucket < 60) return 'classic-free-2-4-day-shipping'
-  if (bucket < 80) return 'free-2-4-day-shipping'
-  if (bucket < 87) return 'free-shipping'
-  if (bucket < 94) return 'fast-delivery'
-  return 'ships-fast'
+  // Rotation (badge=v10): heavily favor the classic red/yellow stamp after
+  // Mike saw better sell-through on listings using the 2-4 day shipping label.
+  if (bucket < 85) return 'classic-free-2-4-day-shipping'
+  if (bucket < 90) return 'free-2-4-day-shipping'
+  if (bucket < 94) return 'free-shipping'
+  if (bucket < 97) return 'fast-delivery'
+  if (bucket < 99) return 'ships-fast'
+  return 'none'
 }
 
 function escapeXml(value: string) {
