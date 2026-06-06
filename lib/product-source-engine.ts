@@ -441,7 +441,7 @@ function rowToProduct(row: ProductSourceRow): SourceEngineProduct {
     description: row.cached_description || (typeof raw.description === 'string' ? raw.description : undefined),
     specs: (row.cached_specs?.length || 0) > 0 ? row.cached_specs || undefined : rawSpecs,
     sourceNiche: row.source_niche || undefined,
-    sourceQuality: row.cached_available === true && row.cached_fast_fulfillment === true && images.length >= 2 && row.source_quality !== 'reject' ? 'ready' : row.source_quality || undefined,
+    sourceQuality: row.cached_available === true && row.cached_fast_fulfillment !== false && images.length >= 2 && row.source_quality !== 'reject' ? 'ready' : row.source_quality || undefined,
     // If no amazon_product_cache row exists (LEFT JOIN → null), assume available.
     // Only explicitly mark unavailable when the cache confirms available = FALSE.
     // Using undefined previously caused isPublishReadyProduct (available === true check)
@@ -961,7 +961,8 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
-                AND COALESCE(apc.fast_fulfillment, FALSE) = TRUE
+                AND apc.fast_fulfillment IS DISTINCT FROM FALSE
+                AND (apc.delivery_days_max IS NULL OR apc.delivery_days_max <= 8)
                 -- HARD SATURATION GATE (Lever 1): skip products with >50 known eBay
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).
@@ -1030,7 +1031,8 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
-                AND COALESCE(apc.fast_fulfillment, FALSE) = TRUE
+                AND apc.fast_fulfillment IS DISTINCT FROM FALSE
+                AND (apc.delivery_days_max IS NULL OR apc.delivery_days_max <= 8)
                 -- HARD SATURATION GATE (Lever 1): skip products with >50 known eBay
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).
@@ -1098,7 +1100,8 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
-                AND COALESCE(apc.fast_fulfillment, FALSE) = TRUE
+                AND apc.fast_fulfillment IS DISTINCT FROM FALSE
+                AND (apc.delivery_days_max IS NULL OR apc.delivery_days_max <= 8)
                 -- HARD SATURATION GATE (Lever 1): skip products with >50 known eBay
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).
@@ -1166,7 +1169,8 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
-                AND COALESCE(apc.fast_fulfillment, FALSE) = TRUE
+                AND apc.fast_fulfillment IS DISTINCT FROM FALSE
+                AND (apc.delivery_days_max IS NULL OR apc.delivery_days_max <= 8)
                 -- HARD SATURATION GATE (Lever 1): skip products with >50 known eBay
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).

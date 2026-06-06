@@ -2205,7 +2205,7 @@ export async function POST(req: NextRequest) {
   // Scraping Amazon live for every product in a 30-item bulk run triggers rate-limiting
   // (api-services-support page) which causes CHECK_FAILED for every item in the batch.
   // Non-trusted (single listing from the modal) still gets a live scrape — it's one call.
-  const fulfillmentBlockReason = getFastFulfillmentBlockReason(validatedAmazon, true)
+  const fulfillmentBlockReason = getFastFulfillmentBlockReason(validatedAmazon, false)
   if (fulfillmentBlockReason) {
     if (validatedAmazon.fastFulfillment === false || (validatedAmazon.deliveryDaysMax ?? 0) > MAX_AMAZON_DELIVERY_DAYS) {
       await markSourceAsinRejected()
