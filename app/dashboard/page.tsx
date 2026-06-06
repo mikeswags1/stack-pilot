@@ -1045,21 +1045,21 @@ export default function Dashboard() {
       const now = Date.now()
       if (now - continuousReseedTimerRef.current < 45_000) return  // debounce: max 1 reseed per 45s
       continuousReseedTimerRef.current = now
-      // Pass the currently queued ASINs as excludes so the auto-reseed
-      // fetches genuinely fresh products rather than the same ones.
+      // When the pool is already tiny, replace it from the full continuous source
+      // instead of excluding the few leftovers and narrowing the refill query.
       const currentQueueAsins = (continuousFinderState.results || []).map((p) => p.asin)
       console.info('[continuousAutoReseed] pool below threshold, reseeding', { poolSize: continuousPoolSize, excludeCount: currentQueueAsins.length })
       setContinuousFinderState((prev) => ({ ...prev, loading: true, error: null }))
       fetchFinderProducts('', true, {
         mode: 'continuous',
         limit: FINDER_ROTATION_POOL_TARGET,
-        excludeAsins: currentQueueAsins,
+        excludeAsins: [],
       }).then((data) => {
         console.info('[continuousAutoReseed] received', { count: data.results?.length ?? 0, source: (data as { source?: string }).source })
         setContinuousFinderState((prev) => ({
           ...prev,
           loading: false,
-          results: mergeRefilledProducts(prev.results, data.results || [], [], 'continuous'),
+          results: tagFinderProducts(data.results || [], 'continuous'),
         }))
       }).catch((err: unknown) => {
         console.warn('[continuousAutoReseed] error', err)
@@ -1163,6 +1163,15 @@ export default function Dashboard() {
           excludeAsins,
         })
 
+        const replaceTinyPool = async () => {
+          const replacement = await fetchTopup(excludeForFetch)
+          console.info('[refillContinuous] replacing tiny pool', { count: replacement.results?.length ?? 0, source: (replacement as { source?: string }).source })
+          setContinuousFinderState((prev) => ({
+            ...prev,
+            results: tagFinderProducts(replacement.results || [], 'continuous'),
+          }))
+        }
+
         let refreshed = await fetchTopup(excludeForFetch)
         console.info('[refillContinuous] received', { count: refreshed.results?.length ?? 0, source: (refreshed as { source?: string }).source })
         setContinuousFinderState((prev) => {
@@ -1181,6 +1190,10 @@ export default function Dashboard() {
             console.info('[refillContinuous] topup merged pool', { before: prev.results?.length ?? 0, after: merged?.length ?? 0 })
             return { ...prev, results: merged }
           })
+          const topupMergedCount = mergeRefilledProducts(currentResults, refreshed.results || [], removeAsins, 'continuous')?.length ?? 0
+          if (topupMergedCount < FINDER_STOCK_TARGET) {
+            await replaceTinyPool()
+          }
         }
       } catch {
         try {
@@ -1271,11 +1284,11 @@ export default function Dashboard() {
     }
 
     // Remove all terminal ASINs from the current display.
-    // For the refill FETCH: only exclude listed+skipped — not failed ones.
-    // CHECK_FAILED products are not permanently invalid (rate-limit or transient
-    // scrape issue) and should re-enter the next batch via the refill.
+    // For the immediate refill fetch, exclude every ASIN that just left the batch.
+    // Otherwise the server can return the same failed products, the client drops
+    // them again, and Continuous Listing collapses to a tiny leftover queue.
     const allTerminalAsins = [...result.listedAsins, ...result.failedAsins, ...result.skippedAsins]
-    const refillExcludeAsins = [...result.listedAsins, ...result.skippedAsins]
+    const refillExcludeAsins = allTerminalAsins
     setFinderRotationTick((t) => t + 1)
     if (result.errors > 0) {
       await refillNicheFinderProducts(allTerminalAsins, refillExcludeAsins)
@@ -1382,7 +1395,7 @@ export default function Dashboard() {
     }
 
     const allTerminalAsins = [...result.listedAsins, ...result.failedAsins, ...result.skippedAsins]
-    const refillExcludeAsins = [...result.listedAsins, ...result.skippedAsins]
+    const refillExcludeAsins = allTerminalAsins
     setFinderRotationTick((t) => t + 1)
     if (result.errors > 0) {
       await refillContinuousProducts(allTerminalAsins, refillExcludeAsins)
