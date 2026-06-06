@@ -22,6 +22,18 @@ type DeadListingPreview = {
   }>
 }
 
+type FeedbackPreview = {
+  count: number
+  message?: string
+  candidates?: Array<{
+    orderId: string
+    lineItemId: string
+    buyerUsername: string
+    title: string
+    reason: string
+  }>
+}
+
 export function ScriptsTab({
   scriptRunning,
   scriptMessage,
@@ -38,6 +50,9 @@ export function ScriptsTab({
   const [deadState, setDeadState] = useState<'idle' | 'previewing' | 'ready' | 'running' | 'done' | 'error'>('idle')
   const [deadPreview, setDeadPreview] = useState<DeadListingPreview | null>(null)
   const [deadMessage, setDeadMessage] = useState<string | null>(null)
+  const [feedbackState, setFeedbackState] = useState<'idle' | 'previewing' | 'ready' | 'running' | 'done' | 'error'>('idle')
+  const [feedbackPreview, setFeedbackPreview] = useState<FeedbackPreview | null>(null)
+  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null)
 
   const handleEndAllListings = async () => {
     if (endState === 'idle') { setEndState('confirm'); return }
@@ -92,6 +107,41 @@ export function ScriptsTab({
     } catch {
       setDeadState('error')
       setDeadMessage('Request failed. Check your eBay connection.')
+    }
+  }
+
+  const handleFeedbackRequests = async () => {
+    if (feedbackState === 'idle' || feedbackState === 'error' || feedbackState === 'done') {
+      setFeedbackState('previewing')
+      setFeedbackMessage(null)
+      setFeedbackPreview(null)
+      try {
+        const res = await fetch('/api/ebay/feedback-requests')
+        const data = await res.json()
+        setFeedbackPreview(data)
+        setFeedbackMessage(data.message || (res.ok ? 'Preview complete.' : 'Something went wrong.'))
+        setFeedbackState(res.ok ? 'ready' : 'error')
+      } catch {
+        setFeedbackState('error')
+        setFeedbackMessage('Request failed. Check your eBay connection.')
+      }
+      return
+    }
+
+    if (feedbackState !== 'ready' || !feedbackPreview?.count) return
+    setFeedbackState('running')
+    setFeedbackMessage(`Sending ${Math.min(feedbackPreview.count, 10)} feedback request${Math.min(feedbackPreview.count, 10) === 1 ? '' : 's'}...`)
+    try {
+      const res = await fetch('/api/ebay/feedback-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      const data = await res.json()
+      setFeedbackMessage(data.message || (res.ok ? 'Feedback requests sent.' : 'Something went wrong.'))
+      setFeedbackState(res.ok ? 'done' : 'error')
+    } catch {
+      setFeedbackState('error')
+      setFeedbackMessage('Request failed. Check your eBay connection.')
     }
   }
 
@@ -178,6 +228,53 @@ export function ScriptsTab({
             </button>
             {deadState === 'ready' ? (
               <button className="btn btn-ghost btn-sm" style={{ width: '100%', marginTop: '8px' }} onClick={() => { setDeadState('idle'); setDeadPreview(null); setDeadMessage(null) }}>
+                Cancel
+              </button>
+            ) : null}
+          </div>
+
+          <div className="card" style={{ padding: '28px', border: feedbackState === 'ready' && (feedbackPreview?.count || 0) > 0 ? '1px solid rgba(34,197,94,0.32)' : undefined }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px', gap: '12px' }}>
+              <div style={{ fontFamily: 'var(--serif)', fontSize: '20px', fontWeight: 600, color: 'var(--txt)' }}>Request Feedback</div>
+              <span style={{ padding: '3px 10px', borderRadius: '20px', fontSize: '8px', fontWeight: 700, background: 'rgba(34,197,94,0.10)', color: 'var(--grn)', border: '1px solid rgba(34,197,94,0.28)' }}>
+                Follow-up
+              </span>
+            </div>
+            <div style={{ fontSize: '13px', color: 'var(--sil)', marginBottom: '22px', lineHeight: 1.6 }}>
+              Preview fulfilled orders that are delivered or likely delivered, skip buyers who already left feedback, then send a polite feedback request. Sent buyers are logged so they are not messaged again.
+            </div>
+            {feedbackMessage ? (
+              <div style={{ marginBottom: '12px', fontSize: '12px', color: feedbackState === 'error' ? 'var(--red)' : feedbackState === 'done' ? 'var(--grn)' : 'var(--gold)', padding: '8px 12px', borderRadius: '8px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                {feedbackMessage}
+              </div>
+            ) : null}
+            {feedbackState === 'ready' && feedbackPreview?.candidates?.length ? (
+              <div style={{ marginBottom: '12px', maxHeight: '130px', overflow: 'auto', fontSize: '11px', color: 'var(--dim)', lineHeight: 1.45 }}>
+                {feedbackPreview.candidates.slice(0, 5).map((candidate) => (
+                  <div key={candidate.lineItemId} style={{ marginBottom: '6px' }}>
+                    <strong style={{ color: 'var(--sil)' }}>{candidate.buyerUsername}</strong> - {candidate.title}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            <button
+              className={`btn btn-sm ${feedbackState === 'ready' && (feedbackPreview?.count || 0) > 0 ? 'btn-gold' : 'btn-ghost'}`}
+              style={{ width: '100%' }}
+              disabled={feedbackState === 'previewing' || feedbackState === 'running' || (feedbackState === 'ready' && !feedbackPreview?.count)}
+              onClick={handleFeedbackRequests}
+            >
+              {feedbackState === 'previewing'
+                ? 'Checking feedback...'
+                : feedbackState === 'running'
+                  ? 'Sending requests...'
+                  : feedbackState === 'ready' && (feedbackPreview?.count || 0) > 0
+                    ? `Confirm - Message ${Math.min(feedbackPreview?.count || 0, 10)} Buyer${Math.min(feedbackPreview?.count || 0, 10) === 1 ? '' : 's'}`
+                    : feedbackState === 'done'
+                      ? 'Run Another Preview'
+                      : 'Preview Feedback Requests'}
+            </button>
+            {feedbackState === 'ready' ? (
+              <button className="btn btn-ghost btn-sm" style={{ width: '100%', marginTop: '8px' }} onClick={() => { setFeedbackState('idle'); setFeedbackPreview(null); setFeedbackMessage(null) }}>
                 Cancel
               </button>
             ) : null}
