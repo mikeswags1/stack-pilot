@@ -358,6 +358,7 @@ export default function Dashboard() {
         baseProducts?: FinderProduct[] | null
         removeAsins?: string[]
         failedAsins?: string[]
+        persistFailedAsins?: boolean
         forceRefresh?: boolean
         setLoading?: boolean
       } = {}
@@ -369,10 +370,15 @@ export default function Dashboard() {
 
       const run = async () => {
         const removeSet = new Set((options.removeAsins || []).map(normalizeAsin).filter(Boolean))
+        const transientRejectedSet = new Set((options.failedAsins || []).map(normalizeAsin).filter(Boolean))
         for (const asin of options.failedAsins || []) {
           const normalized = normalizeAsin(asin)
-          if (normalized) continuousRejectedAsinsRef.current.add(normalized)
+          if (normalized && options.persistFailedAsins) continuousRejectedAsinsRef.current.add(normalized)
         }
+        const isBlockedForThisRun = (asin: string) =>
+          removeSet.has(asin) ||
+          transientRejectedSet.has(asin) ||
+          continuousRejectedAsinsRef.current.has(asin)
 
         let queue = dedupeFinderProducts(
           (options.baseProducts ?? continuousFinderState.results ?? [])
@@ -380,7 +386,7 @@ export default function Dashboard() {
           'continuous'
         )
         let readyQueue = getPublishReadyFinderProducts(queue)
-          .filter((product) => !continuousRejectedAsinsRef.current.has(normalizeAsin(product.asin)))
+          .filter((product) => !isBlockedForThisRun(normalizeAsin(product.asin)))
         queue = dedupeFinderProducts([
           ...readyQueue,
           ...queue.filter((product) => !readyQueue.some((ready) => normalizeAsin(ready.asin) === normalizeAsin(product.asin))),
@@ -396,7 +402,7 @@ export default function Dashboard() {
             reason_if_less_than_30: readyQueue.length >= FINDER_STOCK_TARGET
               ? null
               : extra.reason_if_less_than_30 || 'backfill still running',
-            rejected_count: continuousRejectedAsinsRef.current.size,
+            rejected_count: continuousRejectedAsinsRef.current.size + transientRejectedSet.size,
             queue_count: queue.length,
             ...extra,
           })
@@ -414,6 +420,7 @@ export default function Dashboard() {
           for (let attempt = 0; attempt < 8 && readyQueue.length < FINDER_STOCK_TARGET; attempt += 1) {
             const excludeAsins = Array.from(new Set([
               ...Array.from(continuousRejectedAsinsRef.current),
+              ...Array.from(transientRejectedSet),
               ...Array.from(removeSet),
             ].filter(Boolean)))
 
@@ -423,47 +430,47 @@ export default function Dashboard() {
               limit: FINDER_ROTATION_POOL_TARGET,
               excludeAsins,
             })
-          const incoming = tagFinderProducts(response.results || [], 'continuous')
-          lastSourceAvailable = Number(response.available ?? incoming.length)
+            const incoming = tagFinderProducts(response.results || [], 'continuous')
+            lastSourceAvailable = Number(response.available ?? incoming.length)
 
-          const invalidIncomingAsins: string[] = []
-          const additions: FinderProduct[] = []
-          const seen = new Set(queue.map((product) => normalizeAsin(product.asin)))
-          for (const product of incoming) {
-            const asin = normalizeAsin(product.asin)
-            if (!asin || seen.has(asin) || removeSet.has(asin) || continuousRejectedAsinsRef.current.has(asin)) continue
-            if (getBulkPreflightIssue(product)) {
-              invalidIncomingAsins.push(asin)
-              continue
+            const invalidIncomingAsins: string[] = []
+            const additions: FinderProduct[] = []
+            const seen = new Set(queue.map((product) => normalizeAsin(product.asin)))
+            for (const product of incoming) {
+              const asin = normalizeAsin(product.asin)
+              if (!asin || seen.has(asin) || isBlockedForThisRun(asin)) continue
+              if (getBulkPreflightIssue(product)) {
+                invalidIncomingAsins.push(asin)
+                continue
+              }
+              seen.add(asin)
+              additions.push({ ...product, sourceMode: 'continuous' })
             }
-            seen.add(asin)
-            additions.push({ ...product, sourceMode: 'continuous' })
-          }
 
-          for (const asin of invalidIncomingAsins) {
-            continuousRejectedAsinsRef.current.add(asin)
-          }
+            for (const asin of invalidIncomingAsins) {
+              transientRejectedSet.add(asin)
+            }
 
-          queue = dedupeFinderProducts([...readyQueue, ...additions, ...queue], 'continuous')
-          readyQueue = getPublishReadyFinderProducts(queue)
-            .filter((product) => !continuousRejectedAsinsRef.current.has(normalizeAsin(product.asin)))
-          lastAdded = Math.max(0, readyQueue.length - beforeReady)
+            queue = dedupeFinderProducts([...readyQueue, ...additions, ...queue], 'continuous')
+            readyQueue = getPublishReadyFinderProducts(queue)
+              .filter((product) => !isBlockedForThisRun(normalizeAsin(product.asin)))
+            lastAdded = Math.max(0, readyQueue.length - beforeReady)
 
-          logQueue('backfill_attempt', {
-            attempt: attempt + 1,
-            source_pool_available: lastSourceAvailable + beforeReady,
-            products_added_to_queue: lastAdded,
-            fetched_count: incoming.length,
-            invalid_fetched_count: invalidIncomingAsins.length,
-            exclude_count: excludeAsins.length,
-            reason_if_less_than_30: readyQueue.length >= FINDER_STOCK_TARGET
-              ? null
-              : lastSourceAvailable <= 0
-                ? 'source pool exhausted after excludes'
-                : lastAdded === 0
-                  ? 'source returned only duplicates or products that failed validation'
-                  : 'continuing backfill',
-          })
+            logQueue('backfill_attempt', {
+              attempt: attempt + 1,
+              source_pool_available: lastSourceAvailable + beforeReady,
+              products_added_to_queue: lastAdded,
+              fetched_count: incoming.length,
+              invalid_fetched_count: invalidIncomingAsins.length,
+              exclude_count: excludeAsins.length,
+              reason_if_less_than_30: readyQueue.length >= FINDER_STOCK_TARGET
+                ? null
+                : lastSourceAvailable <= 0
+                  ? 'source pool exhausted after excludes'
+                  : lastAdded === 0
+                    ? 'source returned only duplicates or products that failed validation'
+                    : 'continuing backfill',
+            })
 
             if (lastSourceAvailable <= readyQueue.length || (lastAdded === 0 && incoming.length < FINDER_ROTATION_POOL_TARGET)) break
           }
@@ -543,6 +550,7 @@ export default function Dashboard() {
             baseProducts: continuousFinderState.results,
             removeAsins,
             failedAsins: removeAsins,
+            persistFailedAsins: true,
             forceRefresh: true,
             setLoading: true,
           })
@@ -708,7 +716,14 @@ export default function Dashboard() {
 
   const shuffleVisibleFinderResults = useCallback(() => {
     setFinderRotationTick((tick) => tick + 1)
-  }, [])
+    if (tab === 'continuous') {
+      void ensureContinuousQueueTarget('shuffle_queue', {
+        baseProducts: continuousFinderState.results,
+        forceRefresh: true,
+        setLoading: true,
+      })
+    }
+  }, [continuousFinderState.results, ensureContinuousQueueTarget, tab])
 
   const getEbayConnectionState = useCallback((credentials: EbayCredentialsSummary | null) => {
     const hasToken = Boolean(credentials?.has_token)

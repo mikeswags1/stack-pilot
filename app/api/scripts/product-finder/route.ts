@@ -1039,17 +1039,19 @@ export async function GET(req: NextRequest) {
       })
     }
 
+    const publishReadyCount = ranked.filter(isPublishReadyProduct).length
+    const queueTargetCount = continuousMode ? TARGET_STOCK : targetCount
     console.info('[product-finder]', JSON.stringify({
       mode: continuousMode ? 'continuous' : 'niche',
       source,
       count: Math.min(ranked.length, targetCount),
       available: ranked.length,
-      ready_count: Math.min(ranked.filter(isPublishReadyProduct).length, targetCount),
+      ready_count: Math.min(publishReadyCount, queueTargetCount),
       source_pool_available: ranked.length,
-      products_added_to_queue: Math.min(ranked.filter(isPublishReadyProduct).length, targetCount),
-      reason_if_less_than_30: ranked.filter(isPublishReadyProduct).length >= targetCount
+      products_added_to_queue: Math.min(publishReadyCount, queueTargetCount),
+      reason_if_less_than_30: publishReadyCount >= queueTargetCount
         ? null
-        : `source engine returned ${ranked.filter(isPublishReadyProduct).length} publish-ready products after eligibility filters`,
+        : `source engine returned ${publishReadyCount} publish-ready products after eligibility filters`,
       durationMs: Date.now() - startedAt,
     }))
     return apiOk({
