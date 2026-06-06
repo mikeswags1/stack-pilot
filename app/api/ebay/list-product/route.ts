@@ -243,6 +243,27 @@ const MIN_LISTING_IMAGES = 2
 // uploads fail under load, the backfill should keep adding DISTINCT gallery photos
 // up to this target instead of bailing the second it crosses MIN.
 const TARGET_LISTING_IMAGES = 4
+const MAX_AMAZON_DELIVERY_DAYS = 8
+
+function getFastFulfillmentBlockReason(product: {
+  fastFulfillment?: boolean | null
+  deliveryDaysMax?: number | null
+  primeEligible?: boolean | null
+  fulfillmentSummary?: string | null
+}, requireConfirmedFast: boolean) {
+  if (product.deliveryDaysMax !== null && product.deliveryDaysMax !== undefined && product.deliveryDaysMax > MAX_AMAZON_DELIVERY_DAYS) {
+    return `Amazon delivery is too slow (${product.deliveryDaysMax} days).`
+  }
+  if (product.fastFulfillment === false) {
+    return product.fulfillmentSummary
+      ? `Amazon fulfillment is not fast enough (${product.fulfillmentSummary}).`
+      : 'Amazon fulfillment is not fast enough.'
+  }
+  if (requireConfirmedFast && product.fastFulfillment !== true) {
+    return 'Amazon Prime/fast-delivery eligibility could not be confirmed.'
+  }
+  return ''
+}
 
 function isGenericFeature(value: string) {
   const normalized = value.toLowerCase()
@@ -2163,6 +2184,13 @@ export async function POST(req: NextRequest) {
         if (!cached.available) {
           validatedAmazon = { ...validatedAmazon, available: false }
         }
+        validatedAmazon = {
+          ...validatedAmazon,
+          primeEligible: cached.primeEligible ?? validatedAmazon.primeEligible ?? null,
+          deliveryDaysMax: cached.deliveryDaysMax ?? validatedAmazon.deliveryDaysMax ?? null,
+          fastFulfillment: cached.fastFulfillment ?? validatedAmazon.fastFulfillment ?? null,
+          fulfillmentSummary: cached.fulfillmentSummary ?? validatedAmazon.fulfillmentSummary ?? null,
+        }
 
         // Persist the merged result so future lookups hit the cache
         saveCachedAmazonProduct(validatedAmazon).catch(() => {})
@@ -2177,6 +2205,39 @@ export async function POST(req: NextRequest) {
   // Scraping Amazon live for every product in a 30-item bulk run triggers rate-limiting
   // (api-services-support page) which causes CHECK_FAILED for every item in the batch.
   // Non-trusted (single listing from the modal) still gets a live scrape — it's one call.
+  const fulfillmentBlockReason = getFastFulfillmentBlockReason(validatedAmazon, true)
+  if (fulfillmentBlockReason) {
+    if (validatedAmazon.fastFulfillment === false || (validatedAmazon.deliveryDaysMax ?? 0) > MAX_AMAZON_DELIVERY_DAYS) {
+      await markSourceAsinRejected()
+      saveCachedAmazonProduct({ ...validatedAmazon, available: false, fastFulfillment: false }).catch(() => {})
+    }
+
+    recordListingFailure({
+      userId: effectiveUserId,
+      asin,
+      niche: body?.niche,
+      errorCode: 'AMAZON_FAST_FULFILLMENT_REQUIRED',
+      errorMessage: fulfillmentBlockReason,
+      stage: 'amazon_fulfillment_check',
+      source: isCron ? 'cron' : 'manual',
+    }).catch(() => {})
+
+    return apiError(
+      `${fulfillmentBlockReason} StackPilot only lists Amazon products with confirmed Prime/fast delivery within about one week.`,
+      {
+        status: 400,
+        code: 'AMAZON_FAST_FULFILLMENT_REQUIRED',
+        details: {
+          asin,
+          primeEligible: validatedAmazon.primeEligible,
+          deliveryDaysMax: validatedAmazon.deliveryDaysMax,
+          fastFulfillment: validatedAmazon.fastFulfillment,
+          fulfillmentSummary: validatedAmazon.fulfillmentSummary,
+        },
+      }
+    )
+  }
+
   let liveAvailability: Awaited<ReturnType<typeof checkAmazonLiveAvailability>>
 
   if (trusted) {

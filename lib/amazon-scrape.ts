@@ -2,6 +2,7 @@
 // Fetches product data straight from amazon.com with no API key required
 
 import { chooseBestListingTitle, isWeakListingTitle } from '@/lib/listing-quality'
+import { evaluateAmazonFulfillmentText } from '@/lib/amazon-fulfillment'
 
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -22,28 +23,10 @@ export interface AmazonProduct {
   specs: Array<[string, string]>
   available: boolean
   bestSellerRank?: number
-}
-
-const SLOW_FULFILLMENT_PATTERNS = [
-  /\busually ships within\s+(?:[2-9]|[1-9]\d+)\s+(?:weeks?|months?)\b/i,
-  /\bships within\s+(?:[2-9]|[1-9]\d+)\s+(?:weeks?|months?)\b/i,
-  /\btemporarily out of stock\b/i,
-  /\bthis item cannot be shipped to your selected delivery location\b/i,
-  /\bcannot be shipped to the address you selected\b/i,
-]
-
-function hasSlowOrBlockedFulfillmentSignal(html: string) {
-  const text = stripTags(decodeHtmlEntities(html)).toLowerCase()
-  if (SLOW_FULFILLMENT_PATTERNS.some((pattern) => pattern.test(text))) return true
-
-  const deliveryWindows = Array.from(text.matchAll(/\b(?:delivery|arrives?|get it|estimated delivery)[^.!?]{0,120}\b(?:in\s+)?(\d{1,2})\s*(?:-|to)\s*(\d{1,2})\s+(days?|weeks?|months?)\b/gi))
-  return deliveryWindows.some((match) => {
-    const upper = Number.parseInt(match[2] || match[1] || '0', 10)
-    const unit = String(match[3] || '').toLowerCase()
-    if (!Number.isFinite(upper)) return false
-    if (unit.startsWith('month') || unit.startsWith('week')) return true
-    return unit.startsWith('day') && upper > 10
-  })
+  primeEligible?: boolean | null
+  deliveryDaysMax?: number | null
+  fastFulfillment?: boolean
+  fulfillmentSummary?: string
 }
 
 function extractBetween(html: string, open: string, close: string): string {
@@ -314,8 +297,8 @@ export async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct |
       availabilityText.includes('not currently available')
     const hasBuyBox =
       /id="add-to-cart-button"|name="submit\.add-to-cart"|id="buy-now-button"|name="submit\.buy-now"/i.test(html)
-    const hasFulfillmentRisk = hasSlowOrBlockedFulfillmentSignal(html)
-    const available = !hasUnavailableSignal && !hasFulfillmentRisk && hasBuyBox && price > 0
+    const fulfillment = evaluateAmazonFulfillmentText(html)
+    const available = !hasUnavailableSignal && !fulfillment.blockedOrSlow && hasBuyBox && price > 0
 
     return {
       asin,
@@ -327,6 +310,10 @@ export async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct |
       specs,
       available,
       bestSellerRank,
+      primeEligible: fulfillment.primeEligible,
+      deliveryDaysMax: fulfillment.deliveryDaysMax,
+      fastFulfillment: fulfillment.fastFulfillment,
+      fulfillmentSummary: fulfillment.summary,
     }
   } catch {
     return null

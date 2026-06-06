@@ -39,6 +39,10 @@ async function cacheLiveAvailability(args: {
   amazonPrice: number
   images: string[]
   available: boolean
+  primeEligible?: boolean | null
+  deliveryDaysMax?: number | null
+  fastFulfillment?: boolean | null
+  fulfillmentSummary?: string | null
 }) {
   const images = Array.from(new Set(args.images.filter((url) => url.startsWith('http'))))
   const product: ValidatedAmazonProduct = {
@@ -51,6 +55,10 @@ async function cacheLiveAvailability(args: {
     description: '',
     specs: [],
     available: args.available,
+    primeEligible: args.primeEligible ?? null,
+    deliveryDaysMax: args.deliveryDaysMax ?? null,
+    fastFulfillment: args.fastFulfillment ?? null,
+    fulfillmentSummary: args.fulfillmentSummary ?? null,
     source: 'scrape',
   }
   await saveCachedAmazonProduct(product).catch(() => {})
@@ -87,6 +95,10 @@ export async function checkAmazonLiveAvailability(
     amazonPrice: isAvailable ? amazonPrice : 0,
     images,
     available: isAvailable,
+    primeEligible: scraped.primeEligible,
+    deliveryDaysMax: scraped.deliveryDaysMax,
+    fastFulfillment: scraped.fastFulfillment,
+    fulfillmentSummary: scraped.fulfillmentSummary,
   })
 
   if (!scraped.available) {

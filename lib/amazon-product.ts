@@ -1,6 +1,7 @@
 import { queryRows, sql } from '@/lib/db'
 import { scrapeAmazonProduct, scrapeAmazonSearch } from '@/lib/amazon-scrape'
 import { getRapidApiKey } from '@/lib/rapidapi'
+import { evaluateAmazonFulfillmentText } from '@/lib/amazon-fulfillment'
 
 type FetchAmazonProductOptions = {
   asin: string
@@ -21,6 +22,10 @@ export type ValidatedAmazonProduct = {
   specs: Array<[string, string]>
   brand?: string
   available: boolean
+  primeEligible?: boolean | null
+  deliveryDaysMax?: number | null
+  fastFulfillment?: boolean | null
+  fulfillmentSummary?: string | null
   bestSellerRank?: number
   source: 'api' | 'search' | 'scrape' | 'cache' | 'fallback'
   usedFallbackTitle?: boolean
@@ -38,6 +43,10 @@ type CachedAmazonProduct = {
   specs: unknown
   brand: string | null
   available: boolean | null
+  prime_eligible?: boolean | null
+  delivery_days_max?: number | null
+  fast_fulfillment?: boolean | null
+  fulfillment_summary?: string | null
   best_seller_rank: number | null
 }
 
@@ -166,6 +175,27 @@ function toSpecEntries(value: unknown) {
     .slice(0, 16)
 }
 
+function flattenFulfillmentText(value: unknown, seen = new Set<unknown>()): string[] {
+  if (value === null || value === undefined) return []
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    const text = sanitizeText(value)
+    return /(prime|delivery|arrives?|ships?|stock|available|fulfill)/i.test(text) ? [text] : []
+  }
+  if (typeof value !== 'object' || seen.has(value)) return []
+  seen.add(value)
+
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => flattenFulfillmentText(entry, seen)).slice(0, 80)
+  }
+
+  return Object.entries(value as Record<string, unknown>)
+    .flatMap(([key, entry]) => {
+      const keyText = /(prime|delivery|arrives?|ships?|stock|available|fulfill)/i.test(key) ? [key] : []
+      return [...keyText, ...flattenFulfillmentText(entry, seen)]
+    })
+    .slice(0, 80)
+}
+
 function mergeProducts(asin: string, products: Array<ValidatedAmazonProduct | null>, options: FetchAmazonProductOptions) {
   const validProducts = products.filter((product): product is ValidatedAmazonProduct => Boolean(product))
   if (validProducts.length === 0) return null
@@ -208,6 +238,10 @@ function mergeProducts(asin: string, products: Array<ValidatedAmazonProduct | nu
     specs: richestProduct.specs,
     brand: richestProduct.brand || preferred.brand,
     available,
+    primeEligible: scrapedProduct?.primeEligible ?? preferred.primeEligible ?? null,
+    deliveryDaysMax: scrapedProduct?.deliveryDaysMax ?? preferred.deliveryDaysMax ?? null,
+    fastFulfillment: scrapedProduct?.fastFulfillment ?? preferred.fastFulfillment ?? null,
+    fulfillmentSummary: scrapedProduct?.fulfillmentSummary ?? preferred.fulfillmentSummary ?? null,
     source: preferred.source,
     fallbackTitle: options.fallbackTitle,
     fallbackPrice: options.fallbackPrice,
@@ -229,6 +263,10 @@ function toProduct(input: {
   specs?: unknown
   brand?: string
   available?: boolean
+  primeEligible?: boolean | null
+  deliveryDaysMax?: number | null
+  fastFulfillment?: boolean | null
+  fulfillmentSummary?: string | null
   bestSellerRank?: number
   source: ValidatedAmazonProduct['source']
   fallbackTitle?: string
@@ -256,6 +294,10 @@ function toProduct(input: {
     specs,
     brand: inferBrand(title, specs, input.brand),
     available: input.available ?? amazonPrice > 0,
+    primeEligible: input.primeEligible ?? null,
+    deliveryDaysMax: input.deliveryDaysMax ?? null,
+    fastFulfillment: input.fastFulfillment ?? null,
+    fulfillmentSummary: input.fulfillmentSummary ?? null,
     bestSellerRank: input.bestSellerRank,
     source: input.source,
     usedFallbackTitle: !sanitizeTitle(input.title) && Boolean(input.fallbackTitle),
@@ -284,12 +326,17 @@ async function ensureAmazonProductCacheTable() {
   await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS description TEXT`.catch(() => {})
   await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS specs JSONB NOT NULL DEFAULT '[]'::jsonb`.catch(() => {})
   await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS brand TEXT`.catch(() => {})
+  await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS prime_eligible BOOLEAN`.catch(() => {})
+  await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS delivery_days_max INTEGER`.catch(() => {})
+  await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS fast_fulfillment BOOLEAN`.catch(() => {})
+  await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS fulfillment_summary TEXT`.catch(() => {})
 }
 
 export async function loadCachedAmazonProduct(asin: string): Promise<ValidatedAmazonProduct | null> {
   await ensureAmazonProductCacheTable()
   const rows = await queryRows<CachedAmazonProduct>`
-    SELECT asin, title, amazon_price, images, primary_image, features, description, specs, brand, available, best_seller_rank
+    SELECT asin, title, amazon_price, images, primary_image, features, description, specs, brand, available,
+           prime_eligible, delivery_days_max, fast_fulfillment, fulfillment_summary, best_seller_rank
     FROM amazon_product_cache
     WHERE asin = ${asin}
     LIMIT 1
@@ -313,6 +360,10 @@ export async function loadCachedAmazonProduct(asin: string): Promise<ValidatedAm
     specs: cached.specs,
     brand: sanitizeText(cached.brand),
     available: cached.available ?? true,
+    primeEligible: cached.prime_eligible ?? null,
+    deliveryDaysMax: cached.delivery_days_max ?? null,
+    fastFulfillment: cached.fast_fulfillment ?? null,
+    fulfillmentSummary: cached.fulfillment_summary ?? null,
     bestSellerRank: cached.best_seller_rank ?? undefined,
     source: 'cache',
   })
@@ -322,7 +373,7 @@ export async function saveCachedAmazonProduct(product: ValidatedAmazonProduct) {
   await ensureAmazonProductCacheTable()
   await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS best_seller_rank INTEGER`.catch(() => {})
   await sql`
-    INSERT INTO amazon_product_cache (asin, title, amazon_price, primary_image, images, features, description, specs, brand, available, best_seller_rank, source, updated_at)
+    INSERT INTO amazon_product_cache (asin, title, amazon_price, primary_image, images, features, description, specs, brand, available, prime_eligible, delivery_days_max, fast_fulfillment, fulfillment_summary, best_seller_rank, source, updated_at)
     VALUES (
       ${product.asin},
       ${product.title.slice(0, 500)},
@@ -334,6 +385,10 @@ export async function saveCachedAmazonProduct(product: ValidatedAmazonProduct) {
       ${JSON.stringify(product.specs)},
       ${product.brand || null},
       ${product.available},
+      ${product.primeEligible ?? null},
+      ${product.deliveryDaysMax ?? null},
+      ${product.fastFulfillment ?? null},
+      ${product.fulfillmentSummary || null},
       ${product.bestSellerRank ?? null},
       ${product.source},
       NOW()
@@ -348,6 +403,10 @@ export async function saveCachedAmazonProduct(product: ValidatedAmazonProduct) {
       specs = EXCLUDED.specs,
       brand = EXCLUDED.brand,
       available = EXCLUDED.available,
+      prime_eligible = COALESCE(EXCLUDED.prime_eligible, amazon_product_cache.prime_eligible),
+      delivery_days_max = COALESCE(EXCLUDED.delivery_days_max, amazon_product_cache.delivery_days_max),
+      fast_fulfillment = COALESCE(EXCLUDED.fast_fulfillment, amazon_product_cache.fast_fulfillment),
+      fulfillment_summary = COALESCE(EXCLUDED.fulfillment_summary, amazon_product_cache.fulfillment_summary),
       best_seller_rank = COALESCE(EXCLUDED.best_seller_rank, amazon_product_cache.best_seller_rank),
       source = EXCLUDED.source,
       updated_at = NOW()
@@ -407,6 +466,7 @@ export async function fetchProductDetailsFromApi(asin: string, fallbackImage?: s
     // when the pool image belongs to a different product (ASIN cross-mapping).
     const images = realImages.length > 0 ? realImages : dedupeImages([normalizeImageUrl(fallbackImage)])
 
+    const fulfillment = evaluateAmazonFulfillmentText(flattenFulfillmentText(data).join(' | '))
     recordApiCall({ provider: 'rapidapi', callName: 'product-details', success: true, durationMs: Date.now() - startedAt }).catch(() => {})
     return toProduct({
       asin,
@@ -432,8 +492,13 @@ export async function fetchProductDetailsFromApi(asin: string, fallbackImage?: s
       ],
       brand: sanitizeText((data as Record<string, unknown>).product_byline || (data as Record<string, unknown>).brand),
       available:
+        !fulfillment.blockedOrSlow &&
         String(data.product_availability || '').toLowerCase() !== 'currently unavailable' &&
         parseAmazonPrice(data.product_price || data.price) > 0,
+      primeEligible: fulfillment.primeEligible,
+      deliveryDaysMax: fulfillment.deliveryDaysMax,
+      fastFulfillment: fulfillment.fastFulfillment,
+      fulfillmentSummary: fulfillment.summary,
       source: 'api',
     })
   } catch (err) {
@@ -491,6 +556,10 @@ async function fetchProductFromScrape(asin: string, fallbackImage?: string) {
     description: scraped.description,
     specs: scraped.specs,
     available: scraped.available && scraped.price > 0,
+    primeEligible: scraped.primeEligible,
+    deliveryDaysMax: scraped.deliveryDaysMax,
+    fastFulfillment: scraped.fastFulfillment,
+    fulfillmentSummary: scraped.fulfillmentSummary,
     bestSellerRank: scraped.bestSellerRank,
     source: 'scrape',
   })
@@ -657,6 +726,10 @@ export async function fetchAmazonProductByAsin(
       specs: cached.specs,
       brand: cached.brand,
       available: cached.available,
+      primeEligible: cached.primeEligible,
+      deliveryDaysMax: cached.deliveryDaysMax,
+      fastFulfillment: cached.fastFulfillment,
+      fulfillmentSummary: cached.fulfillmentSummary,
       source: 'cache',
       fallbackTitle: options.fallbackTitle,
       fallbackPrice: options.fallbackPrice,

@@ -81,6 +81,10 @@ export type SourceEngineProduct = {
   qualityScore?: number
   masterScore?: number
   available?: boolean
+  primeEligible?: boolean | null
+  deliveryDaysMax?: number | null
+  fastFulfillment?: boolean | null
+  fulfillmentSummary?: string | null
   _rating?: number
   _numRatings?: number
   bestSellerRank?: number
@@ -123,6 +127,10 @@ type ProductSourceRow = {
   cached_description?: string | null
   cached_specs?: Array<[string, string]> | null
   cached_available?: boolean | null
+  cached_prime_eligible?: boolean | null
+  cached_delivery_days_max?: number | null
+  cached_fast_fulfillment?: boolean | null
+  cached_fulfillment_summary?: string | null
   cached_bsr?: number | null
   ebay_competitor_count?: number | null
   listing_outcome_score?: string | number | null
@@ -433,12 +441,16 @@ function rowToProduct(row: ProductSourceRow): SourceEngineProduct {
     description: row.cached_description || (typeof raw.description === 'string' ? raw.description : undefined),
     specs: (row.cached_specs?.length || 0) > 0 ? row.cached_specs || undefined : rawSpecs,
     sourceNiche: row.source_niche || undefined,
-    sourceQuality: row.cached_available === true && images.length >= 2 && row.source_quality !== 'reject' ? 'ready' : row.source_quality || undefined,
+    sourceQuality: row.cached_available === true && row.cached_fast_fulfillment === true && images.length >= 2 && row.source_quality !== 'reject' ? 'ready' : row.source_quality || undefined,
     // If no amazon_product_cache row exists (LEFT JOIN → null), assume available.
     // Only explicitly mark unavailable when the cache confirms available = FALSE.
     // Using undefined previously caused isPublishReadyProduct (available === true check)
     // to reject every pool product lacking a cache entry, shrinking publishReadyCount to 0.
     available: row.cached_available ?? true,
+    primeEligible: row.cached_prime_eligible ?? null,
+    deliveryDaysMax: row.cached_delivery_days_max ?? null,
+    fastFulfillment: row.cached_fast_fulfillment ?? null,
+    fulfillmentSummary: row.cached_fulfillment_summary ?? null,
     _rating: parseNumber(row.rating),
     _numRatings: Math.round(parseNumber(row.review_count)),
     bestSellerRank: row.cached_bsr ?? undefined,
@@ -500,6 +512,10 @@ export async function ensureProductSourceTables() {
   await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS ebay_competitor_count INTEGER`.catch(() => {})
   await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS listing_outcome_score NUMERIC(5,3) NOT NULL DEFAULT 1.000`.catch(() => {})
   await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS best_seller_rank INTEGER`.catch(() => {})
+  await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS prime_eligible BOOLEAN`.catch(() => {})
+  await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS delivery_days_max INTEGER`.catch(() => {})
+  await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS fast_fulfillment BOOLEAN`.catch(() => {})
+  await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS fulfillment_summary TEXT`.catch(() => {})
   await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS master_score NUMERIC(5,2)`.catch(() => {})
   // Phase 3 market-saturation columns — created here too so applySourceIntelligenceScores can
   // always reference inventory_quality_score / dup_* without a missing-column failure
@@ -930,7 +946,9 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                      psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
                      apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
                      apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
-                     apc.available AS cached_available, apc.best_seller_rank AS cached_bsr,
+                     apc.available AS cached_available, apc.prime_eligible AS cached_prime_eligible,
+                     apc.delivery_days_max AS cached_delivery_days_max, apc.fast_fulfillment AS cached_fast_fulfillment,
+                     apc.fulfillment_summary AS cached_fulfillment_summary, apc.best_seller_rank AS cached_bsr,
                      psi.ebay_competitor_count, psi.listing_outcome_score
               FROM product_source_items psi
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
@@ -943,6 +961,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
+                AND COALESCE(apc.fast_fulfillment, FALSE) = TRUE
                 -- HARD SATURATION GATE (Lever 1): skip products with >50 known eBay
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).
@@ -996,7 +1015,9 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                      psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
                      apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
                      apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
-                     apc.available AS cached_available, apc.best_seller_rank AS cached_bsr,
+                     apc.available AS cached_available, apc.prime_eligible AS cached_prime_eligible,
+                     apc.delivery_days_max AS cached_delivery_days_max, apc.fast_fulfillment AS cached_fast_fulfillment,
+                     apc.fulfillment_summary AS cached_fulfillment_summary, apc.best_seller_rank AS cached_bsr,
                      psi.ebay_competitor_count, psi.listing_outcome_score
               FROM product_source_items psi
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
@@ -1009,6 +1030,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
+                AND COALESCE(apc.fast_fulfillment, FALSE) = TRUE
                 -- HARD SATURATION GATE (Lever 1): skip products with >50 known eBay
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).
@@ -1062,7 +1084,9 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                      psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
                      apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
                      apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
-                     apc.available AS cached_available, apc.best_seller_rank AS cached_bsr,
+                     apc.available AS cached_available, apc.prime_eligible AS cached_prime_eligible,
+                     apc.delivery_days_max AS cached_delivery_days_max, apc.fast_fulfillment AS cached_fast_fulfillment,
+                     apc.fulfillment_summary AS cached_fulfillment_summary, apc.best_seller_rank AS cached_bsr,
                      psi.ebay_competitor_count, psi.listing_outcome_score
               FROM product_source_items psi
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
@@ -1074,6 +1098,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
+                AND COALESCE(apc.fast_fulfillment, FALSE) = TRUE
                 -- HARD SATURATION GATE (Lever 1): skip products with >50 known eBay
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).
@@ -1127,7 +1152,9 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                      psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
                      apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
                      apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
-                     apc.available AS cached_available, apc.best_seller_rank AS cached_bsr,
+                     apc.available AS cached_available, apc.prime_eligible AS cached_prime_eligible,
+                     apc.delivery_days_max AS cached_delivery_days_max, apc.fast_fulfillment AS cached_fast_fulfillment,
+                     apc.fulfillment_summary AS cached_fulfillment_summary, apc.best_seller_rank AS cached_bsr,
                      psi.ebay_competitor_count, psi.listing_outcome_score
               FROM product_source_items psi
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
@@ -1139,6 +1166,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND psi.image_url <> ''
                 AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
                 AND COALESCE(apc.available, TRUE) <> FALSE
+                AND COALESCE(apc.fast_fulfillment, FALSE) = TRUE
                 -- HARD SATURATION GATE (Lever 1): skip products with >50 known eBay
                 -- competitors so we stop offering listings that get crushed on price.
                 -- NULL is permissive (data backfills via the competition cron over ~24h).
