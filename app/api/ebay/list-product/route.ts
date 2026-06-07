@@ -13,7 +13,7 @@ import { recordApiCall, recordListingFailure, shouldBlockManualListing } from '@
 import { fetchAmazonProductByAsin, loadCachedAmazonProduct, saveCachedAmazonProduct } from '@/lib/amazon-product'
 import { scrapeAmazonProduct } from '@/lib/amazon-scrape'
 import { checkAmazonLiveAvailability } from '@/lib/amazon-availability'
-import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getPricingRecommendation, getRecommendedEbayPrice } from '@/lib/listing-pricing'
+import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getNetProfit, getPricingRecommendation, getRecommendedEbayPrice, MIN_NET_PROFIT, priceForNetProfit } from '@/lib/listing-pricing'
 import { getListingPolicyBlockReason, getListingPolicyFlags, hasBlockedListingPolicyFlag } from '@/lib/listing-policy'
 import { chooseBestListingTitle, isWeakListingTitle } from '@/lib/listing-quality'
 import { getRapidApiKey } from '@/lib/rapidapi'
@@ -2566,13 +2566,37 @@ export async function POST(req: NextRequest) {
     } catch { /* market check is best-effort — never block a listing on lookup failure */ }
   }
 
-  // Hard backstop — catches stale cache where Amazon raised their price after queuing
-  const priceCheck = getListingMetrics(listingAmazonPrice, finalEbayPrice, EBAY_DEFAULT_FEE_RATE)
-  if (priceCheck.profit < 1) {
-    return apiError(
-      `Cannot list — the eBay price ($${finalEbayPrice.toFixed(2)}) is below the Amazon cost ($${listingAmazonPrice.toFixed(2)}) after fees. Amazon likely raised their price since this product was queued. It will be repriced automatically on the next refresh cycle.`,
-      { status: 400, code: 'UNPROFITABLE_LISTING' }
-    )
+  // ── HARD NET-PROFIT SAFEGUARD (2026-06-07) ───────────────────────────────────
+  // TRUE take-home after eBay fees + Promoted Listings ad fee + the sales tax we pay
+  // buying on Amazon. Replaces the old gross "profit < 1" backstop that let a $13
+  // camera (gross $1.64) list while really netting only $0.57.
+  let netProfit = getNetProfit(listingAmazonPrice, finalEbayPrice, { feeRate: EBAY_DEFAULT_FEE_RATE })
+  if (netProfit < MIN_NET_PROFIT) {
+    // Compute the lowest price that clears the net floor, rounded to a .99 ending.
+    const floorRaw = priceForNetProfit(listingAmazonPrice, MIN_NET_PROFIT, { feeRate: EBAY_DEFAULT_FEE_RATE })
+    let floorPrice = Math.max(finalEbayPrice, Math.floor(floorRaw) + 0.99)
+    if (floorPrice < floorRaw) floorPrice = Number((floorPrice + 1).toFixed(2))
+    // If we know the market and clearing the floor would price us clearly above it,
+    // there's no profitable way to compete — block and remove from the queue.
+    const sortedMarket = comparableMarket.count >= 3 ? [...comparableMarket.prices].sort((a, b) => a - b) : []
+    const marketMedian = sortedMarket.length ? sortedMarket[Math.floor(sortedMarket.length / 2)] : null
+    if (marketMedian && floorPrice > marketMedian * 1.12) {
+      await sql`
+        UPDATE product_source_items
+        SET active = FALSE, last_seen_at = NOW(), source_quality = 'reject'
+        WHERE UPPER(asin) = UPPER(${asin})
+      `.catch(() => {})
+      return apiError(
+        `Blocked — can't clear the $${MIN_NET_PROFIT.toFixed(2)} net-profit floor without pricing above the market. At $${finalEbayPrice.toFixed(2)} you'd net $${netProfit.toFixed(2)} after eBay fees, ads, and Amazon tax; clearing the floor needs $${floorPrice.toFixed(2)} but comparable listings sell ~$${marketMedian.toFixed(2)}. Removed from queue.`,
+        { status: 400, code: 'BELOW_NET_PROFIT_FLOOR' }
+      )
+    }
+    // Otherwise lift the price so the listing actually clears the floor.
+    finalEbayPrice = floorPrice
+    netProfit = getNetProfit(listingAmazonPrice, finalEbayPrice, { feeRate: EBAY_DEFAULT_FEE_RATE })
+    console.info('[list-product] net-floor lift', JSON.stringify({
+      asin, amazonPrice: listingAmazonPrice, raisedTo: finalEbayPrice, netProfit,
+    }))
   }
 
   // Sanity check — if the eBay price is over 4x the minimum viable price, the cached

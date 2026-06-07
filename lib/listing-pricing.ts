@@ -7,6 +7,14 @@ export const MIN_HEALTHY_PROFIT = 7
 export const MIN_HEALTHY_ROI = 28
 export const MIN_HEALTHY_MARGIN = 15
 
+// TRUE-NET-PROFIT safeguard (added 2026-06-07 after a $13 camera netted $0.57).
+// The older floors used GROSS margin (e.g. "Amazon + $4") which ignored Promoted
+// Listings ad fees and the sales tax we pay buying on Amazon. These constants let
+// us compute the REAL take-home and block listings that can't clear it.
+export const PROMOTED_AD_RATE = Number(process.env.PROMOTED_AD_RATE || '0.06')
+export const AMAZON_SOURCE_TAX_RATE = Number(process.env.AMAZON_SOURCE_TAX_RATE || '0.07')
+export const MIN_NET_PROFIT = Number(process.env.MIN_NET_PROFIT || '3')
+
 type PricingConfidence = 'none' | 'low' | 'medium' | 'high'
 type PricingStrategy = 'cost_floor' | 'balanced' | 'competitive' | 'not_viable'
 
@@ -237,6 +245,48 @@ export function getListingMetrics(
   const roi = amazonPrice > 0 ? money((profit / amazonPrice) * 100) : 0
   const margin = ebayPrice > 0 ? money((profit / ebayPrice) * 100) : 0
   return { fees, variableFee, fixedFee, bufferCost, profit, roi, margin }
+}
+
+/**
+ * TRUE net profit (take-home) after EVERY real cost:
+ *   eBay variable fee + eBay fixed fee + operating buffer
+ *   + Promoted Listings ad fee (charged on sale price)
+ *   + the sales tax we pay when buying the item on Amazon.
+ * This is the number the min-profit safeguard checks — NOT the gross "ebay - amazon".
+ */
+export function getNetProfit(
+  amazonPrice: number,
+  ebayPrice: number,
+  options: { feeRate?: number; fixedFee?: number; bufferRate?: number; promotedRate?: number; amazonTaxRate?: number } = {}
+) {
+  const feeRate = options.feeRate ?? EBAY_DEFAULT_FEE_RATE
+  const bufferRate = options.bufferRate ?? PRICING_BUFFER_RATE
+  const promotedRate = options.promotedRate ?? PROMOTED_AD_RATE
+  const amazonTaxRate = options.amazonTaxRate ?? AMAZON_SOURCE_TAX_RATE
+  const fixedFee = ebayPrice > 0 ? getFixedFeeForPrice(ebayPrice, options.fixedFee) : 0
+  const variableFee = ebayPrice * feeRate
+  const bufferCost = ebayPrice * bufferRate
+  const promotedFee = ebayPrice * promotedRate
+  const amazonLanded = amazonPrice * (1 + amazonTaxRate)
+  return money(ebayPrice - amazonLanded - variableFee - fixedFee - bufferCost - promotedFee)
+}
+
+/** The lowest eBay price at which a product clears MIN_NET_PROFIT after all real costs. */
+export function priceForNetProfit(
+  amazonPrice: number,
+  netProfit = MIN_NET_PROFIT,
+  options: { feeRate?: number; bufferRate?: number; promotedRate?: number; amazonTaxRate?: number } = {}
+) {
+  const feeRate = options.feeRate ?? EBAY_DEFAULT_FEE_RATE
+  const bufferRate = options.bufferRate ?? PRICING_BUFFER_RATE
+  const promotedRate = options.promotedRate ?? PROMOTED_AD_RATE
+  const amazonTaxRate = options.amazonTaxRate ?? AMAZON_SOURCE_TAX_RATE
+  const variableRate = clamp(feeRate + bufferRate + promotedRate, 0, 0.6)
+  const amazonLanded = amazonPrice * (1 + amazonTaxRate)
+  // Try low-order fixed fee first, then standard if the resulting price crosses the threshold.
+  const lowPass = (amazonLanded + EBAY_LOW_ORDER_FIXED_FEE + netProfit) / (1 - variableRate)
+  if (lowPass <= EBAY_LOW_ORDER_THRESHOLD) return money(lowPass)
+  return money((amazonLanded + EBAY_DEFAULT_FIXED_FEE + netProfit) / (1 - variableRate))
 }
 
 export function getPricingRecommendation(input: PricingRecommendationInput): PricingRecommendation {

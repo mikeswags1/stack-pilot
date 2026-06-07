@@ -1,5 +1,5 @@
 import { queryRows, sql } from '@/lib/db'
-import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getRecommendedEbayPrice, getTargetRoi } from '@/lib/listing-pricing'
+import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getNetProfit, getRecommendedEbayPrice, getTargetRoi, MIN_NET_PROFIT } from '@/lib/listing-pricing'
 import { getListingPolicyFlags, hasBlockedListingPolicyFlag } from '@/lib/listing-policy'
 import { scrapeAmazonProduct } from '@/lib/amazon-scrape'
 import { getRapidApiKey } from '@/lib/rapidapi'
@@ -1278,8 +1278,11 @@ export async function loadProductSourceProducts(options: { niche?: string | null
     const afterEconomics = afterPolicy.filter((product) =>
       Number.isFinite(product.amazonPrice) && product.amazonPrice > 0 &&
       Number.isFinite(product.ebayPrice) && product.ebayPrice > 0 &&
-      !(Number.isFinite(product.profit) && product.profit < 3) &&
-      product.available !== false
+      product.available !== false &&
+      // TRUE net-profit floor (2026-06-07): take-home after eBay fees + Promoted ads +
+      // Amazon sales tax must clear MIN_NET_PROFIT. Replaces the gross profit>=3 check
+      // that let break-even items (e.g. the $13 camera netting $0.57) into the queue.
+      getNetProfit(product.amazonPrice, product.ebayPrice, { feeRate: EBAY_DEFAULT_FEE_RATE }) >= MIN_NET_PROFIT
     )
     console.info('[source-engine] Rule F filter result', JSON.stringify({
       total: allProducts.length,
