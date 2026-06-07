@@ -1261,6 +1261,20 @@ export async function loadProductSourceProducts(options: { niche?: string | null
       }
       return !blocked
     })
+    // ECONOMICS ALIGNMENT (2026-06-06): mirror the client-side getBulkPreflightIssue
+    // economics checks (dashboard/utils.ts) so the backend only serves products the
+    // browser will ALSO count as publish-ready. Previously the backend passed products
+    // whose STORED psi.profit was fine, but the freshly-recomputed metrics.profit on the
+    // product object came in under the $3 floor (or had an invalid price) — those passed
+    // the backend, failed the client preflight, and made the ready count settle below 30
+    // every batch. Filtering here means fetched count == client-ready count, so the queue
+    // reliably fills to 30.
+    const afterEconomics = afterPolicy.filter((product) =>
+      Number.isFinite(product.amazonPrice) && product.amazonPrice > 0 &&
+      Number.isFinite(product.ebayPrice) && product.ebayPrice > 0 &&
+      !(Number.isFinite(product.profit) && product.profit < 3) &&
+      product.available !== false
+    )
     console.info('[source-engine] Rule F filter result', JSON.stringify({
       total: allProducts.length,
       afterFreshMapping: afterFreshMapping.length,
@@ -1273,8 +1287,10 @@ export async function loadProductSourceProducts(options: { niche?: string | null
       afterPolicy: afterPolicy.length,
       blockedByPolicy: afterWeakTitle.length - afterPolicy.length,
       blockedSamples,
+      afterEconomics: afterEconomics.length,
+      economicsDrops: afterPolicy.length - afterEconomics.length,
     }))
-    return afterPolicy
+    return afterEconomics
       .sort((a, b) => (b.qualityScore || 0) - (a.qualityScore || 0))
       .slice(0, limit)
   } catch {
