@@ -4,8 +4,6 @@ import { SectionIntro } from './shared'
 import { TrialMeter } from './TrialMeter'
 import { getBulkPreflightIssue } from '../utils'
 
-const CONTINUOUS_READY_TARGET = 30
-
 export function ContinuousListingTab({
   finderLoading,
   finderResults,
@@ -36,7 +34,12 @@ export function ContinuousListingTab({
   const hasResults = Boolean(finderResults?.length)
   const isListing = !!listAllProgress && listAllProgress.done < listAllProgress.total
   const publishReadyCount = finderResults?.filter((product) => !getBulkPreflightIssue(product)).length || 0
-  const hasFullReadyQueue = publishReadyCount >= CONTINUOUS_READY_TARGET
+  // List whatever is publish-ready right now. We still TRY to fill 30 cards, but the
+  // pool has thousands of ready products, so a partial batch (e.g. 22) is normal and
+  // should be listable — the queue refills after each batch. Requiring a perfect 30
+  // permanently locked the button because a few cards always fail the stricter
+  // client-side image/preflight check even when the backend marked them ready.
+  const hasReadyProducts = publishReadyCount > 0
   const trialLocked = Boolean(
     trial &&
     !trial.loading &&
@@ -93,14 +96,16 @@ export function ContinuousListingTab({
             <button
               className="btn btn-solid"
               style={{ padding: '14px', fontSize: '13px', fontWeight: 700 }}
-              disabled={!connected || trialLocked || isListing || finderLoading || !hasFullReadyQueue}
+              disabled={!connected || trialLocked || isListing || finderLoading || !hasReadyProducts}
               onClick={onListAll}
             >
               {isListing
                 ? `Listing ${listAllProgress!.done + 1}/${listAllProgress!.total}...`
-                : hasFullReadyQueue
-                  ? `List Ready (${publishReadyCount})`
-                  : `Refilling (${publishReadyCount}/${CONTINUOUS_READY_TARGET})`}
+                : finderLoading
+                  ? `Refreshing (${publishReadyCount})...`
+                  : hasReadyProducts
+                    ? `List Ready (${publishReadyCount})`
+                    : 'No products ready — Shuffle'}
             </button>
           ) : null}
         </div>
@@ -142,7 +147,7 @@ export function ContinuousListingTab({
             listAllProgress={listAllProgress}
             compact={compact}
             trialLocked={trialLocked}
-            requiredReadyCount={CONTINUOUS_READY_TARGET}
+            requiredReadyCount={1}
           />
         ) : null}
       </div>

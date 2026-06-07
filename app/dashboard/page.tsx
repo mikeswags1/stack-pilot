@@ -1460,17 +1460,10 @@ export default function Dashboard() {
     if (subscriptionState.plan === 'trial') {
       products = products.slice(0, Math.max(0, subscriptionState.trialRemaining))
     }
-    const requiredContinuousBatch = subscriptionState.plan === 'trial'
-      ? Math.min(FINDER_STOCK_TARGET, Math.max(1, subscriptionState.trialRemaining))
-      : FINDER_STOCK_TARGET
-    if (products.length < requiredContinuousBatch) {
-      setContinuousFinderState((prev) => ({ ...prev, results: visibleProducts, listAllProgress: null }))
-      setBanner({
-        tone: 'error',
-        text: `Continuous Listing is still refilling (${products.length}/${requiredContinuousBatch}). I stopped before listing a partial batch. Wait for List Ready (30), then run it.`,
-      })
-      return
-    }
+    // List whatever is publish-ready right now (>= 1). The source pool has thousands of
+    // ready products, so a partial batch (e.g. 22) is normal — the queue refills after
+    // each run. (Previously this required a full 30 and permanently blocked listing
+    // whenever a few cards failed the stricter client-side preflight check.)
     if (products.length === 0) {
       setBanner({
         tone: 'error',
