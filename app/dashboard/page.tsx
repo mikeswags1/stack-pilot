@@ -164,6 +164,13 @@ type ListingState = {
 }
 
 const FINDER_STOCK_TARGET = 30
+// Only auto-refill the continuous queue when it actually runs low — NOT every time
+// it's below a perfect 30. The ready pool routinely settles in the low-to-mid 20s
+// (a few of every 30 cards fail the stricter client-side preflight), so triggering
+// auto-reseed at "< 30" caused an endless refresh loop every 8 seconds. Refilling
+// only when the queue drops below this floor keeps a healthy batch on screen and
+// tops up after you list, without the constant churn.
+const CONTINUOUS_RESEED_FLOOR = 10
 const FINDER_ROTATION_POOL_TARGET = 90
 
 function tagFinderProducts(products: FinderProduct[], sourceMode: 'niche' | 'continuous') {
@@ -1240,7 +1247,7 @@ export default function Dashboard() {
       tab === 'continuous' &&
       !continuousFinderState.loading &&
       continuousFinderState.results !== null &&
-      continuousPoolSize < FINDER_STOCK_TARGET
+      continuousPoolSize < CONTINUOUS_RESEED_FLOOR
     ) {
       const now = Date.now()
       if (now - continuousReseedTimerRef.current < 8_000) return
