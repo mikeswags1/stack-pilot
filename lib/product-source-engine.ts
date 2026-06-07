@@ -924,7 +924,13 @@ export async function refreshProductSourcePrices(options: { limit?: number; stal
 export async function loadProductSourceProducts(options: { niche?: string | null; limit?: number; excludeAsins?: Set<string> | string[] } = {}) {
   await ensureProductSourceTables()
   const limit = Math.max(1, Math.min(900, options.limit || 120))
-  const rowLimit = Math.min(2500, Math.max(limit, limit * 3))
+  // Fetch a MUCH wider candidate window than `limit` before the JS quality filters
+  // run (stale-title, distinct-images, policy, economics). Those filters can reject
+  // 70-85% of the top-ranked rows, so a 3x window (e.g. 270 rows for a 90 request)
+  // left only ~14 publish-ready — the queue could never refill to 30 even though the
+  // pool has thousands ready. A 12x window (capped at 2500) gives the filters enough
+  // raw candidates that 30+ survive in a single fetch. (2026-06-06)
+  const rowLimit = Math.min(2500, Math.max(limit, limit * 12))
   // Build a normalized exclude set from either a Set or array of ASINs.
   // When excludeAsins are supplied we fetch extra rows (up to rowLimit + excludeCount)
   // so the post-filter result still has at least `limit` candidates.
