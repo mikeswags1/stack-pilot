@@ -164,13 +164,6 @@ type ListingState = {
 }
 
 const FINDER_STOCK_TARGET = 30
-// Only auto-refill the continuous queue when it actually runs low — NOT every time
-// it's below a perfect 30. The ready pool routinely settles in the low-to-mid 20s
-// (a few of every 30 cards fail the stricter client-side preflight), so triggering
-// auto-reseed at "< 30" caused an endless refresh loop every 8 seconds. Refilling
-// only when the queue drops below this floor keeps a healthy batch on screen and
-// tops up after you list, without the constant churn.
-const CONTINUOUS_RESEED_FLOOR = 10
 const FINDER_ROTATION_POOL_TARGET = 90
 
 function tagFinderProducts(products: FinderProduct[], sourceMode: 'niche' | 'continuous') {
@@ -354,7 +347,6 @@ export default function Dashboard() {
   // Start at 1 so the initial display is already shuffled (tick=0 would always show
   // the same deterministic first-30 slice — no variety for the user on first load).
   const [finderRotationTick, setFinderRotationTick] = useState(1)
-  const continuousReseedTimerRef = useRef<number>(0)
   const continuousRejectedAsinsRef = useRef<Set<string>>(new Set())
   const continuousBackfillPromiseRef = useRef<Promise<FinderProduct[]> | null>(null)
 
@@ -1241,28 +1233,11 @@ export default function Dashboard() {
   // Auto-reseed continuous listing when the pool drops below the display threshold.
   // This keeps it "continuous" — once the current batch is listed/removed, a fresh
   // batch is pulled automatically so the user never hits an empty queue.
-  const continuousPoolSize = continuousFinderState.results?.length ?? 0
-  useEffect(() => {
-    if (
-      tab === 'continuous' &&
-      !continuousFinderState.loading &&
-      continuousFinderState.results !== null &&
-      continuousPoolSize < CONTINUOUS_RESEED_FLOOR
-    ) {
-      const now = Date.now()
-      if (now - continuousReseedTimerRef.current < 8_000) return
-      continuousReseedTimerRef.current = now
-      ensureContinuousQueueTarget('auto_reseed_below_30', {
-        baseProducts: continuousFinderState.results,
-        forceRefresh: true,
-        setLoading: true,
-      }).catch((err: unknown) => {
-        console.warn('[continuousAutoReseed] error', err)
-        setContinuousFinderState((prev) => ({ ...prev, loading: false }))
-      })
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [continuousPoolSize, tab, ensureContinuousQueueTarget])
+  // AUTO-RESEED REMOVED (2026-06-06). This timer-driven effect was the cause of the
+  // never-ending "Refreshing…" loop: it re-fired every 8s whenever the queue was below
+  // a threshold, and the queue legitimately settles below that threshold, so it spun
+  // forever. The queue now refreshes ONLY on explicit user action (Shuffle Queue, Sync
+  // eBay, after a listing batch) and on first tab open. No background timer.
 
   const publishFinderProduct = useCallback(
     async (product: FinderProduct, opts?: { trusted?: boolean; categoryId?: string }) => {
