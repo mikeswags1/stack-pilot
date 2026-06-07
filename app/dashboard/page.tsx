@@ -1230,14 +1230,35 @@ export default function Dashboard() {
     }
   }, [tab, nicheState.value, finderState.results, finderState.loading, finderState.error, handleFindProducts])
 
-  // Auto-reseed continuous listing when the pool drops below the display threshold.
-  // This keeps it "continuous" — once the current batch is listed/removed, a fresh
-  // batch is pulled automatically so the user never hits an empty queue.
-  // AUTO-RESEED REMOVED (2026-06-06). This timer-driven effect was the cause of the
-  // never-ending "Refreshing…" loop: it re-fired every 8s whenever the queue was below
-  // a threshold, and the queue legitimately settles below that threshold, so it spun
-  // forever. The queue now refreshes ONLY on explicit user action (Shuffle Queue, Sync
-  // eBay, after a listing batch) and on first tab open. No background timer.
+  // AUTO-RESEED TIMER REMOVED (2026-06-06). The old effect re-fired every 8s whenever the
+  // queue was below a threshold and spun forever. Replaced with the ONE-SHOT, event-driven
+  // recovery below: when the queue becomes EMPTY (e.g. after listing all 30) and we're not
+  // listing/loading, refill exactly once. A ref guard prevents any loop — it only re-arms
+  // after the queue is non-empty again. No background timer; no churn during a batch.
+  const continuousEmptyRecoveryRef = useRef(false)
+  useEffect(() => {
+    const len = continuousFinderState.results?.length ?? null
+    if (len === null || len > 0) {
+      continuousEmptyRecoveryRef.current = false // re-arm once the queue has products
+      return
+    }
+    // len === 0 — queue is empty
+    if (tab !== 'continuous' || continuousFinderState.loading) return
+    const progress = continuousFinderState.listAllProgress
+    const listing = !!progress && progress.done < progress.total
+    if (listing) return // never refill mid-batch (keeps the batch locked)
+    if (continuousEmptyRecoveryRef.current) return // already refilled once for this empty state
+    continuousEmptyRecoveryRef.current = true
+    console.info('[continuousQueue] empty-queue recovery — refilling to 30 once (no timer)')
+    void ensureContinuousQueueTarget('empty_queue_recovery', {
+      baseProducts: [],
+      forceRefresh: true,
+      setLoading: true,
+    }).catch((err: unknown) => {
+      console.warn('[continuousQueue] empty-recovery failed', err)
+      setContinuousFinderState((prev) => ({ ...prev, loading: false }))
+    })
+  }, [continuousFinderState.results, continuousFinderState.loading, continuousFinderState.listAllProgress, tab, ensureContinuousQueueTarget])
 
   const publishFinderProduct = useCallback(
     async (product: FinderProduct, opts?: { trusted?: boolean; categoryId?: string }) => {
