@@ -4,6 +4,8 @@ import { SectionIntro } from './shared'
 import { TrialMeter } from './TrialMeter'
 import { getBulkPreflightIssue } from '../utils'
 
+const CONTINUOUS_READY_TARGET = 30
+
 export function ContinuousListingTab({
   finderLoading,
   finderResults,
@@ -34,6 +36,7 @@ export function ContinuousListingTab({
   const hasResults = Boolean(finderResults?.length)
   const isListing = !!listAllProgress && listAllProgress.done < listAllProgress.total
   const publishReadyCount = finderResults?.filter((product) => !getBulkPreflightIssue(product)).length || 0
+  const hasFullReadyQueue = publishReadyCount >= CONTINUOUS_READY_TARGET
   const trialLocked = Boolean(
     trial &&
     !trial.loading &&
@@ -90,10 +93,14 @@ export function ContinuousListingTab({
             <button
               className="btn btn-solid"
               style={{ padding: '14px', fontSize: '13px', fontWeight: 700 }}
-              disabled={!connected || trialLocked || isListing || publishReadyCount === 0}
+              disabled={!connected || trialLocked || isListing || finderLoading || !hasFullReadyQueue}
               onClick={onListAll}
             >
-              {isListing ? `Listing ${listAllProgress!.done + 1}/${listAllProgress!.total}...` : `List Ready (${publishReadyCount})`}
+              {isListing
+                ? `Listing ${listAllProgress!.done + 1}/${listAllProgress!.total}...`
+                : hasFullReadyQueue
+                  ? `List Ready (${publishReadyCount})`
+                  : `Refilling (${publishReadyCount}/${CONTINUOUS_READY_TARGET})`}
             </button>
           ) : null}
         </div>
@@ -135,6 +142,7 @@ export function ContinuousListingTab({
             listAllProgress={listAllProgress}
             compact={compact}
             trialLocked={trialLocked}
+            requiredReadyCount={CONTINUOUS_READY_TARGET}
           />
         ) : null}
       </div>

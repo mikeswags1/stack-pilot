@@ -1239,12 +1239,11 @@ export default function Dashboard() {
     if (
       tab === 'continuous' &&
       !continuousFinderState.loading &&
-      !continuousFinderState.error &&
       continuousFinderState.results !== null &&
       continuousPoolSize < FINDER_STOCK_TARGET
     ) {
       const now = Date.now()
-      if (now - continuousReseedTimerRef.current < 45_000) return  // debounce: max 1 reseed per 45s
+      if (now - continuousReseedTimerRef.current < 8_000) return
       continuousReseedTimerRef.current = now
       ensureContinuousQueueTarget('auto_reseed_below_30', {
         baseProducts: continuousFinderState.results,
@@ -1468,7 +1467,7 @@ export default function Dashboard() {
       setContinuousFinderState((prev) => ({ ...prev, results: visibleProducts, listAllProgress: null }))
       setBanner({
         tone: 'error',
-        text: `Continuous Listing only has ${products.length} publish-ready product${products.length === 1 ? '' : 's'} after refilling. I stopped before listing a tiny batch. Hit Shuffle Queue once more while StackPilot pulls replacements.`,
+        text: `Continuous Listing is still refilling (${products.length}/${requiredContinuousBatch}). I stopped before listing a partial batch. Wait for List Ready (30), then run it.`,
       })
       return
     }

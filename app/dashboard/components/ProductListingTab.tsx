@@ -342,6 +342,7 @@ export function FinderResults({
   listAllProgress,
   compact,
   trialLocked,
+  requiredReadyCount = 1,
 }: {
   connected: boolean
   niche: string
@@ -353,6 +354,7 @@ export function FinderResults({
   listAllProgress: ListProgress | null
   compact?: boolean
   trialLocked?: boolean
+  requiredReadyCount?: number
 }) {
   const isListing = !!listAllProgress && listAllProgress.done < listAllProgress.total
   const listingDone = !!listAllProgress && listAllProgress.done === listAllProgress.total
@@ -362,6 +364,7 @@ export function FinderResults({
   const listedCount = listAllProgress ? Math.max(0, listAllProgress.total - listAllProgress.errors) : 0
   const publishReadyCount = results.filter((product) => !getBulkPreflightIssue(product)).length
   const candidateCount = Math.max(0, results.length - publishReadyCount)
+  const needsMoreReadyProducts = publishReadyCount < requiredReadyCount
 
   return (
     <div>
@@ -383,8 +386,8 @@ export function FinderResults({
         </div>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
           {!isListing && !listingDone ? (
-            <button className="btn btn-gold btn-sm" style={{ fontSize: '10px' }} disabled={!connected || trialLocked || publishReadyCount === 0} onClick={onListAll}>
-              List Ready ({publishReadyCount})
+            <button className="btn btn-gold btn-sm" style={{ fontSize: '10px' }} disabled={!connected || trialLocked || publishReadyCount === 0 || needsMoreReadyProducts} onClick={onListAll}>
+              {needsMoreReadyProducts ? `Refilling (${publishReadyCount}/${requiredReadyCount})` : `List Ready (${publishReadyCount})`}
             </button>
           ) : null}
           {isListing ? (
