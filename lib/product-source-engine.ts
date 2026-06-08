@@ -1228,7 +1228,12 @@ export async function loadProductSourceProducts(options: { niche?: string | null
     const staleSamples: string[] = []
     const afterFreshMapping = allProducts.filter((product) => {
       const score = getTitleMatchScore(product.title, product.cachedTitle)
-      const stale = Boolean(product.cachedTitle && score < 0.45)
+      // Loosened 0.45 -> 0.18 (2026-06-07). A 45% word-overlap requirement was dropping
+      // 375 of 531 eligible products (71%) — legit items whose stored title and cached
+      // Amazon title are just worded differently (truncated vs full, brand prefix, etc.).
+      // True ASIN cross-mapping is already caught at LIST time (ASIN_MISMATCH + auto-
+      // deactivate), so this queue-time gate only needs to catch egregious mismatches.
+      const stale = Boolean(product.cachedTitle && score < 0.18)
       if (stale && staleSamples.length < 5) {
         staleSamples.push(`${product.asin}: ${score.toFixed(2)}`)
       }
