@@ -751,13 +751,12 @@ export default function Dashboard() {
         awaiting: (data.awaiting || []).filter((order) => !isRefundedOrder(order)),
         syncTime: new Date().toLocaleTimeString(),
       }))
-      if (tab === 'continuous') {
-        await ensureContinuousQueueTarget('sync_ebay', {
-          baseProducts: continuousFinderState.results,
-          forceRefresh: true,
-          setLoading: true,
-        })
-      }
+      // NOTE (2026-06-07): order sync no longer refreshes the continuous queue. It used
+      // to call ensureContinuousQueueTarget('sync_ebay') here, but because loadOrders is
+      // re-created whenever the queue changes AND the bootstrap effect depends on
+      // loadOrders, that created an infinite refresh loop (sync→queue change→new
+      // loadOrders identity→effect re-runs→sync...). The queue refreshes only on
+      // Shuffle, post-listing, and one-shot empty recovery now.
     } catch (error) {
       const reconnectRequired = isReconnectError(error)
       setConnectionState((prev) => ({
@@ -774,7 +773,8 @@ export default function Dashboard() {
     } finally {
       setConnectionState((prev) => ({ ...prev, syncing: false }))
     }
-  }, [continuousFinderState.results, ensureContinuousQueueTarget, tab])
+    // Stable identity (no queue/tab deps) so it can't retrigger the bootstrap effect.
+  }, [])
 
   const loadFinancials = useCallback(async (period?: string) => {
     setFinancialState((prev) => ({ ...prev, loading: true, error: null }))
@@ -1012,13 +1012,20 @@ export default function Dashboard() {
     }
   }, [])
 
+  // Bootstrap ONCE per authentication. Must NOT depend on the load* callbacks —
+  // several of them change identity as state updates, and re-running this effect on
+  // every identity change caused an endless sync/refresh loop. (2026-06-07)
+  const bootstrappedRef = useRef(false)
   useEffect(() => {
-    if (status === 'authenticated') {
+    if (status === 'authenticated' && !bootstrappedRef.current) {
+      bootstrappedRef.current = true
       void loadDashboardBootstrap()
       void loadOrders()
       void loadFinancials()
     }
-  }, [loadDashboardBootstrap, loadFinancials, loadOrders, status])
+    if (status !== 'authenticated') bootstrappedRef.current = false
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status])
 
   useEffect(() => {
     if (status === 'authenticated' && connectionState.ebayConnected && (tab === 'product' || tab === 'continuous')) {
