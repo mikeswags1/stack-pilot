@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { apiOk, apiError } from '@/lib/api-response'
 import { queryRows } from '@/lib/db'
+import { getSourceReadinessAudit } from '@/lib/source-readiness-audit'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,17 +13,24 @@ export async function GET(req: NextRequest) {
 
   const niche = req.nextUrl.searchParams.get('niche') || null
 
-  const [totalPoolRows, totalListedRows, totalValidRows, validByNicheRows] = await Promise.all([
+  const [totalPoolRows, totalListedRows, totalValidRows, validByNicheRows, readinessAudit] = await Promise.all([
     queryRows<{ n: string }>`SELECT COUNT(*) as n FROM product_source_items WHERE active = TRUE`,
     queryRows<{ n: string }>`SELECT COUNT(DISTINCT asin) as n FROM listed_asins WHERE ended_at IS NULL`,
     queryRows<{ n: string }>`
       SELECT COUNT(*) as n FROM product_source_items psi
       LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
       WHERE psi.active = TRUE
-        AND psi.profit >= 3 AND psi.roi >= 25 AND psi.risk <> 'HIGH'
+        AND psi.profit >= 4 AND psi.roi >= 25 AND psi.risk <> 'HIGH'
         AND psi.image_url IS NOT NULL AND psi.image_url <> ''
         AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
         AND COALESCE(apc.available, TRUE) <> FALSE
+        AND apc.fast_fulfillment IS DISTINCT FROM FALSE
+        AND (apc.delivery_days_max IS NULL OR apc.delivery_days_max <= 8)
+        AND (psi.ebay_competitor_count IS NULL OR psi.ebay_competitor_count <= 50)
+        AND (psi.ebay_competitor_min_price IS NULL OR psi.amazon_price < psi.ebay_competitor_min_price * 1.65)
+        AND apc.asin IS NOT NULL
+        AND jsonb_typeof(apc.images) = 'array'
+        AND jsonb_array_length(apc.images) >= 2
         AND NOT EXISTS (
           SELECT 1 FROM listed_asins la
           WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
@@ -33,16 +41,24 @@ export async function GET(req: NextRequest) {
       FROM product_source_items psi
       LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
       WHERE psi.active = TRUE
-        AND psi.profit >= 3 AND psi.roi >= 25 AND psi.risk <> 'HIGH'
+        AND psi.profit >= 4 AND psi.roi >= 25 AND psi.risk <> 'HIGH'
         AND psi.image_url IS NOT NULL AND psi.image_url <> ''
         AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
         AND COALESCE(apc.available, TRUE) <> FALSE
+        AND apc.fast_fulfillment IS DISTINCT FROM FALSE
+        AND (apc.delivery_days_max IS NULL OR apc.delivery_days_max <= 8)
+        AND (psi.ebay_competitor_count IS NULL OR psi.ebay_competitor_count <= 50)
+        AND (psi.ebay_competitor_min_price IS NULL OR psi.amazon_price < psi.ebay_competitor_min_price * 1.65)
+        AND apc.asin IS NOT NULL
+        AND jsonb_typeof(apc.images) = 'array'
+        AND jsonb_array_length(apc.images) >= 2
         AND NOT EXISTS (
           SELECT 1 FROM listed_asins la
           WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
         )
       GROUP BY psi.source_niche ORDER BY valid_count DESC LIMIT 40
     `,
+    getSourceReadinessAudit().catch(() => null),
   ])
 
   let nicheStats: Record<string, number | string> | null = null
@@ -88,6 +104,7 @@ export async function GET(req: NextRequest) {
     totalPool: Number(totalPoolRows[0]?.n ?? 0),
     totalAlreadyListed: Number(totalListedRows[0]?.n ?? 0),
     totalTrulyValid: Number(totalValidRows[0]?.n ?? 0),
+    readinessAudit,
     nicheStats,
     validByNiche: validByNicheRows.map((r) => ({
       niche: r.source_niche,

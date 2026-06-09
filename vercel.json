@@ -31,6 +31,9 @@
     "app/api/cron/source-graph/route.ts": {
       "maxDuration": 300
     },
+    "app/api/cron/replenish-ready-queue/route.ts": {
+      "maxDuration": 300
+    },
     "app/api/cron/demand-scout/route.ts": {
       "maxDuration": 300
     }
@@ -83,6 +86,10 @@
     {
       "path": "/api/cron/source-graph",
       "schedule": "40 */3 * * *"
+    },
+    {
+      "path": "/api/cron/replenish-ready-queue?platformTarget=300&rawTarget=5000",
+      "schedule": "*/10 * * * *"
     }
   ]
 }

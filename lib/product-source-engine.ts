@@ -121,6 +121,7 @@ type ProductSourceRow = {
   source_quality: string | null
   raw: Record<string, unknown> | null
   cached_title?: string | null
+  cached_amazon_price?: string | number | null
   cached_primary_image?: string | null
   cached_images?: string[] | null
   cached_features?: string[] | null
@@ -413,7 +414,12 @@ function normalizeProduct(input: SourceProductInput): (SourceEngineProduct & { s
 
 function rowToProduct(row: ProductSourceRow): SourceEngineProduct {
   const raw = row.raw || {}
-  const amazonPrice = parseNumber(row.amazon_price)
+  // Prefer the verified Amazon cache over the original search-result row. Search rows can
+  // go stale or carry a mismatched title for the ASIN; the cache is fetched by ASIN and is
+  // what list-product validates again immediately before publishing.
+  const canonicalTitle = String(row.cached_title || row.title || '').trim()
+  const cachedAmazonPrice = parseNumber(row.cached_amazon_price)
+  const amazonPrice = cachedAmazonPrice > 0 ? cachedAmazonPrice : parseNumber(row.amazon_price)
   const ebayPrice = getRecommendedEbayPrice(amazonPrice, EBAY_DEFAULT_FEE_RATE)
   const metrics = getListingMetrics(amazonPrice, ebayPrice, EBAY_DEFAULT_FEE_RATE)
   const rawImages = Array.isArray(raw.images) ? raw.images as string[] : []
@@ -428,7 +434,7 @@ function rowToProduct(row: ProductSourceRow): SourceEngineProduct {
   const rawSpecs = Array.isArray(raw.specs) ? raw.specs as Array<[string, string]> : undefined
   const product: SourceEngineProduct = {
     asin: row.asin,
-    title: row.title,
+    title: canonicalTitle,
     amazonPrice,
     ebayPrice,
     profit: metrics.profit,
@@ -950,7 +956,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
           ? await queryRows<ProductSourceRow>`
               SELECT psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price, psi.profit, psi.roi, psi.image_url, psi.risk,
                      psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
-                     apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
+                     apc.title AS cached_title, apc.amazon_price AS cached_amazon_price, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
                      apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
                      apc.available AS cached_available, apc.prime_eligible AS cached_prime_eligible,
                      apc.delivery_days_max AS cached_delivery_days_max, apc.fast_fulfillment AS cached_fast_fulfillment,
@@ -1020,7 +1026,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
           : await queryRows<ProductSourceRow>`
               SELECT psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price, psi.profit, psi.roi, psi.image_url, psi.risk,
                      psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
-                     apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
+                     apc.title AS cached_title, apc.amazon_price AS cached_amazon_price, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
                      apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
                      apc.available AS cached_available, apc.prime_eligible AS cached_prime_eligible,
                      apc.delivery_days_max AS cached_delivery_days_max, apc.fast_fulfillment AS cached_fast_fulfillment,
@@ -1090,7 +1096,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
           ? await queryRows<ProductSourceRow>`
               SELECT psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price, psi.profit, psi.roi, psi.image_url, psi.risk,
                      psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
-                     apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
+                     apc.title AS cached_title, apc.amazon_price AS cached_amazon_price, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
                      apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
                      apc.available AS cached_available, apc.prime_eligible AS cached_prime_eligible,
                      apc.delivery_days_max AS cached_delivery_days_max, apc.fast_fulfillment AS cached_fast_fulfillment,
@@ -1159,7 +1165,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
           : await queryRows<ProductSourceRow>`
               SELECT psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price, psi.profit, psi.roi, psi.image_url, psi.risk,
                      psi.sales_volume, psi.rating, psi.review_count, psi.total_score, psi.intelligence_score, psi.source_quality, psi.raw,
-                     apc.title AS cached_title, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
+                     apc.title AS cached_title, apc.amazon_price AS cached_amazon_price, apc.primary_image AS cached_primary_image, apc.images AS cached_images,
                      apc.features AS cached_features, apc.description AS cached_description, apc.specs AS cached_specs,
                      apc.available AS cached_available, apc.prime_eligible AS cached_prime_eligible,
                      apc.delivery_days_max AS cached_delivery_days_max, apc.fast_fulfillment AS cached_fast_fulfillment,

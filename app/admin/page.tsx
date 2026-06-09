@@ -53,6 +53,40 @@ type SourceNiche = {
   newestSeenAt: string | null
 }
 
+type SourceReadinessStage = {
+  key: string
+  label: string
+  count: number
+  dropFromPrevious: number
+}
+
+type SourceReadinessReason = {
+  reason: string
+  label: string
+  count: number
+}
+
+type SourceReadinessAudit = {
+  activePool: number
+  platformReady: number
+  stages: SourceReadinessStage[]
+  reasons: SourceReadinessReason[]
+}
+
+type SourceReplenishmentRun = {
+  id: string
+  mode: string
+  platformTarget: number
+  rawCandidateTarget: number
+  platformReadyBefore: number
+  platformReadyAfter: number
+  rawCandidatesBefore: number
+  rawCandidatesAfter: number
+  continuousSnapshotProducts: number
+  durationMs: number
+  createdAt: string
+}
+
 type TrendingNiche = {
   name: string
   activeProducts: number
@@ -240,6 +274,12 @@ type Stats = {
       unavailable: number
       blockedQuality: number
       nichesWith30Ready: number
+    }
+    readinessAudit: SourceReadinessAudit | null
+    replenishment?: {
+      platformTarget: number
+      rawCandidateTarget: number
+      recentRuns: SourceReplenishmentRun[]
     }
     cache: {
       totalNiches: number
@@ -674,6 +714,8 @@ export default function AdminPage() {
   const listingSummary = stats.listingSummary
   const source = stats.sourceHealth.sourceEngine
   const publishReadiness = stats.sourceHealth.publishReadiness
+  const readinessAudit = stats.sourceHealth.readinessAudit
+  const replenishment = stats.sourceHealth.replenishment
   const cache = stats.sourceHealth.cache
   const continuous = stats.sourceHealth.continuous
   const intelligence = stats.sourceHealth.intelligence
@@ -755,9 +797,75 @@ export default function AdminPage() {
             <SmallStat label="30 possible" value={formatNumber(nicheReadinessSummary.thin)} />
             <SmallStat label="Repairing" value={formatNumber(nicheReadinessSummary.repairing)} />
           </div>
+          {readinessAudit ? (
+            <>
+              <div className="admin-subtle-line">
+                Readiness audit: {formatNumber(readinessAudit.activePool)} active source candidates become {formatNumber(readinessAudit.platformReady)} platform-ready products before user-specific duplicate checks.
+              </div>
+              <div className="admin-health-grid" style={{ marginTop: '14px' }}>
+                {readinessAudit.stages.map((item) => (
+                  <SmallStat
+                    key={item.key}
+                    label={item.label}
+                    value={formatNumber(item.count)}
+                    detail={item.dropFromPrevious > 0 ? `-${formatNumber(item.dropFromPrevious)}` : undefined}
+                    tone={item.dropFromPrevious > 1000 ? 'warn' : undefined}
+                  />
+                ))}
+              </div>
+              <div className="admin-table-wrap" style={{ marginTop: '14px' }}>
+                <table className="admin-table">
+                  <thead>
+                    <tr>
+                      <th>First failing reason</th>
+                      <th>Products</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {readinessAudit.reasons
+                      .filter((reason) => reason.count > 0)
+                      .map((reason) => (
+                        <tr key={reason.reason}>
+                          <td>{reason.label}</td>
+                          <td><strong>{formatNumber(reason.count)}</strong></td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : null}
           <div className="admin-subtle-line">
             Done means 60+ backend publish-ready products, so Product Listing has enough buffer to present 30 after its final preflight filters. Thin means 30-59 and can dip below 30 after exclusions. Repairing means under 30.
           </div>
+          {replenishment?.recentRuns?.length ? (
+            <div className="admin-table-wrap" style={{ marginTop: '14px' }}>
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>Replenisher run</th>
+                    <th>Ready before</th>
+                    <th>Ready after</th>
+                    <th>Raw candidates</th>
+                    <th>Snapshot</th>
+                    <th>Duration</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {replenishment.recentRuns.map((run) => (
+                    <tr key={run.id}>
+                      <td>{formatDateTime(run.createdAt)}</td>
+                      <td>{formatNumber(run.platformReadyBefore)}</td>
+                      <td><strong>{formatNumber(run.platformReadyAfter)}</strong></td>
+                      <td>{formatNumber(run.rawCandidatesAfter)}</td>
+                      <td>{formatNumber(run.continuousSnapshotProducts)}</td>
+                      <td>{formatDuration(run.durationMs)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
           <div className="admin-table-wrap" style={{ marginTop: '14px' }}>
             <table className="admin-table">
               <thead>
@@ -1880,12 +1988,13 @@ function MetricCard({ label, value, detail }: { label: string; value: string; de
   )
 }
 
-function SmallStat({ label, value, tone }: { label: string; value: string; tone?: 'warn' | 'bad' | 'good' }) {
+function SmallStat({ label, value, detail, tone }: { label: string; value: string; detail?: string; tone?: 'warn' | 'bad' | 'good' }) {
   const toneColor = tone === 'warn' ? 'var(--gold)' : tone === 'bad' ? 'var(--red)' : tone === 'good' ? 'var(--green)' : undefined
   return (
     <div className="admin-small-stat">
       <span>{label}</span>
       <strong style={toneColor ? { color: toneColor } : undefined}>{value}</strong>
+      {detail ? <small>{detail}</small> : null}
     </div>
   )
 }

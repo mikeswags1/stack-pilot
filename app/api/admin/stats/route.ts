@@ -9,6 +9,8 @@ import { EBAY_DEFAULT_FEE_RATE } from '@/lib/listing-pricing'
 import { ensureProductSourceTables } from '@/lib/product-source-engine'
 import { getSourceEngineIntelligenceSummary, refreshSourceIntelligenceState, reserveSourceAutopilotRun } from '@/lib/source-intelligence'
 import { getRecentSourceAgentRuns } from '@/lib/source-agent'
+import { getSourceReadinessAudit } from '@/lib/source-readiness-audit'
+import { getRecentReplenishmentRuns } from '@/lib/source-replenishment'
 
 const ADMIN_EMAILS = ['msawaged12@gmail.com', 'mikeswags1@gmail.com']
 
@@ -214,6 +216,8 @@ export async function GET(req: NextRequest) {
     sourceIntelligenceSummary,
     sourceAgentRuns,
     agentStatusRows,
+    sourceReadinessAudit,
+    sourceReplenishmentRuns,
   ] = await Promise.all([
     queryRows<UserRow>`
       SELECT id, email, name, created_at FROM users ORDER BY created_at DESC
@@ -389,6 +393,8 @@ export async function GET(req: NextRequest) {
         SELECT
           psi.asin,
           psi.source_niche,
+          psi.title,
+          psi.amazon_price,
           psi.profit,
           psi.roi,
           psi.risk,
@@ -396,6 +402,10 @@ export async function GET(req: NextRequest) {
           COALESCE(psi.source_quality, 'candidate') AS source_quality,
           apc.asin AS cached_asin,
           apc.available AS cached_available,
+          apc.fast_fulfillment AS cached_fast_fulfillment,
+          apc.delivery_days_max AS cached_delivery_days_max,
+          psi.ebay_competitor_count,
+          psi.ebay_competitor_min_price,
           CASE
             WHEN apc.images IS NOT NULL AND jsonb_typeof(apc.images) = 'array'
             THEN jsonb_array_length(apc.images)
@@ -421,6 +431,26 @@ export async function GET(req: NextRequest) {
             AND image_url <> ''
             AND source_quality <> 'reject'
             AND COALESCE(cached_available, TRUE) <> FALSE
+            AND cached_fast_fulfillment IS DISTINCT FROM FALSE
+            AND (cached_delivery_days_max IS NULL OR cached_delivery_days_max <= 8)
+            AND (ebay_competitor_count IS NULL OR ebay_competitor_count <= 50)
+            AND (ebay_competitor_min_price IS NULL OR amazon_price < ebay_competitor_min_price * 1.65)
+            AND (title IS NULL OR (
+              title NOT ILIKE '%television%' AND title NOT ILIKE '% tv %'
+              AND title NOT ILIKE '%couch%' AND title NOT ILIKE '%sofa%'
+              AND title NOT ILIKE '%mattress%' AND title NOT ILIKE '%recliner%'
+              AND title NOT ILIKE '%refrigerator%' AND title NOT ILIKE '%treadmill%'
+              AND title NOT ILIKE '%kindle%' AND title NOT ILIKE '%echo dot%'
+              AND title NOT ILIKE '%fire tv%' AND title NOT ILIKE '%ring doorbell%'
+              AND title NOT ILIKE '%t-shirt%' AND title NOT ILIKE '%hoodie%'
+              AND title NOT ILIKE '%pants%' AND title NOT ILIKE '%jeans%'
+              AND title NOT ILIKE '%dress%' AND title NOT ILIKE '%halter%'
+              AND title NOT ILIKE '%tank top%' AND title NOT ILIKE '%jacket%'
+              AND title NOT ILIKE '%leggings%' AND title NOT ILIKE '%skirt%'
+              AND title NOT ILIKE '%blouse%' AND title NOT ILIKE '%bikini%'
+              AND title NOT ILIKE '%swimsuit%' AND title NOT ILIKE '%sweater%'
+              AND title NOT ILIKE '%cardigan%'
+            ))
           ) AS viable,
           (
             profit >= 4
@@ -430,6 +460,26 @@ export async function GET(req: NextRequest) {
             AND image_url <> ''
             AND source_quality <> 'reject'
             AND COALESCE(cached_available, TRUE) <> FALSE
+            AND cached_fast_fulfillment IS DISTINCT FROM FALSE
+            AND (cached_delivery_days_max IS NULL OR cached_delivery_days_max <= 8)
+            AND (ebay_competitor_count IS NULL OR ebay_competitor_count <= 50)
+            AND (ebay_competitor_min_price IS NULL OR amazon_price < ebay_competitor_min_price * 1.65)
+            AND (title IS NULL OR (
+              title NOT ILIKE '%television%' AND title NOT ILIKE '% tv %'
+              AND title NOT ILIKE '%couch%' AND title NOT ILIKE '%sofa%'
+              AND title NOT ILIKE '%mattress%' AND title NOT ILIKE '%recliner%'
+              AND title NOT ILIKE '%refrigerator%' AND title NOT ILIKE '%treadmill%'
+              AND title NOT ILIKE '%kindle%' AND title NOT ILIKE '%echo dot%'
+              AND title NOT ILIKE '%fire tv%' AND title NOT ILIKE '%ring doorbell%'
+              AND title NOT ILIKE '%t-shirt%' AND title NOT ILIKE '%hoodie%'
+              AND title NOT ILIKE '%pants%' AND title NOT ILIKE '%jeans%'
+              AND title NOT ILIKE '%dress%' AND title NOT ILIKE '%halter%'
+              AND title NOT ILIKE '%tank top%' AND title NOT ILIKE '%jacket%'
+              AND title NOT ILIKE '%leggings%' AND title NOT ILIKE '%skirt%'
+              AND title NOT ILIKE '%blouse%' AND title NOT ILIKE '%bikini%'
+              AND title NOT ILIKE '%swimsuit%' AND title NOT ILIKE '%sweater%'
+              AND title NOT ILIKE '%cardigan%'
+            ))
             AND cached_asin IS NOT NULL
             AND cached_image_count >= 2
           ) AS enriched
@@ -455,10 +505,14 @@ export async function GET(req: NextRequest) {
             profit >= 4
             AND roi >= 25
             AND risk <> 'HIGH'
-            AND image_url IS NOT NULL
-            AND image_url <> ''
-            AND source_quality <> 'reject'
-          )
+              AND image_url IS NOT NULL
+              AND image_url <> ''
+              AND source_quality <> 'reject'
+              AND cached_fast_fulfillment IS DISTINCT FROM FALSE
+              AND (cached_delivery_days_max IS NULL OR cached_delivery_days_max <= 8)
+              AND (ebay_competitor_count IS NULL OR ebay_competitor_count <= 50)
+              AND (ebay_competitor_min_price IS NULL OR amazon_price < ebay_competitor_min_price * 1.65)
+            )
         )::int AS blocked_quality,
         (SELECT COUNT(*)::int FROM by_niche WHERE ready_products >= 30) AS niches_with_30_ready
       FROM classified
@@ -494,6 +548,26 @@ export async function GET(req: NextRequest) {
               AND image_url <> ''
               AND COALESCE(source_quality, 'candidate') <> 'reject'
               AND COALESCE(apc.available, TRUE) <> FALSE
+              AND apc.fast_fulfillment IS DISTINCT FROM FALSE
+              AND (apc.delivery_days_max IS NULL OR apc.delivery_days_max <= 8)
+              AND (product_source_items.ebay_competitor_count IS NULL OR product_source_items.ebay_competitor_count <= 50)
+              AND (product_source_items.ebay_competitor_min_price IS NULL OR product_source_items.amazon_price < product_source_items.ebay_competitor_min_price * 1.65)
+              AND (product_source_items.title IS NULL OR (
+                product_source_items.title NOT ILIKE '%television%' AND product_source_items.title NOT ILIKE '% tv %'
+                AND product_source_items.title NOT ILIKE '%couch%' AND product_source_items.title NOT ILIKE '%sofa%'
+                AND product_source_items.title NOT ILIKE '%mattress%' AND product_source_items.title NOT ILIKE '%recliner%'
+                AND product_source_items.title NOT ILIKE '%refrigerator%' AND product_source_items.title NOT ILIKE '%treadmill%'
+                AND product_source_items.title NOT ILIKE '%kindle%' AND product_source_items.title NOT ILIKE '%echo dot%'
+                AND product_source_items.title NOT ILIKE '%fire tv%' AND product_source_items.title NOT ILIKE '%ring doorbell%'
+                AND product_source_items.title NOT ILIKE '%t-shirt%' AND product_source_items.title NOT ILIKE '%hoodie%'
+                AND product_source_items.title NOT ILIKE '%pants%' AND product_source_items.title NOT ILIKE '%jeans%'
+                AND product_source_items.title NOT ILIKE '%dress%' AND product_source_items.title NOT ILIKE '%halter%'
+                AND product_source_items.title NOT ILIKE '%tank top%' AND product_source_items.title NOT ILIKE '%jacket%'
+                AND product_source_items.title NOT ILIKE '%leggings%' AND product_source_items.title NOT ILIKE '%skirt%'
+                AND product_source_items.title NOT ILIKE '%blouse%' AND product_source_items.title NOT ILIKE '%bikini%'
+                AND product_source_items.title NOT ILIKE '%swimsuit%' AND product_source_items.title NOT ILIKE '%sweater%'
+                AND product_source_items.title NOT ILIKE '%cardigan%'
+              ))
               AND apc.asin IS NOT NULL
               AND jsonb_typeof(apc.images) = 'array'
               AND jsonb_array_length(apc.images) >= 2
@@ -512,6 +586,26 @@ export async function GET(req: NextRequest) {
               AND image_url <> ''
               AND COALESCE(source_quality, 'candidate') <> 'reject'
               AND COALESCE(apc.available, TRUE) <> FALSE
+              AND apc.fast_fulfillment IS DISTINCT FROM FALSE
+              AND (apc.delivery_days_max IS NULL OR apc.delivery_days_max <= 8)
+              AND (product_source_items.ebay_competitor_count IS NULL OR product_source_items.ebay_competitor_count <= 50)
+              AND (product_source_items.ebay_competitor_min_price IS NULL OR product_source_items.amazon_price < product_source_items.ebay_competitor_min_price * 1.65)
+              AND (product_source_items.title IS NULL OR (
+                product_source_items.title NOT ILIKE '%television%' AND product_source_items.title NOT ILIKE '% tv %'
+                AND product_source_items.title NOT ILIKE '%couch%' AND product_source_items.title NOT ILIKE '%sofa%'
+                AND product_source_items.title NOT ILIKE '%mattress%' AND product_source_items.title NOT ILIKE '%recliner%'
+                AND product_source_items.title NOT ILIKE '%refrigerator%' AND product_source_items.title NOT ILIKE '%treadmill%'
+                AND product_source_items.title NOT ILIKE '%kindle%' AND product_source_items.title NOT ILIKE '%echo dot%'
+                AND product_source_items.title NOT ILIKE '%fire tv%' AND product_source_items.title NOT ILIKE '%ring doorbell%'
+                AND product_source_items.title NOT ILIKE '%t-shirt%' AND product_source_items.title NOT ILIKE '%hoodie%'
+                AND product_source_items.title NOT ILIKE '%pants%' AND product_source_items.title NOT ILIKE '%jeans%'
+                AND product_source_items.title NOT ILIKE '%dress%' AND product_source_items.title NOT ILIKE '%halter%'
+                AND product_source_items.title NOT ILIKE '%tank top%' AND product_source_items.title NOT ILIKE '%jacket%'
+                AND product_source_items.title NOT ILIKE '%leggings%' AND product_source_items.title NOT ILIKE '%skirt%'
+                AND product_source_items.title NOT ILIKE '%blouse%' AND product_source_items.title NOT ILIKE '%bikini%'
+                AND product_source_items.title NOT ILIKE '%swimsuit%' AND product_source_items.title NOT ILIKE '%sweater%'
+                AND product_source_items.title NOT ILIKE '%cardigan%'
+              ))
               AND NOT (
                 apc.asin IS NOT NULL
                 AND jsonb_typeof(apc.images) = 'array'
@@ -657,6 +751,8 @@ export async function GET(req: NextRequest) {
         NULL AS revised_24h
       FROM performance_digests
     `.catch(() => []),
+    getSourceReadinessAudit().catch(() => null),
+    getRecentReplenishmentRuns(5).catch(() => []),
   ])
 
   const ebayMap = new Map(ebayRows.map((row) => [row.user_id, row]))
@@ -836,6 +932,12 @@ export async function GET(req: NextRequest) {
         unavailable: toNumber(publishReadiness.unavailable),
         blockedQuality: toNumber(publishReadiness.blocked_quality),
         nichesWith30Ready: toNumber(publishReadiness.niches_with_30_ready),
+      },
+      readinessAudit: sourceReadinessAudit,
+      replenishment: {
+        platformTarget: 300,
+        rawCandidateTarget: 5000,
+        recentRuns: sourceReplenishmentRuns,
       },
       cache: {
         totalNiches,
