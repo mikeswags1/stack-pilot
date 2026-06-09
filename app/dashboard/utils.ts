@@ -1,5 +1,5 @@
 import type { BannerState, BulkListFailure, FinderProduct } from './types'
-import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getRecommendedEbayPrice as getSharedRecommendedEbayPrice } from '@/lib/listing-pricing'
+import { EBAY_DEFAULT_FEE_RATE, MIN_NET_PROFIT, getListingMetrics, getRecommendedEbayPrice as getSharedRecommendedEbayPrice } from '@/lib/listing-pricing'
 import { isWeakListingTitle } from '@/lib/listing-quality'
 
 export function parseDashboardSearchMessage(search: string): BannerState | null {
@@ -121,7 +121,7 @@ export function getBulkPreflightIssue(product: FinderProduct): BulkListFailure |
     }
   }
 
-  if (Number.isFinite(product.profit) && product.profit < 3) {
+  if (Number.isFinite(product.profit) && product.profit < MIN_NET_PROFIT) {
     return {
       asin: product.asin,
       title: product.title,

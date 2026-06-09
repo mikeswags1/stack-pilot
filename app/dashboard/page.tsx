@@ -1398,7 +1398,7 @@ export default function Dashboard() {
       onProgress: (progress) => {
         setFinderState((prev) => ({ ...prev, listAllProgress: progress }))
       },
-      concurrency: ebayQuotaState.nearLimit ? 1 : 2,
+      concurrency: ebayQuotaState.nearLimit ? 1 : 3,
     })
 
     if (result.reconnectRequired) {
@@ -1493,7 +1493,7 @@ export default function Dashboard() {
       onProgress: (progress) => {
         setContinuousFinderState((prev) => ({ ...prev, listAllProgress: progress }))
       },
-      concurrency: ebayQuotaState.nearLimit ? 1 : 2,
+      concurrency: ebayQuotaState.nearLimit ? 1 : 3,
     })
 
     if (result.reconnectRequired) {

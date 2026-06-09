@@ -7,8 +7,8 @@ import { getValidEbayAccessToken } from '@/lib/ebay-auth'
 import { queryRows, sql } from '@/lib/db'
 import { ensureListedAsinsFinancialColumns } from '@/lib/listed-asins'
 import { getCachedCategoryByAsin, setCachedCategoryByAsin } from '@/lib/ebay-category-cache'
-import { getOrGenerateAiTitle } from '@/lib/ai-title-generator'
-import { getOrGenerateAiDescription } from '@/lib/ai-description-generator'
+import { getCachedAiTitle, getOrGenerateAiTitle } from '@/lib/ai-title-generator'
+import { getCachedAiDescription, getOrGenerateAiDescription } from '@/lib/ai-description-generator'
 import { recordApiCall, recordListingFailure, shouldBlockManualListing } from '@/lib/quota-tracker'
 import { fetchAmazonProductByAsin, loadCachedAmazonProduct, saveCachedAmazonProduct } from '@/lib/amazon-product'
 import { scrapeAmazonProduct } from '@/lib/amazon-scrape'
@@ -2478,18 +2478,20 @@ export async function POST(req: NextRequest) {
   // Falls back to rule-based title if Claude is unavailable or output fails validation.
   // The AI title leads with product type + buyer-search keywords instead of obscure
   // Amazon brand prefixes (SHAPON, HAPIKAY, XY-WQ, etc.) — major eBay SEO win.
-  const hasAiTitleProvider = Boolean(process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY)
+  const hasAiTitleProvider = !trusted && Boolean(process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY)
   const competitorTitleSignals = hasAiTitleProvider
     ? await getCompetitorTitleSignals(ruleBasedTitle || rawSafeTitle, credentials.accessToken, listingAmazonPrice).catch(() => ({ titles: [], keywords: [] }))
     : { titles: [] as string[], keywords: [] as string[] }
-  const aiTitle = await getOrGenerateAiTitle({
-    asin: String(asin).toUpperCase(),
-    amazonTitle: validatedAmazon.title || listingTitle,
-    niche: niche,
-    specs: validatedAmazon.specs || [],
-    competitorTitles: competitorTitleSignals.titles,
-    competitorKeywords: competitorTitleSignals.keywords,
-  }).catch(() => null)
+  const aiTitle = trusted
+    ? await getCachedAiTitle(String(asin).toUpperCase()).catch(() => null)
+    : await getOrGenerateAiTitle({
+        asin: String(asin).toUpperCase(),
+        amazonTitle: validatedAmazon.title || listingTitle,
+        niche: niche,
+        specs: validatedAmazon.specs || [],
+        competitorTitles: competitorTitleSignals.titles,
+        competitorKeywords: competitorTitleSignals.keywords,
+      }).catch(() => null)
   const safeTitle = aiTitle && !isWeakListingTitle(aiTitle) ? aiTitle : ruleBasedTitle
 
   if (isWeakListingTitle(safeTitle)) {
@@ -2763,19 +2765,21 @@ export async function POST(req: NextRequest) {
     ...cleanGalleryUrls.slice(0, 5),
   ]
 
-  // Image pipeline: badge URL (stamped primary) goes first, then gallery images.
+  // Image pipeline: in trusted/bulk mode, keep listing fast by uploading only the
+  // stamped primary image to EPS. Secondary gallery images are stable StackPilot
+  // proxy URLs, so eBay can fetch them directly during AddFixedPriceItem. This cuts
+  // 3 extra Trading API calls per product while preserving the two-image safety gate.
   const epsSourceUrls =
     filteredImages.length > 0
       ? [badgeUrl, ...cleanGalleryUrls]
       : [badgeUrl]
-  // Sequential EPS uploads with a small pause. Firing all 4 in parallel
-  // (Promise.all) was causing eBay's EPS endpoint to silently drop some on
-  // burst-rate, producing listings with only 2 images even though we send 4.
-  // Sequential is ~4s slower per listing but the images all actually show up.
+  const epsUploadUrls = trusted ? epsSourceUrls.slice(0, 1) : epsSourceUrls
+  // Non-trusted/manual still uses sequential EPS uploads for maximum gallery
+  // reliability. Bulk trusted mode takes the fast primary-only EPS path above.
   const pictureList: string[] = []
-  for (const epsUrl of epsSourceUrls) {
+  for (const epsUrl of epsUploadUrls) {
     pictureList.push(await uploadToEPS(epsUrl, credentials.accessToken, appId, effectiveUserId))
-    if (pictureList.length < epsSourceUrls.length) {
+    if (pictureList.length < epsUploadUrls.length) {
       await new Promise((r) => setTimeout(r, 250))
     }
   }
@@ -2818,6 +2822,13 @@ export async function POST(req: NextRequest) {
   const secondaryPictureUrls = pictureList
     .slice(1)
     .filter((u): u is string => Boolean(u) && u.length <= 500)
+  if (trusted) {
+    secondaryPictureUrls.push(
+      ...dedupeImageUrls([...cleanGalleryUrls, ...filteredImages.slice(1)])
+        .filter((url) => url.length <= 500)
+        .slice(0, TARGET_LISTING_IMAGES - 1)
+    )
+  }
   const usablePictureList = dedupeImageUrls(
     [primaryPictureUrl, ...secondaryPictureUrls].filter((u): u is string => Boolean(u))
   )
@@ -2880,14 +2891,16 @@ export async function POST(req: NextRequest) {
   // Falls back to the rule-based bullets if Claude is unavailable or output fails
   // validation. The AI version rewrites overview + bullets in buyer-focused language,
   // drops marketing fluff ("premium", "world-class"), and avoids Amazon references.
-  const aiDescription = await getOrGenerateAiDescription({
-    asin: String(asin).toUpperCase(),
-    title: safeTitle,
-    niche: niche,
-    amazonFeatures: amazon.features,
-    amazonDescription: amazon.description,
-    specs: amazon.specs,
-  }).catch(() => null)
+  const aiDescription = trusted
+    ? await getCachedAiDescription(String(asin).toUpperCase()).catch(() => null)
+    : await getOrGenerateAiDescription({
+        asin: String(asin).toUpperCase(),
+        title: safeTitle,
+        niche: niche,
+        amazonFeatures: amazon.features,
+        amazonDescription: amazon.description,
+        specs: amazon.specs,
+      }).catch(() => null)
 
   const description = buildDescription(
     safeTitle,
