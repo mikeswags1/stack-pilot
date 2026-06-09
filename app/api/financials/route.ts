@@ -7,8 +7,21 @@ import { ensureListedAsinsFinancialColumns } from '@/lib/listed-asins'
 import { scrapeAmazonProduct } from '@/lib/amazon-scrape'
 import { recoverAmazonProductByItemId } from '@/lib/amazon-mapping'
 import { getRapidApiKey } from '@/lib/rapidapi'
+import {
+  AMAZON_SOURCE_TAX_RATE,
+  EBAY_DEFAULT_FEE_RATE,
+  EBAY_DEFAULT_FIXED_FEE,
+  EBAY_LOW_ORDER_FIXED_FEE,
+  EBAY_LOW_ORDER_THRESHOLD,
+  PRICING_BUFFER_RATE,
+  PROMOTED_AD_RATE,
+} from '@/lib/listing-pricing'
 
-const DEFAULT_EBAY_FEE_RATE = 0.1325
+function getFixedFee(ebayPrice: number) {
+  return ebayPrice > 0 && ebayPrice <= EBAY_LOW_ORDER_THRESHOLD
+    ? EBAY_LOW_ORDER_FIXED_FEE
+    : EBAY_DEFAULT_FIXED_FEE
+}
 
 // Live-fetch Amazon price for a single ASIN and persist it to the DB.
 async function resolveAmazonPrice(asin: string, userId: string): Promise<number | null> {
@@ -443,14 +456,22 @@ export async function GET(req: Request) {
         const revenue = Math.max(0, grossLineRevenue - refund.refundedAmount)
         const isFullRefund = refund.refundStatus === 'full'
         const amazonUnitCost = listing?.amazon_price === null || listing?.amazon_price === undefined ? null : parseMoney(listing.amazon_price)
-        const amazonCost = isFullRefund ? 0 : amazonUnitCost === null ? null : amazonUnitCost * quantity
-        const feeRate = listing?.ebay_fee_rate === null || listing?.ebay_fee_rate === undefined ? DEFAULT_EBAY_FEE_RATE : Number(listing.ebay_fee_rate)
+        const amazonCost = isFullRefund ? 0 : amazonUnitCost === null ? null : amazonUnitCost * quantity * (1 + AMAZON_SOURCE_TAX_RATE)
+        const feeRate = listing?.ebay_fee_rate === null || listing?.ebay_fee_rate === undefined ? EBAY_DEFAULT_FEE_RATE : Number(listing.ebay_fee_rate)
         const lineItemId = String(lineItem.lineItemId || '')
         const actualLineFee = lineItemId ? actualFeeMaps.byLine.get(`${order.orderId}:${lineItemId}`) : undefined
         const actualOrderFee = (order.lineItems?.length || 0) <= 1 ? actualFeeMaps.byOrder.get(order.orderId) : undefined
-        const grossFees = actualLineFee ?? actualOrderFee ?? grossLineRevenue * feeRate
+        const estimatedFees =
+          grossLineRevenue * feeRate +
+          grossLineRevenue * PROMOTED_AD_RATE +
+          grossLineRevenue * PRICING_BUFFER_RATE +
+          getFixedFee(grossLineRevenue)
+        const grossFees = actualLineFee ?? actualOrderFee ?? estimatedFees
         const feeMultiplier = grossLineRevenue > 0 ? revenue / grossLineRevenue : 1
-        const ebayFees = Math.max(0, grossFees * feeMultiplier)
+        const internalBuffer = actualLineFee !== undefined || actualOrderFee !== undefined
+          ? grossLineRevenue * PRICING_BUFFER_RATE * feeMultiplier
+          : 0
+        const ebayFees = Math.max(0, grossFees * feeMultiplier + internalBuffer)
         const feeSource = actualLineFee !== undefined || actualOrderFee !== undefined ? 'actual' : 'estimated'
         const profit = amazonCost === null ? null : revenue - amazonCost - ebayFees
         const roi = amazonCost && amazonCost > 0 && profit !== null ? (profit / amazonCost) * 100 : null
@@ -470,6 +491,8 @@ export async function GET(req: Request) {
           refundStatus: refund.refundStatus,
           amazonUnitCost,
           amazonCost,
+          amazonLandedCost: amazonCost,
+          amazonTaxRate: AMAZON_SOURCE_TAX_RATE,
           ebayFeeRate: feeRate,
           ebayFees,
           feeSource,

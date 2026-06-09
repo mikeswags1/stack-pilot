@@ -1,10 +1,10 @@
 import { queryRows, sql } from '@/lib/db'
 import { getValidEbayAccessToken } from '@/lib/ebay-auth'
-import { EBAY_DEFAULT_FEE_RATE, getRecommendedEbayPrice } from '@/lib/listing-pricing'
+import { EBAY_DEFAULT_FEE_RATE, MIN_NET_PROFIT, getNetProfit, getRecommendedEbayPrice, priceForNetProfit } from '@/lib/listing-pricing'
 
 const REPRICE_MIN_DELTA_USD = 0.5
 const REPRICE_MIN_DELTA_PCT = 3
-const MAX_PER_RUN = 50
+const MAX_PER_RUN = 300
 
 type RepriceRow = {
   user_id: number
@@ -18,6 +18,12 @@ type RepriceRow = {
 
 function escapeXml(value: string) {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function roundUpToEnding99(value: number) {
+  let price = Math.floor(value) + 0.99
+  if (price < value) price += 1
+  return Number(price.toFixed(2))
 }
 
 async function ensureRepriceColumns() {
@@ -90,9 +96,9 @@ export async function runRepriceAgent(options: { dryRun?: boolean; userId?: numb
           la.amazon_price AS listed_amazon_price,
           la.ebay_price,
           la.ebay_fee_rate,
-          apc.amazon_price AS current_amazon_price
+          COALESCE(apc.amazon_price, la.amazon_price) AS current_amazon_price
         FROM listed_asins la
-        JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(la.asin)
+        LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(la.asin)
         WHERE la.ended_at IS NULL
           AND la.ebay_listing_id IS NOT NULL
           AND la.asin IS NOT NULL
@@ -100,9 +106,8 @@ export async function runRepriceAgent(options: { dryRun?: boolean; userId?: numb
           AND la.amazon_price > 0
           AND la.ebay_price IS NOT NULL
           AND la.ebay_price > 0
-          AND apc.available = TRUE
-          AND apc.amazon_price > 0
-          AND apc.updated_at > NOW() - INTERVAL '48 hours'
+          AND COALESCE(apc.available, TRUE) <> FALSE
+          AND COALESCE(apc.amazon_price, la.amazon_price) > 0
           AND (la.last_repriced_at IS NULL OR la.last_repriced_at < NOW() - INTERVAL '2 hours')
           AND la.user_id = ${options.userId}
         ORDER BY la.last_repriced_at ASC NULLS FIRST
@@ -116,9 +121,9 @@ export async function runRepriceAgent(options: { dryRun?: boolean; userId?: numb
           la.amazon_price AS listed_amazon_price,
           la.ebay_price,
           la.ebay_fee_rate,
-          apc.amazon_price AS current_amazon_price
+          COALESCE(apc.amazon_price, la.amazon_price) AS current_amazon_price
         FROM listed_asins la
-        JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(la.asin)
+        LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(la.asin)
         WHERE la.ended_at IS NULL
           AND la.ebay_listing_id IS NOT NULL
           AND la.asin IS NOT NULL
@@ -126,9 +131,8 @@ export async function runRepriceAgent(options: { dryRun?: boolean; userId?: numb
           AND la.amazon_price > 0
           AND la.ebay_price IS NOT NULL
           AND la.ebay_price > 0
-          AND apc.available = TRUE
-          AND apc.amazon_price > 0
-          AND apc.updated_at > NOW() - INTERVAL '48 hours'
+          AND COALESCE(apc.available, TRUE) <> FALSE
+          AND COALESCE(apc.amazon_price, la.amazon_price) > 0
           AND (la.last_repriced_at IS NULL OR la.last_repriced_at < NOW() - INTERVAL '2 hours')
         ORDER BY la.last_repriced_at ASC NULLS FIRST
         LIMIT ${MAX_PER_RUN}
@@ -145,7 +149,11 @@ export async function runRepriceAgent(options: { dryRun?: boolean; userId?: numb
 
     if (currentAmazonPrice <= 0 || currentEbayPrice <= 0) { skipped++; continue }
 
-    const optimalPrice = getRecommendedEbayPrice(currentAmazonPrice, feeRate)
+    const recommendedPrice = getRecommendedEbayPrice(currentAmazonPrice, feeRate)
+    const netFloorPrice = roundUpToEnding99(priceForNetProfit(currentAmazonPrice, MIN_NET_PROFIT, { feeRate }))
+    const optimalPrice = Math.max(recommendedPrice, netFloorPrice)
+    const projectedNet = getNetProfit(currentAmazonPrice, optimalPrice, { feeRate })
+    if (projectedNet < MIN_NET_PROFIT) { skipped++; continue }
     const delta = Math.abs(optimalPrice - currentEbayPrice)
     const deltaPct = (delta / currentEbayPrice) * 100
 

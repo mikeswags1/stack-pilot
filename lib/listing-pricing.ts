@@ -13,7 +13,7 @@ export const MIN_HEALTHY_MARGIN = 15
 // us compute the REAL take-home and block listings that can't clear it.
 export const PROMOTED_AD_RATE = Number(process.env.PROMOTED_AD_RATE || '0.06')
 export const AMAZON_SOURCE_TAX_RATE = Number(process.env.AMAZON_SOURCE_TAX_RATE || '0.07')
-export const MIN_NET_PROFIT = Number(process.env.MIN_NET_PROFIT || '3')
+export const MIN_NET_PROFIT = Number(process.env.MIN_NET_PROFIT || '5')
 
 type PricingConfidence = 'none' | 'low' | 'medium' | 'high'
 type PricingStrategy = 'cost_floor' | 'balanced' | 'competitive' | 'not_viable'
