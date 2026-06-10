@@ -217,10 +217,34 @@ async function callOpenRouter(system: string, prompt: string) {
 
 async function getAgentContext() {
   await ensureSourceIntelligenceTables()
-  const [summary, weakNiches, customNiches, topSold, sourceLeaders, weakProducts] = await Promise.all([
+  const [summary, weakNiches, customNiches, marketSurvival, topSold, sourceLeaders, weakProducts] = await Promise.all([
     getSourceEngineIntelligenceSummary().catch(() => null),
     getWeakSourceNiches(8).catch(() => []),
     loadCustomSourceNicheRows().catch(() => []),
+    // MARKET SURVIVAL (2026-06-10): the single most important sourcing signal.
+    // Funnel audit showed ~87% of discovered products die at the saturation
+    // (>50 eBay competitors) or cost-ratio (amazon >= 1.65x comp min) gates.
+    // Per-niche survive% tells the agent WHERE discovered products actually
+    // make it to the list-ready pool — so it can source into winnable markets
+    // and stop pouring discovery + enrichment budget into saturated ones.
+    queryRows`
+      SELECT COALESCE(NULLIF(source_niche, ''), 'Unassigned') AS niche,
+             COUNT(*)::int AS total,
+             COUNT(*) FILTER (
+               WHERE ebay_competitor_count IS NOT NULL AND ebay_competitor_count <= 50
+                 AND (ebay_competitor_min_price IS NULL OR amazon_price < ebay_competitor_min_price * 1.65)
+             )::int AS market_ok,
+             ROUND(100.0 * COUNT(*) FILTER (
+               WHERE ebay_competitor_count IS NOT NULL AND ebay_competitor_count <= 50
+                 AND (ebay_competitor_min_price IS NULL OR amazon_price < ebay_competitor_min_price * 1.65)
+             ) / NULLIF(COUNT(*), 0), 1) AS survive_pct
+      FROM product_source_items
+      WHERE active = TRUE
+      GROUP BY COALESCE(NULLIF(source_niche, ''), 'Unassigned')
+      HAVING COUNT(*) >= 25
+      ORDER BY 4 DESC NULLS LAST
+      LIMIT 24
+    `.catch(() => []),
     queryRows`
       SELECT COALESCE(NULLIF(niche, ''), 'Unassigned') AS niche,
              COUNT(*)::int AS sold,
@@ -264,7 +288,7 @@ async function getAgentContext() {
       LIMIT 12
     `.catch(() => []),
   ])
-  return { summary, weakNiches, customNiches, topSold, sourceLeaders, weakProducts }
+  return { summary, weakNiches, customNiches, marketSurvival, topSold, sourceLeaders, weakProducts }
 }
 
 async function buildAgentPlan() {
@@ -276,6 +300,7 @@ async function buildAgentPlan() {
     'You are not allowed to list products, publish to eBay, change user billing, or bypass product safety gates.',
     'Prefer lightweight, low-return-risk, non-branded, non-medical products under $60 with strong resale margin.',
     'Avoid supplements, medical products, cosmetics, apparel sizing, designer brands, weapons, fragile/bulky items, and counterfeit-risk items.',
+    'CRITICAL: context.marketSurvival shows, per niche, what percentage of discovered products survive the eBay market gates (saturation <= 50 competitors AND viable cost ratio). Most discovered products currently die at these gates. Strongly prefer creating queries and repair work in niches with survive_pct >= 35. Do NOT propose niches similar to ones with survive_pct < 20 — products sourced there are nearly always unsellable. When proposing newNiches, aim for under-served markets: specific, less-competitive product types rather than broad commodity categories.',
     'Return JSON only with keys: newNiches, repairNiches, notes.',
   ].join(' ')
   const prompt = JSON.stringify({
@@ -294,13 +319,21 @@ async function buildAgentPlan() {
       ? 'openrouter'
       : 'deterministic'
 
+  // Deterministic fallback: repair the niches where discovered products actually
+  // SURVIVE the market gates (survive_pct desc), not just the "weak" ones. Refreshing
+  // a 20%-survival niche wastes the whole discovery+enrichment budget.
+  const highSurvivalNiches = (context.marketSurvival || [])
+    .filter((row) => Number(row.survive_pct) >= 30)
+    .map((row) => String(row.niche))
+    .filter((name) => name !== 'Unassigned' && isAllowedNiche(name, []))
   let plan: AgentPlan = {
     newNiches: upcomingSeasonalNiches.filter((niche) => isAllowedNiche(niche.name, niche.queries)).slice(0, 2),
     repairNiches: unique([
+      ...highSurvivalNiches,
       ...upcomingSeasonalNiches.map((niche) => niche.name),
       ...context.weakNiches.filter((niche) => isAllowedNiche(niche, [])),
     ], 6),
-    notes: ['No AI provider configured; ran deterministic seasonal sourcing and weak-niche repair selection.'],
+    notes: ['No AI provider configured; ran deterministic seasonal + market-survival-weighted repair selection.'],
   }
   if (provider !== 'deterministic') {
     const text = provider === 'anthropic'
@@ -349,6 +382,38 @@ async function cleanupWeakSourceRows() {
         last_intelligence_at = NOW()
     FROM bad
     WHERE psi.asin = bad.asin
+    RETURNING psi.asin
+  `.catch(() => [])
+  return rows.length
+}
+
+/**
+ * Deactivate confirmed-saturated inventory (2026-06-10). Funnel audit: ~87% of the
+ * active pool has CONFIRMED >50 eBay competitors — these can never pass the dashboard
+ * SQL gates, yet every maintenance cron (competition enricher, repricer, refresh)
+ * keeps burning API budget re-checking them. Mark them inactive with
+ * source_quality='saturated' (NOT 'reject') so they're cheap to revive later if a
+ * recheck shows competition dropped. Dashboard output is unchanged — these items were
+ * already invisible; this only frees budget for products that can actually list.
+ */
+async function deactivateSaturatedSourceRows(limit = 1500) {
+  await ensureProductSourceTables()
+  const rows = await queryRows<{ asin: string }>`
+    WITH saturated AS (
+      SELECT asin
+      FROM product_source_items
+      WHERE active = TRUE
+        AND ebay_competitor_count IS NOT NULL
+        AND ebay_competitor_count > 50
+      ORDER BY ebay_competitor_count DESC
+      LIMIT ${limit}
+    )
+    UPDATE product_source_items psi
+    SET active = FALSE,
+        source_quality = 'saturated',
+        last_intelligence_at = NOW()
+    FROM saturated
+    WHERE psi.asin = saturated.asin
     RETURNING psi.asin
   `.catch(() => [])
   return rows.length
@@ -443,6 +508,7 @@ export async function runSourceAgent(input: AgentRunInput) {
     }
 
     const cleanedProducts = input.dryRun ? 0 : await cleanupWeakSourceRows()
+    const deactivatedSaturated = input.dryRun ? 0 : await deactivateSaturatedSourceRows()
     const repairNiches = unique([...(plan.repairNiches || []), ...createdNiches], 8)
     if (!input.dryRun) {
       for (const niche of repairNiches) {
@@ -460,7 +526,7 @@ export async function runSourceAgent(input: AgentRunInput) {
       : `${input.origin}/api/cron/refresh-products?sourceOnly=1&source=source-agent`
 
     await refreshSourceIntelligenceState({ applyScores: true }).catch(() => [])
-    const metrics = { createdNiches, repairNiches, cleanedProducts, refreshScheduled: !input.dryRun, refreshUrl }
+    const metrics = { createdNiches, repairNiches, cleanedProducts, deactivatedSaturated, refreshScheduled: !input.dryRun, refreshUrl }
     await recordAgentRun({ provider, status: 'success', plan, metrics, startedAt })
     return { ok: true, provider, plan, metrics, refreshUrl }
   } catch (error) {
