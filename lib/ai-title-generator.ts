@@ -11,6 +11,7 @@
 // keywords. Results are cached per-ASIN so we pay ~$0.0002 once per product.
 
 import { queryRows, sql } from '@/lib/db'
+import { isGenericFallbackListingTitle } from '@/lib/listing-quality'
 
 const CACHE_TTL_DAYS = 30
 const TITLE_PROMPT_VERSION = 'competitor-v2'
@@ -194,7 +195,9 @@ export async function getCachedAiTitle(asin: string): Promise<string | null> {
       AND model LIKE ${`%:${TITLE_PROMPT_VERSION}`}
     LIMIT 1
   `.catch(() => [])
-  return rows[0]?.ai_title || null
+  const title = rows[0]?.ai_title || null
+  if (title && isGenericFallbackListingTitle(title)) return null
+  return title
 }
 
 async function setCachedAiTitle(asin: string, data: { aiTitle: string; sourceTitle: string; niche?: string | null; model: string }) {
@@ -264,7 +267,7 @@ export async function getOrGenerateAiTitle(input: {
   const cleaned = sanitizeAiTitle(raw)
   // Validation: must be 20-80 chars and contain at least 3 words. Anything weird → reject.
   const wordCount = cleaned.split(/\s+/).filter(Boolean).length
-  if (cleaned.length < 20 || cleaned.length > 80 || wordCount < 3) return null
+  if (cleaned.length < 20 || cleaned.length > 80 || wordCount < 3 || isGenericFallbackListingTitle(cleaned)) return null
 
   await setCachedAiTitle(input.asin, {
     aiTitle: cleaned,

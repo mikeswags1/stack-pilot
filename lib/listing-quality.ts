@@ -19,6 +19,13 @@ const PRODUCT_SIGNAL_WORDS = new Set([
   'tray', 'tube', 'wallet', 'wrap',
 ])
 
+const GENERIC_FALLBACK_TITLE_PATTERNS = [
+  /^generic\s+product(?:\s*[-:]\s*)?/i,
+  /^product\s*[-:]\s*(?:professional|premium|quality|industrial|home|office|outdoor)/i,
+  /\bprofessional\s+industrial\s+equipment\b/i,
+  /\bpremium\s+industrial\s+equipment\b/i,
+]
+
 function decodeTitleEntities(input: string) {
   return input
     .replace(/&quot;|&#34;/gi, '"')
@@ -38,6 +45,12 @@ export function cleanListingTitleCandidate(value: unknown) {
     .replace(/\s*[-|,]\s*(Pack of|Pack|Count|Piece|Pcs|Units?|Set of)\s*\d+\b/gi, '')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+export function isGenericFallbackListingTitle(value: unknown) {
+  const cleanTitle = cleanListingTitleCandidate(value)
+  if (!cleanTitle) return false
+  return GENERIC_FALLBACK_TITLE_PATTERNS.some((pattern) => pattern.test(cleanTitle))
 }
 
 export function getMeaningfulTitleWords(value: unknown) {
@@ -71,8 +84,10 @@ export function getListingTitleQuality(value: unknown) {
     /^[A-Z0-9]+$/.test(compact)
   const productSignal = hasProductSignal(uniqueWords)
   const hasNumber = /\d/.test(cleanTitle)
+  const genericFallback = isGenericFallbackListingTitle(cleanTitle)
   const weak =
     cleanTitle.length === 0 ||
+    genericFallback ||
     brandLikeSingleToken ||
     uniqueWords.length <= 2 ||
     (cleanTitle.length < 14 && uniqueWords.length < 4) ||
@@ -90,6 +105,7 @@ export function getListingTitleQuality(value: unknown) {
     meaningfulWordCount: uniqueWords.length,
     hasProductSignal: productSignal,
     weak,
+    genericFallback,
     score,
   }
 }
