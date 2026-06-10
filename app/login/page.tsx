@@ -104,7 +104,7 @@ export default function Login() {
 
         <p style={{ textAlign: 'center', marginTop: '20px', fontSize: '13px', color: 'var(--dim)' }}>
           Don&apos;t have an account?{' '}
-          <Link href="/signup" style={{ color: 'var(--gold)', textDecoration: 'none', fontWeight: 600 }}>Request access</Link>
+          <Link href="/signup" style={{ color: 'var(--gold)', textDecoration: 'none', fontWeight: 600 }}>Create account</Link>
         </p>
       </div>
     </div>

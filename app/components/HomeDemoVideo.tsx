@@ -51,7 +51,7 @@ function HomeWalkthroughGuide() {
         </div>
         <div className="home-guide__actions">
           <Link href="/signup" className="btn btn-solid btn-sm">
-            Request Access
+            Create Account
           </Link>
           <Link href="/guide" className="btn btn-ghost btn-sm">
             Full guide

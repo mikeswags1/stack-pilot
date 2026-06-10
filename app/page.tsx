@@ -71,7 +71,7 @@ export default function Landing() {
             Sign In
           </Link>
           <Link href="/signup" className="btn btn-solid btn-sm">
-            Request Access
+            Create Account
           </Link>
         </div>
       </nav>
@@ -99,7 +99,7 @@ export default function Landing() {
           </div>
           <div className="home-actions">
             <Link href="/signup" className="btn btn-solid">
-              Request Access
+              Create Account
             </Link>
             <Link href="/guide" className="btn btn-ghost">
               How it works
@@ -221,7 +221,7 @@ export default function Landing() {
             </div>
             <div className="home-demo-cta">
               <Link href="/signup" className="btn btn-solid">
-                Request Access
+                Create Account
               </Link>
               <Link href="/login" className="btn btn-ghost">
                 Sign In
@@ -233,16 +233,16 @@ export default function Landing() {
 
       <section id="safety" className="home-cta">
         <div>
-          <span>Private beta</span>
+          <span>Tester access</span>
           <h2>Built for sellers who want faster listing with better control.</h2>
           <p>
-            Existing users can sign in now. New sellers can request access as the
-            platform moves toward public launch.
+            New testers can create an account, connect eBay, and try the workflow
+            with the built-in trial limit.
           </p>
         </div>
         <div className="home-actions">
           <Link href="/signup" className="btn btn-solid">
-            Request Access
+            Create Account
           </Link>
           <Link href="/login" className="btn btn-ghost">
             Sign In

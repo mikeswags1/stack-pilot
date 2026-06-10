@@ -3,6 +3,7 @@ import CredentialsProvider from 'next-auth/providers/credentials'
 import GoogleProvider from 'next-auth/providers/google'
 import bcrypt from 'bcryptjs'
 import { queryRows, sql } from './db'
+import { ensureSubscriptionRow } from './subscription'
 
 const providers: NextAuthOptions['providers'] = []
 
@@ -44,9 +45,25 @@ export const authOptions: NextAuthOptions = {
   callbacks: {
     async signIn({ user, account }) {
       if (account?.provider === 'google') {
-        const existing = await queryRows<{ id: number }>`SELECT id FROM users WHERE email = ${user.email} LIMIT 1`
-        // Private beta — only existing accounts can sign in, no new registrations
-        if (existing.length === 0) return false
+        const email = String(user.email || '').trim().toLowerCase()
+        if (!email) return false
+        await sql`
+          CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            email VARCHAR(255) UNIQUE NOT NULL,
+            password_hash VARCHAR(255),
+            name VARCHAR(255),
+            created_at TIMESTAMP DEFAULT NOW()
+          )
+        `.catch(() => {})
+        const rows = await queryRows<{ id: number }>`
+          INSERT INTO users (email, name)
+          VALUES (${email}, ${user.name || email.split('@')[0]})
+          ON CONFLICT (email) DO UPDATE SET
+            name = COALESCE(users.name, EXCLUDED.name)
+          RETURNING id
+        `.catch(() => [])
+        await ensureSubscriptionRow(rows[0]?.id).catch(() => {})
       }
 
       return true
