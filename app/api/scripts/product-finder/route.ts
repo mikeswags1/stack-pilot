@@ -56,6 +56,8 @@ type Product = {
   distributionScore?: number
   available?: boolean
   _rating?: number; _numRatings?: number
+  /** Sum of "X sold" across top eBay competitor listings — eBay-side demand. */
+  ebaySoldVelocity?: number
 }
 
 type QueryEntry = { sourceNiche: string; query: string }
@@ -270,6 +272,15 @@ function getProductScore(product: Product) {
     price: product.amazonPrice,
     imageCount,
   })
+  // eBay sell-through weight (2026-06-11): sum of "X sold" across top competitor
+  // listings, from Browse getItem. Items whose comparables actually SELL on eBay
+  // rank above items in dead markets. undefined (not yet enriched) = neutral 1.0;
+  // 0 sold = mild penalty; scales log10 up to a 1.4x cap (e.g. 10 sold ≈ 1.16x,
+  // 100 sold ≈ 1.3x, 1000+ ≈ 1.4x).
+  const soldVelocity = product.ebaySoldVelocity
+  const sellThroughWeight = typeof soldVelocity !== 'number' ? 1
+    : soldVelocity <= 0 ? 0.92
+    : Math.min(1.4, 1 + Math.log10(soldVelocity + 1) * 0.145)
   const score =
     product.profit *
     demandWeight *
@@ -283,7 +294,8 @@ function getProductScore(product: Product) {
     contentWeight *
     sourceQualityWeight *
     reviewTrust *
-    trendMultiplier
+    trendMultiplier *
+    sellThroughWeight
   return Number.isFinite(score) ? parseFloat(score.toFixed(2)) : 0
 }
 

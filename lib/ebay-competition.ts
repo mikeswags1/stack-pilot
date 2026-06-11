@@ -49,6 +49,93 @@ async function queryEbayCompetition(
   return { count, minPrice }
 }
 
+type BrowseSearchWithIds = {
+  total?: number
+  itemSummaries?: Array<{ itemId?: string; price?: { value?: string } }>
+}
+
+/**
+ * SELL-THROUGH ENRICHMENT (2026-06-11). For market-survivor products (the only ones
+ * worth the budget), fetch the top competitor listings and read eBay's official
+ * estimatedSoldQuantity from Browse getItem — the same "X sold" number buyers see.
+ * Sum across the top 3 = a comparative demand signal: how fast comparable items
+ * ACTUALLY sell on eBay. Stored on product_source_items.ebay_sold_velocity and fed
+ * into the product score so fast movers rank first in the queue.
+ * Cost: ~4 Browse calls per product at 700ms pacing — limit 12/run ≈ 35s, well
+ * inside the burst threshold and daily cap (especially after the saturated-pool
+ * retirement freed most of the enricher's old spend).
+ */
+export async function enrichSellThroughData(options: { limit?: number } = {}) {
+  const token = await getEbayAppToken()
+  if (!token) return { enriched: 0, failed: 0 }
+
+  await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS ebay_sold_velocity INTEGER`.catch(() => {})
+  await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS ebay_sold_velocity_checked_at TIMESTAMPTZ`.catch(() => {})
+
+  const limit = Math.max(1, Math.min(options.limit || 12, 40))
+  const rows = await queryRows<{ asin: string; title: string }>`
+    SELECT asin, title
+    FROM product_source_items
+    WHERE active = TRUE
+      AND ebay_competitor_count IS NOT NULL
+      AND ebay_competitor_count BETWEEN 1 AND 50
+      AND (ebay_competitor_min_price IS NULL OR amazon_price < ebay_competitor_min_price * 1.65)
+      AND (ebay_sold_velocity_checked_at IS NULL OR ebay_sold_velocity_checked_at < NOW() - INTERVAL '14 days')
+    ORDER BY ebay_sold_velocity_checked_at ASC NULLS FIRST, total_score DESC NULLS LAST
+    LIMIT ${limit}
+  `.catch(() => [] as Array<{ asin: string; title: string }>)
+
+  let enriched = 0
+  let failed = 0
+  for (const row of rows) {
+    const keywords = buildSearchKeywords(row.title)
+    if (!keywords) { failed++; continue }
+
+    const url = new URL('https://api.ebay.com/buy/browse/v1/item_summary/search')
+    url.searchParams.set('q', keywords)
+    url.searchParams.set('filter', 'buyingOptions:{FIXED_PRICE},conditions:{NEW}')
+    url.searchParams.set('limit', '3')
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}`, 'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US' },
+      signal: AbortSignal.timeout(8000),
+    }).catch(() => null)
+    if (!res || !res.ok) { failed++; await new Promise((r) => setTimeout(r, 700)); continue }
+    const data = (await res.json().catch(() => null)) as BrowseSearchWithIds | null
+    const itemIds = (data?.itemSummaries || []).map((it) => it.itemId).filter((id): id is string => Boolean(id))
+
+    let soldSum = 0
+    for (const itemId of itemIds) {
+      const itemRes = await fetch(`https://api.ebay.com/buy/browse/v1/item/${encodeURIComponent(itemId)}`, {
+        headers: { Authorization: `Bearer ${token}`, 'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US' },
+        signal: AbortSignal.timeout(8000),
+      }).catch(() => null)
+      if (itemRes?.ok) {
+        const item = (await itemRes.json().catch(() => null)) as {
+          estimatedAvailabilities?: Array<{ estimatedSoldQuantity?: number }>
+        } | null
+        for (const avail of item?.estimatedAvailabilities || []) {
+          if (typeof avail.estimatedSoldQuantity === 'number') {
+            // Cap per-listing so one mega-listing can't distort the comparative signal.
+            soldSum += Math.min(avail.estimatedSoldQuantity, 5000)
+          }
+        }
+      }
+      await new Promise((r) => setTimeout(r, 700))
+    }
+
+    await sql`
+      UPDATE product_source_items
+      SET ebay_sold_velocity = ${soldSum},
+          ebay_sold_velocity_checked_at = NOW()
+      WHERE asin = ${row.asin}
+    `.catch(() => {})
+    enriched++
+    await new Promise((r) => setTimeout(r, 700))
+  }
+
+  return { enriched, failed }
+}
+
 export async function enrichCompetitionData(options: { limit?: number } = {}) {
   const token = await getEbayAppToken()
   if (!token) return { enriched: 0, failed: 0, skipped: 0 }

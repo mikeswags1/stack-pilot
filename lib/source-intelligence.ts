@@ -1,7 +1,7 @@
 import { queryRows, sql } from '@/lib/db'
 import { ensureAutoListingTables } from '@/lib/auto-listing/db'
 import { ensureProductSourceTables } from '@/lib/product-source-engine'
-import { enrichCompetitionData } from '@/lib/ebay-competition'
+import { enrichCompetitionData, enrichSellThroughData } from '@/lib/ebay-competition'
 
 export type SourceEngineRunStatus = 'success' | 'failed' | 'partial'
 
@@ -581,12 +581,16 @@ export async function runSourceSelfHealing(options: { applyScores?: boolean; dea
 
   const outcomeFeedbackUpdated = await applyListingOutcomeFeedback().catch(() => 0)
   const competitionEnriched = await enrichCompetitionData({ limit: 80 }).catch(() => ({ enriched: 0, failed: 0 }))
+  // Sell-through: only for market survivors (worth the getItem budget). 12/run ≈ 35s
+  // paced; covers the whole survivor set in ~2 days, then keeps a 14-day freshness.
+  const sellThroughEnriched = await enrichSellThroughData({ limit: 12 }).catch(() => ({ enriched: 0, failed: 0 }))
   const recommendations = await getSourceRecommendations(8)
   return {
     ...intelligence,
     deactivatedWeakProducts: deactivatedRows.length,
     outcomeFeedbackUpdated,
     competitionEnriched: competitionEnriched.enriched,
+    sellThroughEnriched: sellThroughEnriched.enriched,
     recommendations,
   }
 }

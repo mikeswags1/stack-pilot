@@ -90,6 +90,8 @@ export type SourceEngineProduct = {
   bestSellerRank?: number
   ebayCompetitorCount?: number
   listingOutcomeScore?: number
+  /** Sum of "X sold" across top eBay competitor listings — comparative sell-through. */
+  ebaySoldVelocity?: number
   /** Freshly-scraped Amazon title from amazon_product_cache. Used alongside title for
    *  policy checks since psi.title can be stale and Amazon may have updated the listing. */
   cachedTitle?: string
@@ -134,6 +136,7 @@ type ProductSourceRow = {
   cached_fulfillment_summary?: string | null
   cached_bsr?: number | null
   ebay_competitor_count?: number | null
+  ebay_sold_velocity?: number | null
   listing_outcome_score?: string | number | null
 }
 
@@ -461,6 +464,7 @@ function rowToProduct(row: ProductSourceRow): SourceEngineProduct {
     _numRatings: Math.round(parseNumber(row.review_count)),
     bestSellerRank: row.cached_bsr ?? undefined,
     ebayCompetitorCount: row.ebay_competitor_count !== null && row.ebay_competitor_count !== undefined ? Number(row.ebay_competitor_count) : undefined,
+    ebaySoldVelocity: row.ebay_sold_velocity !== null && row.ebay_sold_velocity !== undefined ? Number(row.ebay_sold_velocity) : undefined,
     listingOutcomeScore: row.listing_outcome_score !== null && row.listing_outcome_score !== undefined ? parseNumber(row.listing_outcome_score) : undefined,
     cachedTitle: row.cached_title || undefined,
   }
@@ -517,6 +521,10 @@ export async function ensureProductSourceTables() {
   await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS last_intelligence_at TIMESTAMPTZ`.catch(() => {})
   await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS ebay_competitor_count INTEGER`.catch(() => {})
   await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS listing_outcome_score NUMERIC(5,3) NOT NULL DEFAULT 1.000`.catch(() => {})
+  // Sum of estimatedSoldQuantity across top competitor listings (eBay Browse getItem) —
+  // the comparative "how fast do comparable items actually sell" demand signal.
+  await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS ebay_sold_velocity INTEGER`.catch(() => {})
+  await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS ebay_sold_velocity_checked_at TIMESTAMPTZ`.catch(() => {})
   await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS best_seller_rank INTEGER`.catch(() => {})
   await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS prime_eligible BOOLEAN`.catch(() => {})
   await sql`ALTER TABLE amazon_product_cache ADD COLUMN IF NOT EXISTS delivery_days_max INTEGER`.catch(() => {})
@@ -961,7 +969,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                      apc.available AS cached_available, apc.prime_eligible AS cached_prime_eligible,
                      apc.delivery_days_max AS cached_delivery_days_max, apc.fast_fulfillment AS cached_fast_fulfillment,
                      apc.fulfillment_summary AS cached_fulfillment_summary, apc.best_seller_rank AS cached_bsr,
-                     psi.ebay_competitor_count, psi.listing_outcome_score
+                     psi.ebay_competitor_count, psi.listing_outcome_score, psi.ebay_sold_velocity
               FROM product_source_items psi
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
@@ -1031,7 +1039,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                      apc.available AS cached_available, apc.prime_eligible AS cached_prime_eligible,
                      apc.delivery_days_max AS cached_delivery_days_max, apc.fast_fulfillment AS cached_fast_fulfillment,
                      apc.fulfillment_summary AS cached_fulfillment_summary, apc.best_seller_rank AS cached_bsr,
-                     psi.ebay_competitor_count, psi.listing_outcome_score
+                     psi.ebay_competitor_count, psi.listing_outcome_score, psi.ebay_sold_velocity
               FROM product_source_items psi
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
@@ -1101,7 +1109,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                      apc.available AS cached_available, apc.prime_eligible AS cached_prime_eligible,
                      apc.delivery_days_max AS cached_delivery_days_max, apc.fast_fulfillment AS cached_fast_fulfillment,
                      apc.fulfillment_summary AS cached_fulfillment_summary, apc.best_seller_rank AS cached_bsr,
-                     psi.ebay_competitor_count, psi.listing_outcome_score
+                     psi.ebay_competitor_count, psi.listing_outcome_score, psi.ebay_sold_velocity
               FROM product_source_items psi
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
@@ -1170,7 +1178,7 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                      apc.available AS cached_available, apc.prime_eligible AS cached_prime_eligible,
                      apc.delivery_days_max AS cached_delivery_days_max, apc.fast_fulfillment AS cached_fast_fulfillment,
                      apc.fulfillment_summary AS cached_fulfillment_summary, apc.best_seller_rank AS cached_bsr,
-                     psi.ebay_competitor_count, psi.listing_outcome_score
+                     psi.ebay_competitor_count, psi.listing_outcome_score, psi.ebay_sold_velocity
               FROM product_source_items psi
               LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
               WHERE psi.active = TRUE
