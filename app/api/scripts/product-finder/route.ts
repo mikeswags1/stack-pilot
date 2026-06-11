@@ -252,7 +252,14 @@ function getProductScore(product: Product) {
   const marginWeight = Math.max(0.38, Math.min(1.55, margin * 3.6))
   const roiWeight = Math.max(0.38, Math.min(1.5, roi * 1.45))
   const reviewTrust = reviews >= 80 ? 1.06 : reviews >= 35 ? 1.03 : reviews < 8 ? 0.93 : 1
-  const priceSweetSpot = product.amazonPrice >= 12 && product.amazonPrice <= 120 ? 1.08 : product.amazonPrice > 180 ? 0.78 : 0.95
+  // Money-band bias (2026-06-11, from live pool data): $25-60 Amazon cost averages
+  // ~$20 profit/sale at 48% ROI with real supply — 2.5x the $/sale of sub-$15 items.
+  // Above ~$120 ROI collapses (29%) and supply is near zero; below $12 profit/sale
+  // is thin. Rank the money band first without excluding anything.
+  const priceSweetSpot =
+    product.amazonPrice >= 25 && product.amazonPrice <= 60 ? 1.18 :
+    product.amazonPrice >= 12 && product.amazonPrice <= 120 ? 1.05 :
+    product.amazonPrice > 180 ? 0.78 : 0.92
   const riskPenalty = product.risk === 'HIGH' ? 0.68 : product.risk === 'MEDIUM' ? 0.88 : 1
   const imageWeight = imageCount >= 4 ? 1.1 : imageCount >= 2 ? 1.04 : product.imageUrl ? 0.95 : 0.72
   const contentWeight = getContentReadinessMultiplier(product)
