@@ -7,7 +7,7 @@ import { deactivateUnavailableProductSourcesFromCache, ensureProductSourceTables
 import { warmAmazonProductCache, fetchProductDetailsFromApi } from '@/lib/amazon-product'
 import { checkAmazonLiveAvailability } from '@/lib/amazon-availability'
 import { getListingPolicyFlags, hasBlockedListingPolicyFlag } from '@/lib/listing-policy'
-import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getRecommendedEbayPrice } from '@/lib/listing-pricing'
+import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getNetProfit, getRecommendedEbayPrice, MIN_NET_PROFIT } from '@/lib/listing-pricing'
 import { getSeasonalQueryExpansions, loadActiveCustomSourceNicheQueries, mergeTrendingNicheQueries } from '@/lib/source-niches'
 import { getNicheStockRepairTargets, getSourceEngineIntelligenceSummary, getWeakSourceNiches, recordSourceEngineRun, runSourceSelfHealing } from '@/lib/source-intelligence'
 
@@ -847,6 +847,11 @@ async function ensureListingAvailabilityAuditColumns() {
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_unavailable_confirmed_count INTEGER NOT NULL DEFAULT 0`.catch(() => {})
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_unavailable_first_seen_at TIMESTAMPTZ`.catch(() => {})
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_unavailable_last_seen_at TIMESTAMPTZ`.catch(() => {})
+  // Set when a fresh Amazon price check shows this listing's NET profit (after eBay
+  // fees + promoted ads + Amazon tax) is below MIN_NET_PROFIT at its current eBay
+  // price. Cleared when a later check shows it healthy again. Consumed by the
+  // active-listing profit monitor (reprice up or end).
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS below_net_floor_at TIMESTAMPTZ`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS listed_asins_amazon_status_idx ON listed_asins (ended_at, amazon_status_checked_at)`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS listed_asins_amazon_unavailable_confirmed_idx ON listed_asins (ended_at, amazon_available, amazon_unavailable_confirmed_count, amazon_unavailable_first_seen_at)`.catch(() => {})
 }
@@ -1034,19 +1039,51 @@ async function auditActiveAmazonListings(limit = 24): Promise<{
 }> {
   await ensureListingAvailabilityAuditColumns()
   const auditLimit = Math.max(1, Math.min(limit, 60))
+  // TIERED MONITORING (2026-06-11). Previously selection was staleness-only, so a
+  // dead 6-month-old listing got the same check cadence as an item that sold
+  // yesterday — and with ~2,500 active listings the full sweep took 2-4 days,
+  // which is how the playmat (source vanished) and capture-card (source price
+  // rose) incidents slipped through on items that actually had buyer activity.
+  // Now budget goes where the money is (calibrated 2026-06-11 against live counts —
+  // HOT=60, WARM=1,782, COLD=1,282 → ~1,314 checks/day vs ~1,440/day budget):
+  //   HOT  (sold in last 30d OR has watchers): recheck every 6 hours
+  //   WARM (listed <14d):                      recheck every 48 hours
+  //   COLD (everything else):                  recheck every 7 days
+  // Never-checked items (NULL) are always due, so new listings get their first
+  // check within the hour. Hot items are picked first; within a tier, stalest
+  // first. If demand briefly exceeds budget, hot stays fresh and cold just waits
+  // longer — graceful degradation in the right direction.
   const rows = await queryRows<{
     user_id: number
     ebay_listing_id: string
     asin: string
     title: string | null
     amazon_image_url: string | null
+    ebay_price: string | number | null
+    tier: number
   }>`
-    SELECT user_id, ebay_listing_id, asin, title, amazon_image_url
-    FROM listed_asins
-    WHERE ended_at IS NULL
-      AND ebay_listing_id IS NOT NULL
-      AND asin IS NOT NULL
-    ORDER BY amazon_status_checked_at ASC NULLS FIRST, listed_at DESC
+    WITH tiers AS (
+      SELECT user_id, ebay_listing_id, asin, title, amazon_image_url, ebay_price,
+        amazon_status_checked_at,
+        CASE
+          WHEN sold_at > NOW() - INTERVAL '30 days'
+            OR COALESCE(watch_count, 0) > 0
+          THEN 1
+          WHEN listed_at > NOW() - INTERVAL '14 days' THEN 2
+          ELSE 3
+        END AS tier
+      FROM listed_asins
+      WHERE ended_at IS NULL
+        AND ebay_listing_id IS NOT NULL
+        AND asin IS NOT NULL
+    )
+    SELECT user_id, ebay_listing_id, asin, title, amazon_image_url, ebay_price, tier
+    FROM tiers
+    WHERE amazon_status_checked_at IS NULL
+       OR (tier = 1 AND amazon_status_checked_at < NOW() - INTERVAL '6 hours')
+       OR (tier = 2 AND amazon_status_checked_at < NOW() - INTERVAL '48 hours')
+       OR (tier = 3 AND amazon_status_checked_at < NOW() - INTERVAL '7 days')
+    ORDER BY tier ASC, amazon_status_checked_at ASC NULLS FIRST
     LIMIT ${auditLimit}
   `.catch(() => [])
 
@@ -1078,6 +1115,22 @@ async function auditActiveAmazonListings(limit = 24): Promise<{
 
       const check = result.value
       if (check.ok) {
+        // NET-PROFIT DRIFT FLAG (2026-06-11): with the FRESH Amazon price in hand,
+        // check whether this listing still clears the take-home floor at its current
+        // eBay price. This is how the $13 camera ($9 source that netted $0.57) and
+        // the capture card (source rose $14→$15.99 = sold at a loss) get caught
+        // BEFORE the next sale instead of after.
+        const currentEbayPrice = Number(row.ebay_price)
+        const netNow = Number.isFinite(currentEbayPrice) && currentEbayPrice > 0
+          ? getNetProfit(check.amazonPrice, currentEbayPrice, { feeRate: EBAY_DEFAULT_FEE_RATE })
+          : null
+        const belowFloor = netNow !== null && netNow < MIN_NET_PROFIT
+        if (belowFloor) {
+          console.info('[listing-audit] below net floor', JSON.stringify({
+            asin: row.asin, ebayListingId: row.ebay_listing_id,
+            amazonPrice: check.amazonPrice, ebayPrice: currentEbayPrice, netProfit: netNow,
+          }))
+        }
         await sql`
           UPDATE listed_asins
           SET amazon_available = TRUE,
@@ -1086,7 +1139,8 @@ async function auditActiveAmazonListings(limit = 24): Promise<{
               amazon_price = ${check.amazonPrice},
               amazon_unavailable_confirmed_count = 0,
               amazon_unavailable_first_seen_at = NULL,
-              amazon_unavailable_last_seen_at = NULL
+              amazon_unavailable_last_seen_at = NULL,
+              below_net_floor_at = CASE WHEN ${belowFloor} THEN COALESCE(below_net_floor_at, NOW()) ELSE NULL END
           WHERE user_id = ${row.user_id}
             AND ebay_listing_id = ${row.ebay_listing_id}
         `.catch(() => {})
