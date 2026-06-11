@@ -180,7 +180,10 @@ async function callAnthropic(system: string, prompt: string) {
       system,
       messages: [{ role: 'user', content: prompt }],
     }),
-    signal: AbortSignal.timeout(20000),
+    // 20s was timing out in production (every run since at least Jun 10 failed with
+    // "operation was aborted due to timeout") — 4096 max_tokens at Haiku speed plus a
+    // growing context JSON needs more headroom. Cron maxDuration is 300s; 75s is safe.
+    signal: AbortSignal.timeout(75000),
   })
   if (!res.ok) throw new Error(`Anthropic request failed (${res.status})`)
   const data = await res.json()
@@ -208,7 +211,7 @@ async function callOpenRouter(system: string, prompt: string) {
         { role: 'user', content: prompt },
       ],
     }),
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(75000),
   })
   if (!res.ok) throw new Error(`OpenRouter request failed (${res.status})`)
   const data = await res.json()
@@ -335,24 +338,36 @@ async function buildAgentPlan() {
     ], 6),
     notes: ['No AI provider configured; ran deterministic seasonal + market-survival-weighted repair selection.'],
   }
+  let effectiveProvider = provider
   if (provider !== 'deterministic') {
-    const text = provider === 'anthropic'
-      ? await callAnthropic(system, prompt)
-      : await callOpenRouter(system, prompt)
-    const parsed = JSON.parse(extractJsonObject(text || '{}'))
-    plan = sanitizePlan(parsed)
-    const seasonalNewNiches = upcomingSeasonalNiches
-      .filter((niche) => isAllowedNiche(niche.name, niche.queries))
-      .filter((niche) => !(plan.newNiches || []).some((item) => item.name.toLowerCase() === niche.name.toLowerCase()))
-    plan.newNiches = [...(plan.newNiches || []), ...seasonalNewNiches].slice(0, 3)
-    plan.repairNiches = unique([
-      ...(plan.repairNiches || []),
-      ...upcomingSeasonalNiches.map((niche) => niche.name),
-      ...context.weakNiches.filter((niche) => isAllowedNiche(niche, [])),
-    ], 8)
+    // RESILIENCE (2026-06-11): an AI timeout/parse failure must NOT fail the whole
+    // agent run — that was killing cleanup + saturated-pool retirement for days
+    // (every run since at least Jun 10 died on the 20s Anthropic timeout). On any
+    // AI error, fall back to the deterministic market-survival-weighted plan.
+    try {
+      const text = provider === 'anthropic'
+        ? await callAnthropic(system, prompt)
+        : await callOpenRouter(system, prompt)
+      const parsed = JSON.parse(extractJsonObject(text || '{}'))
+      plan = sanitizePlan(parsed)
+      const seasonalNewNiches = upcomingSeasonalNiches
+        .filter((niche) => isAllowedNiche(niche.name, niche.queries))
+        .filter((niche) => !(plan.newNiches || []).some((item) => item.name.toLowerCase() === niche.name.toLowerCase()))
+      plan.newNiches = [...(plan.newNiches || []), ...seasonalNewNiches].slice(0, 3)
+      plan.repairNiches = unique([
+        ...(plan.repairNiches || []),
+        ...upcomingSeasonalNiches.map((niche) => niche.name),
+        ...context.weakNiches.filter((niche) => isAllowedNiche(niche, [])),
+      ], 8)
+    } catch (error) {
+      effectiveProvider = 'deterministic-fallback'
+      plan.notes = [
+        `AI provider failed (${error instanceof Error ? error.message : 'unknown'}); used deterministic market-survival plan so cleanup still runs.`,
+      ]
+    }
   }
 
-  return { provider, plan, context }
+  return { provider: effectiveProvider, plan, context }
 }
 
 async function cleanupWeakSourceRows() {
