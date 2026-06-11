@@ -7,9 +7,14 @@ import { getSourceReadinessAudit } from '@/lib/source-readiness-audit'
 
 export const dynamic = 'force-dynamic'
 
+// Admin-only (2026-06-11): exposes platform-wide pool/listing stats.
+const ADMIN_EMAILS = ['msawaged12@gmail.com', 'mikeswags1@gmail.com']
+
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session?.user) return apiError('Unauthorized', { status: 401, code: 'UNAUTHORIZED' })
+  if (!session?.user?.email || !ADMIN_EMAILS.includes(session.user.email)) {
+    return apiError('Unauthorized', { status: 401, code: 'UNAUTHORIZED' })
+  }
 
   const niche = req.nextUrl.searchParams.get('niche') || null
 

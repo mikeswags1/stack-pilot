@@ -18,6 +18,10 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { apiError, apiOk } from '@/lib/api-response'
 import { queryRows, sql } from '@/lib/db'
+
+// SECURITY (2026-06-11): this route reads + ENDS listings across ALL users.
+// Admin-only, matching the rest of /api/admin.
+const ADMIN_EMAILS = ['msawaged12@gmail.com', 'mikeswags1@gmail.com']
 import { EbayReconnectRequiredError, getValidEbayAccessToken } from '@/lib/ebay-auth'
 
 export const maxDuration = 300
@@ -117,7 +121,9 @@ function suggestAction(classification: AuditedListing['classification']): string
 /** GET — dry-run audit of all legacy (NULL image_count) active listings */
 export async function GET() {
   const session = await getServerSession(authOptions)
-  if (!session?.user) return apiError('Unauthorized', { status: 401, code: 'UNAUTHORIZED' })
+  if (!session?.user?.email || !ADMIN_EMAILS.includes(session.user.email)) {
+    return apiError('Unauthorized', { status: 401, code: 'UNAUTHORIZED' })
+  }
 
   const rows = await queryRows<ListingRow>`
     SELECT id, user_id, ebay_listing_id, asin, title, listed_at
@@ -262,7 +268,9 @@ export async function GET() {
 /** POST — end a specific set of listings (must pass confirmed + ids) */
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session?.user) return apiError('Unauthorized', { status: 401, code: 'UNAUTHORIZED' })
+  if (!session?.user?.email || !ADMIN_EMAILS.includes(session.user.email)) {
+    return apiError('Unauthorized', { status: 401, code: 'UNAUTHORIZED' })
+  }
 
   const body = await req.json().catch(() => ({}))
   if (!body?.confirmed) {

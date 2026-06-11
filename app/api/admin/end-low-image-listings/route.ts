@@ -7,6 +7,18 @@ import { EbayReconnectRequiredError, getValidEbayAccessToken } from '@/lib/ebay-
 
 export const maxDuration = 300
 
+// SECURITY (2026-06-11): this route reads and ENDS listings across ALL users.
+// It previously only required any logged-in session — with self-serve signup open,
+// any new account could have ended every user's listings. Admin-only, like the
+// other /api/admin routes.
+const ADMIN_EMAILS = ['msawaged12@gmail.com', 'mikeswags1@gmail.com']
+
+async function requireAdmin() {
+  const session = await getServerSession(authOptions)
+  if (!session?.user?.email || !ADMIN_EMAILS.includes(session.user.email)) return null
+  return session
+}
+
 function escapeXml(value: string) {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
@@ -56,8 +68,8 @@ type ListingRow = {
 
 /** GET — preview how many 1-image active listings exist (no changes made) */
 export async function GET() {
-  const session = await getServerSession(authOptions)
-  if (!session?.user) return apiError('Unauthorized', { status: 401, code: 'UNAUTHORIZED' })
+  const session = await requireAdmin()
+  if (!session) return apiError('Unauthorized', { status: 401, code: 'UNAUTHORIZED' })
 
   const rows = await queryRows<ListingRow>`
     SELECT id, user_id, ebay_listing_id, asin, title, image_count
@@ -85,8 +97,8 @@ export async function GET() {
 
 /** POST — end all active 1-image listings on eBay (requires { confirmed: true }) */
 export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions)
-  if (!session?.user) return apiError('Unauthorized', { status: 401, code: 'UNAUTHORIZED' })
+  const session = await requireAdmin()
+  if (!session) return apiError('Unauthorized', { status: 401, code: 'UNAUTHORIZED' })
 
   const body = await req.json().catch(() => ({}))
   if (!body?.confirmed) {
