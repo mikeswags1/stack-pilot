@@ -288,6 +288,7 @@ export async function pullEngagementMetrics(opts: { limit?: number; userId?: num
       `.catch(() => [])
 
   let updated = 0
+  let consecutiveFailures = 0
   const credCache = new Map<string, string | null>()
 
   for (const row of rows) {
@@ -305,8 +306,20 @@ export async function pullEngagementMetrics(opts: { limit?: number; userId?: num
         UPDATE listed_asins SET engagement_checked_at = NOW()
         WHERE user_id::text = ${row.user_id} AND ebay_listing_id = ${row.ebay_listing_id}
       `.catch(() => {})
+      consecutiveFailures++
+      // CIRCUIT BREAKER (2026-06-17): GetItem engagement polling fails ~99% (watch/hit
+      // counts via Trading API are unreliable/deprecated). Left unchecked it burned ~600
+      // failed eBay calls/day (25/hr) against the SHARED app call allowance, which
+      // starved real listing for other accounts. If the first handful all fail, the API
+      // is clearly not returning engagement for this account right now — stop the run so
+      // we don't waste the allowance. Self-heals: a later run that succeeds resets and
+      // continues normally.
+      if (consecutiveFailures >= 4) {
+        return { checked: updated + consecutiveFailures, updated, skipped: 'circuit_breaker_engagement_unavailable' as const }
+      }
       continue
     }
+    consecutiveFailures = 0
 
     await sql`
       UPDATE listed_asins
