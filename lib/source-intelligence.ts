@@ -581,9 +581,12 @@ export async function runSourceSelfHealing(options: { applyScores?: boolean; dea
 
   const outcomeFeedbackUpdated = await applyListingOutcomeFeedback().catch(() => 0)
   const competitionEnriched = await enrichCompetitionData({ limit: 80 }).catch(() => ({ enriched: 0, failed: 0 }))
-  // Sell-through: only for market survivors (worth the getItem budget). 12/run ≈ 35s
-  // paced; covers the whole survivor set in ~2 days, then keeps a 14-day freshness.
-  const sellThroughEnriched = await enrichSellThroughData({ limit: 12 }).catch(() => ({ enriched: 0, failed: 0 }))
+  // Sell-through: only for market survivors (worth the getItem budget). Bumped 12->30/run
+  // (2026-06-17) — measurement showed competition enrichment has ZERO backlog, so the
+  // Browse-API budget it would use is free; 30/run clears the ~828-survivor sell-through
+  // backlog in ~1 day instead of ~3. Runs on Browse API (separate from the Trading API
+  // listing quota), ~30×4 calls at 700ms pacing ≈ 110s, well inside the cron window.
+  const sellThroughEnriched = await enrichSellThroughData({ limit: 30 }).catch(() => ({ enriched: 0, failed: 0 }))
   const recommendations = await getSourceRecommendations(8)
   return {
     ...intelligence,
