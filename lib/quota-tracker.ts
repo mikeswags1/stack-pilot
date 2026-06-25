@@ -228,14 +228,18 @@ export async function getQuotaSummary(): Promise<ProviderUsageSummary[]> {
     hourly_usage: string | number
     daily_failures: string | number
   }>`
+    -- eBay counts EVERY call against the daily limit — success OR failure. So usage
+    -- must count both (a failure storm burns real quota too). The daily window is
+    -- "since midnight Pacific" to match eBay's actual reset, so the brake clears when
+    -- eBay's allowance does instead of staying stuck on a rolling 24h of old failures.
     SELECT
       provider,
       call_name,
-      COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours' AND success = TRUE)::int AS daily_usage,
-      COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour' AND success = TRUE)::int AS hourly_usage,
-      COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours' AND success = FALSE)::int AS daily_failures
+      COUNT(*) FILTER (WHERE created_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Los_Angeles') AT TIME ZONE 'America/Los_Angeles')::int AS daily_usage,
+      COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour')::int AS hourly_usage,
+      COUNT(*) FILTER (WHERE created_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Los_Angeles') AT TIME ZONE 'America/Los_Angeles' AND success = FALSE)::int AS daily_failures
     FROM api_usage_log
-    WHERE created_at > NOW() - INTERVAL '24 hours'
+    WHERE created_at > NOW() - INTERVAL '25 hours'
     GROUP BY provider, call_name
   `.catch(() => [])
 

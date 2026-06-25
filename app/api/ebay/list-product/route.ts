@@ -1296,7 +1296,9 @@ async function uploadToEPS(externalUrl: string, token: string, appId: string, us
         'X-EBAY-API-APP-NAME': appId,
         'X-EBAY-API-DEV-NAME': process.env.EBAY_DEV_ID || '',
         'X-EBAY-API-CERT-NAME': process.env.EBAY_CERT_ID || '',
-        'Authorization': `Bearer ${token}`,
+        // EPS (eBay Picture Service) rejects `Authorization: Bearer` with "Bad scheme: Bearer".
+        // OAuth tokens must be passed to the Trading API via the IAF-token header instead.
+        'X-EBAY-API-IAF-TOKEN': token,
         'Content-Type': 'text/xml',
       },
       body: xml,
@@ -3484,6 +3486,39 @@ export async function POST(req: NextRequest) {
         status: 409,
         code: 'ALREADY_LISTED',
         details: { suppressedFromPool: true },
+      })
+    }
+    // Permanent errors that will NEVER succeed on retry with the same product data —
+    // coins missing required grading specifics, an unresolvable (non-leaf) category, or
+    // banned words in the title. Drop them from the pool immediately so the queue stops
+    // re-serving and re-burning eBay calls on the same doomed listing. Looping on ~50 of
+    // these is exactly what drained the daily quota.
+    const permanentText = `${errMsg} ${responseText}`.toLowerCase()
+    const isPermanentFailure =
+      permanentText.includes('coin condition') ||
+      permanentText.includes('not a leaf') ||
+      permanentText.includes('leaf category') ||
+      permanentText.includes('improper w')
+    if (isPermanentFailure) {
+      await sql`
+        UPDATE product_source_items
+        SET active = FALSE, source_quality = 'reject', last_seen_at = NOW()
+        WHERE UPPER(asin) = UPPER(${asin})
+      `.catch(() => {})
+      recordListingFailure({
+        userId: effectiveUserId,
+        asin,
+        niche: body?.niche,
+        errorCode: 'PERMANENT_LISTING_ERROR',
+        errorMessage: errMsg.slice(0, 500),
+        stage: 'ebay_submit',
+        source: isCron ? 'cron' : 'manual',
+        raw: { suppressedFromPool: true, ebayResponseTail: responseText.slice(0, 400), finalCategoryId },
+      }).catch(() => {})
+      return apiError(errMsg, {
+        status: 400,
+        code: 'PERMANENT_LISTING_ERROR',
+        details: { suppressedFromPool: true, raw: responseText.slice(0, 1200) },
       })
     }
     recordListingFailure({
