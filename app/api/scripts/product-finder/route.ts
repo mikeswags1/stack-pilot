@@ -1097,6 +1097,41 @@ export async function GET(req: NextRequest) {
   // gates (duplicates, saturation, cache images, policy, price ratio). Five seconds
   // was too tight in production and silently returned [] via withTimeout, making the
   // dashboard claim no products existed while the DB still had 800+ ready rows.
+  // Continuous mode serves the pre-warmed snapshot the replenish cron maintains. That
+  // cron runs loadProductSourceProducts with a 300s budget, so it can afford the heavy
+  // source-engine query (wide candidate window + cache join + O(n^2) dedupe + policy
+  // gates) that THIS request's ~20s budget cannot. Reading the snapshot makes "Load
+  // Products" instant AND reliable — instead of the live query silently timing out to []
+  // via withTimeout and falsely reporting "source pool exhausted" while the pool holds
+  // hundreds of ready rows. (That's the exact failure the 5s->20s bump only masked; the
+  // query has since crept back over 20s.) respondWithProducts still applies per-user
+  // excludes + seeded shuffle below, so rotation and already-listed filtering are
+  // unchanged. Falls through to the live load only if the snapshot is cold/empty.
+  if (continuousMode) {
+    const snapshotProducts = await withTimeout(
+      (async () => {
+        const rows = await queryRows<{ results: Product[] }>`
+          SELECT results
+          FROM product_cache
+          WHERE niche = ${CONTINUOUS_CACHE_KEY}
+          ORDER BY cached_at DESC
+          LIMIT 1
+        `
+        return Array.isArray(rows[0]?.results) ? rows[0].results : []
+      })(),
+      3_000,
+      [] as Product[],
+    )
+    if (snapshotProducts.length > 0) {
+      console.info('[product-finder] continuous snapshot hit', JSON.stringify({
+        snapshot: snapshotProducts.length,
+        excludeCount: excludeAsins.size,
+      }))
+      return respondWithProducts(snapshotProducts, 'continuous-snapshot')
+    }
+    console.info('[product-finder] continuous snapshot empty — falling back to live source engine')
+  }
+
   const sourceEnginePoolLimit = continuousMode ? 160 : 400
   const sourceEngineTimeoutMs = continuousMode ? 20_000 : 2_500
   console.info('[product-finder] sourceEngine load', JSON.stringify({
