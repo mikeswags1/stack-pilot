@@ -2857,6 +2857,36 @@ export async function POST(req: NextRequest) {
       usablePictureList.push(fallbackUrl)
     }
   }
+  // ── Final image-type guard (eBay: no mixing Self Hosted + EPS) ───────────────
+  // eBay rejects any listing whose PictureURLs mix EPS-hosted images
+  // (*.ebayimg.com, produced by UploadSiteHostedPictures) with self-hosted ones
+  // (our /api/image proxy or raw Amazon URLs) — error: "A mixture of Self Hosted
+  // and EPS pictures are not allowed." The bulk/trusted path uploads only the
+  // primary to EPS for speed but keeps gallery photos self-hosted, and the
+  // fallback/padding logic above can also blend the two when some EPS uploads
+  // fail. Collapse the set to a SINGLE type here so the listing is never rejected:
+  //   • keep the EPS set if it alone meets the image minimum (preserves the
+  //     stamped primary), otherwise
+  //   • rebuild an all-self-hosted gallery led by the primary product image so the
+  //     listing still goes live (eBay fetches our proxy URLs directly).
+  const isEpsPictureUrl = (u: string) => /\.ebayimg\.com\//i.test(u)
+  const epsPics = usablePictureList.filter(isEpsPictureUrl)
+  const selfHostedPics = usablePictureList.filter((u) => !isEpsPictureUrl(u))
+  if (epsPics.length > 0 && selfHostedPics.length > 0) {
+    usablePictureList.length = 0
+    if (epsPics.length >= MIN_LISTING_IMAGES) {
+      usablePictureList.push(...epsPics)
+    } else {
+      const selfHostedSet = dedupeImageUrls([
+        cleanDescriptionPrimary,
+        ...selfHostedPics,
+        ...cleanGalleryUrls,
+        ...filteredImages.slice(1),
+      ]).filter((u) => u.length <= 500)
+      usablePictureList.push(...selfHostedSet.slice(0, TARGET_LISTING_IMAGES))
+    }
+  }
+
   // eBay constraint: total length of all Picture URLs (including XML overhead) must
   // stay under 3,975 chars. Each `&` becomes `&amp;` in the XML payload, so allow
   // an ~8% margin under the cap to be safe.
