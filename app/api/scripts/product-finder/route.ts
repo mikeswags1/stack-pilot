@@ -1122,49 +1122,87 @@ export async function GET(req: NextRequest) {
       3_000,
       [] as Product[],
     )
+    // Rehydrate + de-stale the snapshot. It is built from the lightweight niche caches, which
+    // carry only a single `imageUrl` (no `images` array, no `available` flag) and a title that
+    // may have gone stale (the ASIN drifted to a different product on Amazon). So we:
+    //   (1) re-attach photos + stock status from amazon_product_cache — the publish-ready gate
+    //       needs >=2 images AND available===true; without this only ~4 of ~270 ready surface;
+    //   (2) drop entries whose snapshot title no longer matches the cache title, using the SAME
+    //       word-overlap < 0.42 gate as list-product's ASIN cross-mapping guard, so the queue
+    //       never shows items that publish as "ASIN now maps to a different product".
+    const hydratedSnapshot: Product[] = []
     if (snapshotProducts.length > 0) {
-      // The snapshot is built from the lightweight niche caches, which carry only a single
-      // `imageUrl` — NO `images` array and NO `available` flag. The publish-ready gate needs
-      // BOTH (>=2 images AND available===true), so without rehydration almost every snapshot
-      // row fails the filter and the dashboard shows a tiny count (e.g. 4 of ~270 ready).
-      // Re-attach photos + stock status from amazon_product_cache in one batch query so the
-      // real ready pool surfaces. (Measured: 273 of 600 snapshot rows hydrate to publish-ready.)
       const snapshotAsins = Array.from(
         new Set(snapshotProducts.map((p) => String(p.asin || '').toUpperCase()).filter(Boolean)),
       )
       const cacheRows = await withTimeout(
-        queryRows<{ asin: string; available: boolean | null; images: unknown; primary_image: string | null }>`
-          SELECT UPPER(asin) AS asin, available, images, primary_image
+        queryRows<{ asin: string; title: string | null; available: boolean | null; images: unknown; primary_image: string | null }>`
+          SELECT UPPER(asin) AS asin, title, available, images, primary_image
           FROM amazon_product_cache
           WHERE UPPER(asin) = ANY(${snapshotAsins}::text[])
         `,
         5_000,
-        [] as Array<{ asin: string; available: boolean | null; images: unknown; primary_image: string | null }>,
+        [] as Array<{ asin: string; title: string | null; available: boolean | null; images: unknown; primary_image: string | null }>,
       )
       const cacheByAsin = new Map(cacheRows.map((r) => [r.asin, r]))
-      const hydratedSnapshot = snapshotProducts.map((p) => {
+      const titleWordOverlap = (a: string, b: string) => {
+        const toWords = (s: string) =>
+          new Set(s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter((w) => w.length > 2))
+        const poolWords = toWords(a)
+        if (poolWords.size === 0) return 1
+        const cacheWords = toWords(b)
+        let overlap = 0
+        for (const w of poolWords) if (cacheWords.has(w)) overlap++
+        return overlap / poolWords.size
+      }
+      let staleDropped = 0
+      for (const p of snapshotProducts) {
         const cached = cacheByAsin.get(String(p.asin || '').toUpperCase())
-        if (!cached) return p
+        if (!cached) { hydratedSnapshot.push(p); continue }
+        if (cached.title && p.title && titleWordOverlap(String(p.title), String(cached.title)) < 0.42) {
+          staleDropped++
+          continue
+        }
         const images = Array.from(new Set([
           cached.primary_image,
           ...(Array.isArray(cached.images) ? (cached.images as unknown[]) : []),
           p.imageUrl,
         ].filter((u): u is string => typeof u === 'string' && u.startsWith('http'))))
-        return {
+        hydratedSnapshot.push({
           ...p,
           images: images.length > 0 ? images : p.images,
           imageUrl: images[0] || p.imageUrl,
           available: cached.available ?? p.available,
-        }
-      })
-      console.info('[product-finder] continuous snapshot hit', JSON.stringify({
-        snapshot: snapshotProducts.length,
-        hydratedFromCache: cacheRows.length,
-        excludeCount: excludeAsins.size,
+        })
+      }
+      const readyish = hydratedSnapshot.filter(
+        (p) => getProductImageCount(p) >= 2 && p.available !== false,
+      ).length
+      console.info('[product-finder] continuous snapshot', JSON.stringify({
+        snapshot: snapshotProducts.length, hydratedFromCache: cacheRows.length, staleDropped, readyish,
       }))
-      return respondWithProducts(hydratedSnapshot, 'continuous-snapshot')
+      // Fast path: a healthy snapshot serves instantly.
+      if (readyish >= TARGET_STOCK) {
+        return respondWithProducts(hydratedSnapshot, 'continuous-snapshot')
+      }
     }
-    console.info('[product-finder] continuous snapshot empty — falling back to live source engine')
+    // Snapshot thin/stale (the refresh-products cron periodically overwrites it with a low-overlap
+    // batch). Fall back to the live source engine — it returns a stable, already-de-staled pool of
+    // hundreds-ready. Generous timeout because this only runs on the slow fallback path.
+    const liveProducts = await withTimeout(
+      loadProductSourceProducts({ limit: 160, excludeAsins }),
+      40_000,
+      [] as Product[],
+    )
+    if (liveProducts.length > 0) {
+      console.info('[product-finder] continuous live fallback', JSON.stringify({ live: liveProducts.length }))
+      return respondWithProducts(liveProducts, 'continuous-source-engine')
+    }
+    // Live load also came back empty → serve whatever the snapshot gave rather than falsely
+    // reporting "source pool exhausted".
+    if (hydratedSnapshot.length > 0) {
+      return respondWithProducts(hydratedSnapshot, 'continuous-snapshot-thin')
+    }
   }
 
   const sourceEnginePoolLimit = continuousMode ? 160 : 400
