@@ -53,6 +53,51 @@ export function ScriptsTab({
   const [feedbackState, setFeedbackState] = useState<'idle' | 'previewing' | 'ready' | 'running' | 'done' | 'error'>('idle')
   const [feedbackPreview, setFeedbackPreview] = useState<FeedbackPreview | null>(null)
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null)
+  const [coinState, setCoinState] = useState<'idle' | 'previewing' | 'ready' | 'running' | 'done' | 'error'>('idle')
+  const [coinCount, setCoinCount] = useState<number>(0)
+  const [coinMessage, setCoinMessage] = useState<string | null>(null)
+
+  const handleEndCoins = async () => {
+    // First click previews the count; second click ends them. If a run can't finish all
+    // (large stores), the API returns `remaining` and we drop back to ready to click again.
+    if (coinState === 'idle' || coinState === 'error' || coinState === 'done') {
+      setCoinState('previewing')
+      setCoinMessage(null)
+      try {
+        const res = await fetch('/api/ebay/end-coins')
+        const data = await res.json()
+        setCoinCount(data.count || 0)
+        setCoinMessage(data.message || (res.ok ? 'Preview complete.' : 'Something went wrong.'))
+        setCoinState(res.ok ? 'ready' : 'error')
+      } catch {
+        setCoinState('error')
+        setCoinMessage('Request failed. Check your eBay connection.')
+      }
+      return
+    }
+
+    if (coinState !== 'ready' || coinCount <= 0) return
+    setCoinState('running')
+    setCoinMessage(`Ending ${coinCount} coin listing${coinCount === 1 ? '' : 's'} on eBay...`)
+    try {
+      const res = await fetch('/api/ebay/end-coins', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed: true }),
+      })
+      const data = await res.json()
+      setCoinMessage(data.message || (res.ok ? 'Done.' : 'Something went wrong.'))
+      if (res.ok && (data.remaining || 0) > 0) {
+        setCoinCount(data.remaining)
+        setCoinState('ready')
+      } else {
+        setCoinState(res.ok ? 'done' : 'error')
+      }
+    } catch {
+      setCoinState('error')
+      setCoinMessage('Request failed. Check your eBay connection.')
+    }
+  }
 
   const handleEndAllListings = async () => {
     if (endState === 'idle') { setEndState('confirm'); return }
@@ -181,6 +226,47 @@ export function ScriptsTab({
             </button>
             {endState === 'confirm' ? (
               <button className="btn btn-ghost btn-sm" style={{ width: '100%', marginTop: '8px' }} onClick={() => setEndState('idle')}>
+                Cancel
+              </button>
+            ) : null}
+          </div>
+
+          {/* End All Coins — targeted precious-metal loss cleanup */}
+          <div className="card" style={{ padding: '28px', border: coinState === 'ready' && coinCount > 0 ? '1px solid rgba(248,81,73,0.45)' : undefined }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px', gap: '12px' }}>
+              <div style={{ fontFamily: 'var(--serif)', fontSize: '20px', fontWeight: 600, color: 'var(--txt)' }}>End All Coins</div>
+              <span style={{ padding: '3px 10px', borderRadius: '20px', fontSize: '8px', fontWeight: 700, background: 'rgba(248,81,73,0.10)', color: 'var(--red)', border: '1px solid rgba(248,81,73,0.28)' }}>
+                Loss Cleanup
+              </span>
+            </div>
+            <div style={{ fontSize: '13px', color: 'var(--sil)', marginBottom: '22px', lineHeight: 1.6 }}>
+              Ends ONLY your coin &amp; bullion listings (Silver/Gold Eagle, .999, bullion, etc.). Their Amazon prices are unreliable and can sell below cost. Your normal products are never touched. Click once to scan, again to confirm.
+            </div>
+            {coinMessage ? (
+              <div style={{ marginBottom: '12px', fontSize: '12px', color: coinState === 'error' ? 'var(--red)' : coinState === 'done' ? 'var(--grn)' : 'var(--gold)', padding: '8px 12px', borderRadius: '8px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                {coinMessage}
+              </div>
+            ) : null}
+            <button
+              className={`btn btn-sm ${coinState === 'ready' && coinCount > 0 ? 'btn-danger' : 'btn-ghost'}`}
+              style={{ width: '100%', color: coinState !== 'ready' && coinState !== 'running' ? 'var(--red)' : undefined, borderColor: coinState !== 'ready' && coinState !== 'running' ? 'rgba(248,81,73,0.28)' : undefined }}
+              disabled={coinState === 'previewing' || coinState === 'running' || (coinState === 'ready' && coinCount === 0)}
+              onClick={handleEndCoins}
+            >
+              {coinState === 'previewing'
+                ? 'Scanning eBay...'
+                : coinState === 'running'
+                  ? 'Ending coins...'
+                  : coinState === 'ready' && coinCount > 0
+                    ? `⚠ Confirm — End ${coinCount} Coin Listing${coinCount === 1 ? '' : 's'}`
+                    : coinState === 'ready'
+                      ? 'No coins found'
+                      : coinState === 'done'
+                        ? 'Done'
+                        : 'Scan & End Coin Listings'}
+            </button>
+            {coinState === 'ready' && coinCount > 0 ? (
+              <button className="btn btn-ghost btn-sm" style={{ width: '100%', marginTop: '8px' }} onClick={() => { setCoinState('idle'); setCoinMessage(null) }}>
                 Cancel
               </button>
             ) : null}
