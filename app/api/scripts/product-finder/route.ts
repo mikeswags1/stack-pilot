@@ -1123,11 +1123,46 @@ export async function GET(req: NextRequest) {
       [] as Product[],
     )
     if (snapshotProducts.length > 0) {
+      // The snapshot is built from the lightweight niche caches, which carry only a single
+      // `imageUrl` — NO `images` array and NO `available` flag. The publish-ready gate needs
+      // BOTH (>=2 images AND available===true), so without rehydration almost every snapshot
+      // row fails the filter and the dashboard shows a tiny count (e.g. 4 of ~270 ready).
+      // Re-attach photos + stock status from amazon_product_cache in one batch query so the
+      // real ready pool surfaces. (Measured: 273 of 600 snapshot rows hydrate to publish-ready.)
+      const snapshotAsins = Array.from(
+        new Set(snapshotProducts.map((p) => String(p.asin || '').toUpperCase()).filter(Boolean)),
+      )
+      const cacheRows = await withTimeout(
+        queryRows<{ asin: string; available: boolean | null; images: unknown; primary_image: string | null }>`
+          SELECT UPPER(asin) AS asin, available, images, primary_image
+          FROM amazon_product_cache
+          WHERE UPPER(asin) = ANY(${snapshotAsins}::text[])
+        `,
+        5_000,
+        [] as Array<{ asin: string; available: boolean | null; images: unknown; primary_image: string | null }>,
+      )
+      const cacheByAsin = new Map(cacheRows.map((r) => [r.asin, r]))
+      const hydratedSnapshot = snapshotProducts.map((p) => {
+        const cached = cacheByAsin.get(String(p.asin || '').toUpperCase())
+        if (!cached) return p
+        const images = Array.from(new Set([
+          cached.primary_image,
+          ...(Array.isArray(cached.images) ? (cached.images as unknown[]) : []),
+          p.imageUrl,
+        ].filter((u): u is string => typeof u === 'string' && u.startsWith('http'))))
+        return {
+          ...p,
+          images: images.length > 0 ? images : p.images,
+          imageUrl: images[0] || p.imageUrl,
+          available: cached.available ?? p.available,
+        }
+      })
       console.info('[product-finder] continuous snapshot hit', JSON.stringify({
         snapshot: snapshotProducts.length,
+        hydratedFromCache: cacheRows.length,
         excludeCount: excludeAsins.size,
       }))
-      return respondWithProducts(snapshotProducts, 'continuous-snapshot')
+      return respondWithProducts(hydratedSnapshot, 'continuous-snapshot')
     }
     console.info('[product-finder] continuous snapshot empty — falling back to live source engine')
   }
