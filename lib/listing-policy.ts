@@ -51,6 +51,17 @@ const RESTRICTED_ITEM_RULES: PolicyRule[] = [
   { code: 'currency_restricted', reason: 'Currency and counterfeit-adjacent products are blocked unless they are clearly collecting supplies.', pattern: /\b(counterfeit money|prop money|fake money|replica coin|copy coin|currency detector pen)\b/i },
 ]
 
+// Precious-metal coins & bullion. Their cost tracks the live silver/gold market, so the
+// scraped Amazon price is unreliable and these routinely sell BELOW true cost (a single
+// Silver Eagle once cost $108 against a stored $17 → ~$80 loss). The "Coins & Currency"
+// niche is cut from sourcing, but this is the final hard gate so one can never list even
+// if it slips into the pool. Coin SUPPLIES (holders, albums, capsules) are still allowed
+// via isSupplyOnlyCurrencyProduct.
+const PRECIOUS_METAL_RULES: PolicyRule[] = [
+  { code: 'precious_metal_bullion', reason: 'Precious-metal coins/bullion are blocked: their cost tracks the live silver/gold market, so the stored Amazon price is unreliable and they routinely sell below true cost.', pattern: /\b(american\s+)?(silver|gold)\s+eagle\b|\bgold\s+buffalo\b|\bkrugerrand\b|\b(silver|gold)\s+maple\s+leaf\b|\bbritannia\s+coin\b|\bmorgan\s+dollar\b|\bpeace\s+dollar\b|\bbullion\b|\bnumismatic\b|\btroy\s+(oz|ounce)\b|\b\.999\s+fine\b|\b\.9999\b|\b999\s+fine\s+(silver|gold)\b|\bproof\s+coin\b|\b\d+\s*(oz|ounce)\s+(silver|gold)\b/i },
+  { code: 'coins_currency_niche', reason: 'Coins & Currency products are blocked from automated listing (volatile metal prices + unreliable cost data).', pattern: /\bcoins?\s+and\s+currency\b/i },
+]
+
 const HIGH_RETURN_OPERATIONAL_RULES: PolicyRule[] = [
   { code: 'oversized_or_high_return_item', reason: 'Oversized, fragile, or high-return items are blocked for automated drop-shipping workflows.', pattern: /\b(treadmill|elliptical|mattress|sofa|couch|television|computer monitor|gaming monitor|pc monitor|generator|chainsaw|pressure washer|e-bike|electric bike|rc plane|rc airplane|drone|tow bar|towing bar|trailer hitch|hitch receiver|bumper mount(?:ed)? tow|flat dinghy towing|universal towing bar)\b/i },
   { code: 'standalone_computer_or_tablet', reason: 'Standalone computers/tablets are blocked; accessories are allowed when clearly described as accessories.', pattern: /\b(laptop|tablet)\b/i, allowAccessoryContext: true },
@@ -105,12 +116,14 @@ export function getListingPolicyFlags(input: ListingPolicyInput): ListingPolicyF
     ...COUNTERFEIT_RULES,
     ...HIGH_RISK_BRAND_RULES,
     ...RESTRICTED_ITEM_RULES,
+    ...PRECIOUS_METAL_RULES,
     ...HIGH_RETURN_OPERATIONAL_RULES,
     ...MARKETPLACE_COPY_RULES,
   ]
 
+  const SUPPLY_EXEMPT_CODES = new Set(['currency_restricted', 'precious_metal_bullion', 'coins_currency_niche'])
   for (const rule of rules) {
-    if (rule.code === 'currency_restricted' && isSupplyOnlyCurrencyProduct(text)) continue
+    if (SUPPLY_EXEMPT_CODES.has(rule.code) && isSupplyOnlyCurrencyProduct(text)) continue
     pushRuleFlag(flags, rule, text)
   }
 
