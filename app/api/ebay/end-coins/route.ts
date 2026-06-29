@@ -20,15 +20,33 @@ async function coinListingIds(userId: string | number): Promise<string[]> {
     WHERE user_id = ${userId}
       AND ended_at IS NULL
       AND ebay_listing_id IS NOT NULL
+      -- PRECISE precious-metal match only. We deliberately do NOT match the broad
+      -- "Coins & Currency" niche, because that also catches legit, stable-priced products
+      -- (jeweler's loupes, coin-collecting books, plastic novelty coins) that are NOT the
+      -- volatile bullion we're trying to remove. Real bullion always carries one of these
+      -- terms, so keyword-matching is both precise and complete.
       AND (
-        niche ILIKE '%coin%' OR niche ILIKE '%currenc%'
-        OR title ILIKE '%silver eagle%' OR title ILIKE '%gold eagle%'
-        OR title ILIKE '%.999%' OR title ILIKE '%bullion%'
-        OR title ILIKE '%troy oz%' OR title ILIKE '%gold buffalo%'
-        OR title ILIKE '%krugerrand%' OR title ILIKE '%maple leaf%'
-        OR title ILIKE '%numismatic%' OR title ILIKE '%morgan dollar%'
-        OR title ILIKE '%peace dollar%' OR title ILIKE '%proof coin%'
+        title ILIKE '%silver eagle%' OR title ILIKE '%gold eagle%'
+        OR title ILIKE '%gold buffalo%' OR title ILIKE '%krugerrand%'
+        OR title ILIKE '%silver maple leaf%' OR title ILIKE '%gold maple leaf%'
+        OR title ILIKE '%morgan dollar%' OR title ILIKE '%peace dollar%'
+        OR title ILIKE '%bullion%' OR title ILIKE '%numismatic%'
+        OR title ILIKE '%troy oz%' OR title ILIKE '%troy ounce%'
+        OR title ILIKE '%.999 fine%' OR title ILIKE '%.9999%'
+        OR title ILIKE '%proof coin%'
+        OR title ILIKE '%oz silver%' OR title ILIKE '%oz gold%'
+        OR title ILIKE '%ounce silver%' OR title ILIKE '%ounce gold%'
+        OR title ILIKE '%silver round%' OR title ILIKE '%gold round%'
       )
+      -- ...but spare coin SUPPLIES that merely mention the bullion they hold (a "Silver
+      -- Eagle coin holder", a "Coin Storage Box", a coin-collecting book). Those are
+      -- stable-priced accessories, not volatile bullion. ("Case"/"capsule"/"air tite" are
+      -- NOT excluded — real coins are often sold encapsulated.)
+      AND title NOT ILIKE '%holder%' AND title NOT ILIKE '%organizer%'
+      AND title NOT ILIKE '%storage%' AND title NOT ILIKE '%album%'
+      AND title NOT ILIKE '%binder%' AND title NOT ILIKE '%pocket%'
+      AND title NOT ILIKE '%loupe%' AND title NOT ILIKE '%magnifier%'
+      AND title NOT ILIKE '%book%' AND title NOT ILIKE '%display stand%'
   `.catch(() => [])
   return [...new Set(rows.map((r) => r.ebay_listing_id).filter(Boolean))]
 }
