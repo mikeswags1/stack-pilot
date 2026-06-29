@@ -22,6 +22,11 @@ export interface AmazonProduct {
   description: string
   specs: Array<[string, string]>
   available: boolean
+  // TRUE only when Amazon's page EXPLICITLY says the item is unavailable ("currently
+  // unavailable", etc.). Distinguishes a real out-of-stock from a blocked/unreadable
+  // scrape (which leaves `available` false but this false) so callers never treat a
+  // bot-blocked read as out-of-stock.
+  outOfStockConfirmed: boolean
   bestSellerRank?: number
   primeEligible?: boolean | null
   deliveryDaysMax?: number | null
@@ -309,6 +314,7 @@ export async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct |
       description,
       specs,
       available,
+      outOfStockConfirmed: hasUnavailableSignal,
       bestSellerRank,
       primeEligible: fulfillment.primeEligible,
       deliveryDaysMax: fulfillment.deliveryDaysMax,

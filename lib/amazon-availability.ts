@@ -45,10 +45,16 @@ async function cacheLiveAvailability(args: {
   fulfillmentSummary?: string | null
 }) {
   const images = Array.from(new Set(args.images.filter((url) => url.startsWith('http'))))
+  const amazonPrice = Number.isFinite(args.amazonPrice) ? Math.max(0, args.amazonPrice) : 0
+  // A scrape with no live price is almost always Amazon bot-detection noise, not
+  // real product data. Writing amazon_price = 0.00 here used to overwrite known-good
+  // cached costs (0.00 is not NULL, so it silently hid ~2,170 live listings from the
+  // reprice agent's COALESCE filter). Skip the cache write entirely instead.
+  if (amazonPrice <= 0) return
   const product: ValidatedAmazonProduct = {
     asin: args.asin,
     title: args.title || `Item ${args.asin}`,
-    amazonPrice: Number.isFinite(args.amazonPrice) ? Math.max(0, args.amazonPrice) : 0,
+    amazonPrice,
     imageUrl: images[0],
     images,
     features: [],
@@ -92,7 +98,9 @@ export async function checkAmazonLiveAvailability(
   await cacheLiveAvailability({
     asin,
     title,
-    amazonPrice: isAvailable ? amazonPrice : 0,
+    // Pass the real scraped price even when unavailable — cacheLiveAvailability
+    // skips the write when there is no price, so 0 never reaches the cache.
+    amazonPrice,
     images,
     available: isAvailable,
     primeEligible: scraped.primeEligible,
@@ -102,6 +110,14 @@ export async function checkAmazonLiveAvailability(
   })
 
   if (!scraped.available) {
+    // Only report UNAVAILABLE when Amazon EXPLICITLY confirmed it ("currently unavailable",
+    // etc.). A blocked/unreadable scrape (Amazon bot-detection → no buy box, no price, no
+    // out-of-stock text) leaves `available` false but `outOfStockConfirmed` false — that means
+    // we simply COULDN'T CHECK, not that the item is gone. Returning CHECK_FAILED here (instead
+    // of UNAVAILABLE) stops in-stock listings from being falsely flagged out of stock and ended.
+    if (!scraped.outOfStockConfirmed) {
+      return { ok: false, asin, reason: 'CHECK_FAILED', title, amazonPrice, imageUrl: images[0], images, checkedAt }
+    }
     return {
       ok: false,
       asin,
