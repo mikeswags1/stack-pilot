@@ -85,6 +85,23 @@ export async function POST(req: NextRequest) {
     return apiError('Pass { confirmed: true } to end out-of-stock listings.', { status: 400, code: 'NOT_CONFIRMED' })
   }
 
+  // ── SAFETY PAUSE (2026-06-29) ────────────────────────────────────────────────
+  // The Amazon availability data was found UNRELIABLE: listings flagged out-of-stock
+  // 9-12 times were spot-checked on Amazon and confirmed IN STOCK. The scraper is
+  // hitting bot-detection and misreading available items as "unavailable". Auto-ending
+  // on this data would delete good, in-stock listings, so the destructive action is
+  // disabled. The GET preview still works. Re-enable only after the availability source
+  // is trustworthy (or after adding an independent live re-verify per item).
+  if (process.env.OOS_END_ENABLED !== 'true') {
+    return apiOk({
+      cleared: 0,
+      failed: 0,
+      remaining: 0,
+      paused: true,
+      message: 'Paused for safety — the out-of-stock data was found unreliable (it flagged in-stock items as out of stock). Nothing was ended. Re-enables once the Amazon availability source is trustworthy.',
+    })
+  }
+
   try {
     const credentials = await getValidEbayAccessToken(session.user.id)
     if (!credentials?.accessToken) {
