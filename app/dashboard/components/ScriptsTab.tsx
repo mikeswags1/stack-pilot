@@ -56,10 +56,6 @@ export function ScriptsTab({
   const [coinState, setCoinState] = useState<'idle' | 'previewing' | 'ready' | 'running' | 'done' | 'error'>('idle')
   const [coinCount, setCoinCount] = useState<number>(0)
   const [coinMessage, setCoinMessage] = useState<string | null>(null)
-  const [oosState, setOosState] = useState<'idle' | 'previewing' | 'ready' | 'running' | 'done' | 'error'>('idle')
-  const [oosCount, setOosCount] = useState<number>(0)
-  const [oosSamples, setOosSamples] = useState<string[]>([])
-  const [oosMessage, setOosMessage] = useState<string | null>(null)
   const [lossState, setLossState] = useState<'idle' | 'previewing' | 'ready' | 'running' | 'done' | 'error'>('idle')
   const [lossCount, setLossCount] = useState<number>(0)
   const [lossSamples, setLossSamples] = useState<string[]>([])
@@ -103,47 +99,6 @@ export function ScriptsTab({
     } catch {
       setLossState('error')
       setLossMessage('Request failed. Check your eBay connection.')
-    }
-  }
-
-  const handleEndOos = async () => {
-    if (oosState === 'idle' || oosState === 'error' || oosState === 'done') {
-      setOosState('previewing')
-      setOosMessage(null)
-      try {
-        const res = await fetch('/api/ebay/end-oos')
-        const data = await res.json()
-        setOosCount(data.count || 0)
-        setOosSamples(Array.isArray(data.samples) ? data.samples : [])
-        setOosMessage(data.message || (res.ok ? 'Preview complete.' : 'Something went wrong.'))
-        setOosState(res.ok ? 'ready' : 'error')
-      } catch {
-        setOosState('error')
-        setOosMessage('Request failed. Check your eBay connection.')
-      }
-      return
-    }
-
-    if (oosState !== 'ready' || oosCount <= 0) return
-    setOosState('running')
-    setOosMessage(`Ending ${oosCount} out-of-stock listing${oosCount === 1 ? '' : 's'} on eBay...`)
-    try {
-      const res = await fetch('/api/ebay/end-oos', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirmed: true }),
-      })
-      const data = await res.json()
-      setOosMessage(data.message || (res.ok ? 'Done.' : 'Something went wrong.'))
-      if (res.ok && (data.remaining || 0) > 0) {
-        setOosCount(data.remaining)
-        setOosState('ready')
-      } else {
-        setOosState(res.ok ? 'done' : 'error')
-      }
-    } catch {
-      setOosState('error')
-      setOosMessage('Request failed. Check your eBay connection.')
     }
   }
 
@@ -411,54 +366,9 @@ export function ScriptsTab({
             ) : null}
           </div>
 
-          {/* End Out-of-Stock — protects account standing (prevents forced cancellations) */}
-          <div className="card" style={{ padding: '28px', border: oosState === 'ready' && oosCount > 0 ? '1px solid rgba(248,81,73,0.45)' : undefined }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px', gap: '12px' }}>
-              <div style={{ fontFamily: 'var(--serif)', fontSize: '20px', fontWeight: 600, color: 'var(--txt)' }}>End Out-of-Stock</div>
-              <span style={{ padding: '3px 10px', borderRadius: '20px', fontSize: '8px', fontWeight: 700, background: 'rgba(248,81,73,0.10)', color: 'var(--red)', border: '1px solid rgba(248,81,73,0.28)' }}>
-                Account Health
-              </span>
-            </div>
-            <div style={{ fontSize: '13px', color: 'var(--sil)', marginBottom: '22px', lineHeight: 1.6 }}>
-              Ends listings whose Amazon source is confirmed out of stock (flagged twice). These can&apos;t be fulfilled, so a sale forces a cancellation — an eBay defect. Click once to scan + preview, again to confirm.
-            </div>
-            {oosMessage ? (
-              <div style={{ marginBottom: '12px', fontSize: '12px', color: oosState === 'error' ? 'var(--red)' : oosState === 'done' ? 'var(--grn)' : 'var(--gold)', padding: '8px 12px', borderRadius: '8px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
-                {oosMessage}
-              </div>
-            ) : null}
-            {oosState === 'ready' && oosSamples.length > 0 ? (
-              <div style={{ marginBottom: '12px', maxHeight: '130px', overflow: 'auto', fontSize: '11px', color: 'var(--dim)', lineHeight: 1.45 }}>
-                <div style={{ color: 'var(--sil)', marginBottom: '6px', fontWeight: 600 }}>Examples it will end (verify these are right):</div>
-                {oosSamples.map((title, idx) => (
-                  <div key={idx} style={{ marginBottom: '5px' }}>• {title}</div>
-                ))}
-              </div>
-            ) : null}
-            <button
-              className={`btn btn-sm ${oosState === 'ready' && oosCount > 0 ? 'btn-danger' : 'btn-ghost'}`}
-              style={{ width: '100%', color: oosState !== 'ready' && oosState !== 'running' ? 'var(--red)' : undefined, borderColor: oosState !== 'ready' && oosState !== 'running' ? 'rgba(248,81,73,0.28)' : undefined }}
-              disabled={oosState === 'previewing' || oosState === 'running' || (oosState === 'ready' && oosCount === 0)}
-              onClick={handleEndOos}
-            >
-              {oosState === 'previewing'
-                ? 'Scanning eBay...'
-                : oosState === 'running'
-                  ? 'Ending out-of-stock...'
-                  : oosState === 'ready' && oosCount > 0
-                    ? `⚠ Confirm — End ${oosCount} Out-of-Stock`
-                    : oosState === 'ready'
-                      ? 'None out of stock'
-                      : oosState === 'done'
-                        ? 'Done'
-                        : 'Scan Out-of-Stock Listings'}
-            </button>
-            {oosState === 'ready' && oosCount > 0 ? (
-              <button className="btn btn-ghost btn-sm" style={{ width: '100%', marginTop: '8px' }} onClick={() => { setOosState('idle'); setOosMessage(null); setOosSamples([]) }}>
-                Cancel
-              </button>
-            ) : null}
-          </div>
+          {/* End Out-of-Stock card removed 2026-06-30: the Amazon availability data was found
+              unreliable (false out-of-stock on in-stock items), so the button was confusing and
+              its action is disabled server-side. Re-add once the availability source is trustworthy. */}
 
           <div className="card" style={{ padding: '28px', border: deadState === 'ready' && (deadPreview?.count || 0) > 0 ? '1px solid rgba(34,197,94,0.32)' : undefined }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px', gap: '12px' }}>
