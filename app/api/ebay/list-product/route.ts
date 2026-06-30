@@ -133,6 +133,13 @@ const NICHE_FALLBACK_LEAF_CATEGORY: Record<string, string> = {
 }
 
 const DEFAULT_LEAF_CATEGORY = '26677'
+
+// eBay charges a per-listing INSERTION FEE for certain categories even within your store
+// allowance — notably "Business & Industrial > Heavy Equipment" (category 95495). An
+// auto-categorized truck crane landed there and cost the user a surprise $20. Never
+// auto-list into these; drop them from the candidates and fall back to the niche/default.
+const FEE_INSERTION_CATEGORY_BLOCKLIST = new Set(['95495'])
+
 const EBAY_SHIP_FROM_LOCATION = 'King City, California, United States'
 const EBAY_SHIP_FROM_POSTAL_CODE = '93930'
 
@@ -2999,8 +3006,11 @@ export async function POST(req: NextRequest) {
     DEFAULT_LEAF_CATEGORY,
   ]
   const categoryCandidates = Array.from(new Set(categoryCandidateIds.filter(Boolean) as string[]))
+    .filter((id) => !FEE_INSERTION_CATEGORY_BLOCKLIST.has(id))
   const preferredCategoryId = categoryCandidates[0] || DEFAULT_LEAF_CATEGORY
-  const leafSuggestedCategoryIds = Array.from(new Set([asinCategory, comparableCategory, ...taxonomyIds, ...legacySuggestions].filter(Boolean) as string[])).slice(0, 8)
+  const leafSuggestedCategoryIds = Array.from(new Set([asinCategory, comparableCategory, ...taxonomyIds, ...legacySuggestions].filter(Boolean) as string[]))
+    .filter((id) => !FEE_INSERTION_CATEGORY_BLOCKLIST.has(id))
+    .slice(0, 8)
   const xmlParams = { token: credentials.accessToken, safeTitle, description, categoryId: preferredCategoryId, price, pictureXml, itemSpecificsXml, sourceAsin: String(asin).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10) }
 
   // Parse eBay response — skip deprecated warnings to surface real errors
@@ -3273,7 +3283,7 @@ export async function POST(req: NextRequest) {
   // and go straight to AddFixedPriceItem. If the listing itself fails with a leaf or
   // category error, the existing retry chain below still handles it.
   // Saves ~3-15 eBay VerifyAddFixedPriceItem calls per listing.
-  const skipVerification = Boolean(cachedCategory) && !providedCategoryId
+  const skipVerification = Boolean(cachedCategory) && !providedCategoryId && !FEE_INSERTION_CATEGORY_BLOCKLIST.has(cachedCategory?.categoryId || '')
   if (skipVerification) {
     verifiedParams = { categoryId: cachedCategory!.categoryId, itemSpecificsXml }
     verificationAttempts = [cachedCategory!.categoryId]
