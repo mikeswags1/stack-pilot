@@ -60,6 +60,51 @@ export function ScriptsTab({
   const [oosCount, setOosCount] = useState<number>(0)
   const [oosSamples, setOosSamples] = useState<string[]>([])
   const [oosMessage, setOosMessage] = useState<string | null>(null)
+  const [lossState, setLossState] = useState<'idle' | 'previewing' | 'ready' | 'running' | 'done' | 'error'>('idle')
+  const [lossCount, setLossCount] = useState<number>(0)
+  const [lossSamples, setLossSamples] = useState<string[]>([])
+  const [lossMessage, setLossMessage] = useState<string | null>(null)
+
+  const handleEndLoss = async () => {
+    if (lossState === 'idle' || lossState === 'error' || lossState === 'done') {
+      setLossState('previewing')
+      setLossMessage(null)
+      try {
+        const res = await fetch('/api/ebay/end-likely-loss')
+        const data = await res.json()
+        setLossCount(data.count || 0)
+        setLossSamples(Array.isArray(data.samples) ? data.samples : [])
+        setLossMessage(data.message || (res.ok ? 'Preview complete.' : 'Something went wrong.'))
+        setLossState(res.ok ? 'ready' : 'error')
+      } catch {
+        setLossState('error')
+        setLossMessage('Request failed. Check your eBay connection.')
+      }
+      return
+    }
+
+    if (lossState !== 'ready' || lossCount <= 0) return
+    setLossState('running')
+    setLossMessage(`Ending ${lossCount} likely-loss listing${lossCount === 1 ? '' : 's'} on eBay...`)
+    try {
+      const res = await fetch('/api/ebay/end-likely-loss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed: true }),
+      })
+      const data = await res.json()
+      setLossMessage(data.message || (res.ok ? 'Done.' : 'Something went wrong.'))
+      if (res.ok && (data.remaining || 0) > 0) {
+        setLossCount(data.remaining)
+        setLossState('ready')
+      } else {
+        setLossState(res.ok ? 'done' : 'error')
+      }
+    } catch {
+      setLossState('error')
+      setLossMessage('Request failed. Check your eBay connection.')
+    }
+  }
 
   const handleEndOos = async () => {
     if (oosState === 'idle' || oosState === 'error' || oosState === 'done') {
@@ -312,6 +357,55 @@ export function ScriptsTab({
             </button>
             {coinState === 'ready' && coinCount > 0 ? (
               <button className="btn btn-ghost btn-sm" style={{ width: '100%', marginTop: '8px' }} onClick={() => { setCoinState('idle'); setCoinMessage(null) }}>
+                Cancel
+              </button>
+            ) : null}
+          </div>
+
+          {/* End Likely-Loss — listings selling below Amazon cost (profit guard) */}
+          <div className="card" style={{ padding: '28px', border: lossState === 'ready' && lossCount > 0 ? '1px solid rgba(248,81,73,0.45)' : undefined }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px', gap: '12px' }}>
+              <div style={{ fontFamily: 'var(--serif)', fontSize: '20px', fontWeight: 600, color: 'var(--txt)' }}>End Likely-Loss</div>
+              <span style={{ padding: '3px 10px', borderRadius: '20px', fontSize: '8px', fontWeight: 700, background: 'rgba(248,81,73,0.10)', color: 'var(--red)', border: '1px solid rgba(248,81,73,0.28)' }}>
+                Profit Guard
+              </span>
+            </div>
+            <div style={{ fontSize: '13px', color: 'var(--sil)', marginBottom: '22px', lineHeight: 1.6 }}>
+              Ends listings where Amazon now costs more than your eBay price (a real loss if they sell). Skips obvious bad-data false alarms. Click once to scan + preview the prices, again to confirm.
+            </div>
+            {lossMessage ? (
+              <div style={{ marginBottom: '12px', fontSize: '12px', color: lossState === 'error' ? 'var(--red)' : lossState === 'done' ? 'var(--grn)' : 'var(--gold)', padding: '8px 12px', borderRadius: '8px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                {lossMessage}
+              </div>
+            ) : null}
+            {lossState === 'ready' && lossSamples.length > 0 ? (
+              <div style={{ marginBottom: '12px', maxHeight: '150px', overflow: 'auto', fontSize: '11px', color: 'var(--dim)', lineHeight: 1.5 }}>
+                <div style={{ color: 'var(--sil)', marginBottom: '6px', fontWeight: 600 }}>Examples it will end (verify the prices):</div>
+                {lossSamples.map((s, idx) => (
+                  <div key={idx} style={{ marginBottom: '5px' }}>• {s}</div>
+                ))}
+              </div>
+            ) : null}
+            <button
+              className={`btn btn-sm ${lossState === 'ready' && lossCount > 0 ? 'btn-danger' : 'btn-ghost'}`}
+              style={{ width: '100%', color: lossState !== 'ready' && lossState !== 'running' ? 'var(--red)' : undefined, borderColor: lossState !== 'ready' && lossState !== 'running' ? 'rgba(248,81,73,0.28)' : undefined }}
+              disabled={lossState === 'previewing' || lossState === 'running' || (lossState === 'ready' && lossCount === 0)}
+              onClick={handleEndLoss}
+            >
+              {lossState === 'previewing'
+                ? 'Scanning prices...'
+                : lossState === 'running'
+                  ? 'Ending loss-makers...'
+                  : lossState === 'ready' && lossCount > 0
+                    ? `⚠ Confirm — End ${lossCount} Loss-Makers`
+                    : lossState === 'ready'
+                      ? 'No loss-makers found'
+                      : lossState === 'done'
+                        ? 'Done'
+                        : 'Scan for Loss-Making Listings'}
+            </button>
+            {lossState === 'ready' && lossCount > 0 ? (
+              <button className="btn btn-ghost btn-sm" style={{ width: '100%', marginTop: '8px' }} onClick={() => { setLossState('idle'); setLossMessage(null); setLossSamples([]) }}>
                 Cancel
               </button>
             ) : null}
