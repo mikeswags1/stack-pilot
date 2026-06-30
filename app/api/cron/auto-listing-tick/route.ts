@@ -4,7 +4,7 @@ import { ensureAutoListingTables } from '@/lib/auto-listing/db'
 import { getAutoListingSettings } from '@/lib/auto-listing/settings'
 import { getTopAutoListingCandidates } from '@/lib/auto-listing/scoring'
 import { acquireNextDueJob, markCompleted, markFailed } from '@/lib/auto-listing/queue'
-import { fillQueueIfNeeded, enforceMaxPerHour } from '@/lib/auto-listing/scheduler'
+import { fillQueueIfNeeded, enforceMaxPerHour, canScheduleMoreToday } from '@/lib/auto-listing/scheduler'
 import { logAutoListingEvent } from '@/lib/auto-listing/logging'
 import { sql, queryRows } from '@/lib/db'
 
@@ -126,59 +126,86 @@ async function processAutoListingUser(req: NextRequest, userId: number): Promise
     const fill = await fillQueueIfNeeded({ userId, accountId, settings, candidates })
     report.queued = fill.inserted
 
-    const canPost = await enforceMaxPerHour(userId, settings)
-    if (!canPost) return { ...report, skipped: 'max_per_hour' }
+    // ── BATCH POST ────────────────────────────────────────────────────────────────
+    // Drain every job that is DUE this tick. The drip scheduler spaces jobs across the
+    // day via scheduled_at, so on a steady state only a handful are due each tick; but
+    // when there's a backlog (or a high listings_per_day) this loop lets the autopilot
+    // reach hundreds/day instead of the old 1-listing-per-tick ceiling. Bounded by:
+    //   • the per-hour cap (enforceMaxPerHour)
+    //   • the daily cap (canScheduleMoreToday → listings_per_day)
+    //   • a per-tick safety cap (MAX_PER_TICK)
+    //   • a wall-clock budget so the serverless function never times out mid-listing
+    //   • eBay quota throttling (stop the moment eBay says we're over)
+    const BATCH_BUDGET_MS = 240_000
+    const MAX_PER_TICK = 40
+    let listedCount = 0
+    let failedCount = 0
+    const failureSamples: string[] = []
 
-    const job = await acquireNextDueJob(userId)
-    if (!job) return { ...report, processed: 0 }
+    for (let i = 0; i < MAX_PER_TICK; i += 1) {
+      if (Date.now() - startedAt > BATCH_BUDGET_MS) { report.stoppedBy = 'time_budget'; break }
+      if (!(await canScheduleMoreToday(userId, settings))) { report.stoppedBy = 'daily_cap'; break }
+      if (!(await enforceMaxPerHour(userId, settings))) { report.stoppedBy = 'max_per_hour'; break }
+      if (await shouldSkipCronListing().catch(() => false)) { report.stoppedBy = 'ebay_quota'; break }
 
-    await logAutoListingEvent({
-      userId,
-      accountId: job.account_id ?? accountId,
-      queueId: job.id,
-      asin: job.asin,
-      eventType: 'processing',
-      message: 'Posting listing.',
-      data: { score: job.score, attempts: job.attempts },
-    })
+      const job = await acquireNextDueJob(userId)
+      if (!job) { report.stoppedBy = report.stoppedBy || 'queue_drained'; break }
 
-    try {
-      const listed = await listOneViaInternal(req, {
-        userId,
-        accountId: job.account_id ?? accountId,
-        asin: job.asin,
-        niche: job.source_niche,
-        categoryId: job.category_id,
-      })
-      await markCompleted(job.id, listed.listingId)
       await logAutoListingEvent({
         userId,
         accountId: job.account_id ?? accountId,
         queueId: job.id,
         asin: job.asin,
-        eventType: 'listed',
-        message: `Listed successfully (${listed.listingId}).`,
-        data: { listingId: listed.listingId, listingUrl: listed.listingUrl },
+        eventType: 'processing',
+        message: 'Posting listing.',
+        data: { score: job.score, attempts: job.attempts },
       })
-      report.processed = 1
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error)
-      const attempts = Number(job.attempts || 0)
-      const retryAt = attempts <= 1 ? new Date(Date.now() + jitterRetryMinutes() * 60 * 1000) : null
-      await markFailed(job.id, msg.slice(0, 900), retryAt)
-      await logAutoListingEvent({
-        userId,
-        accountId: job.account_id ?? accountId,
-        queueId: job.id,
-        asin: job.asin,
-        eventType: retryAt ? 'retry_scheduled' : 'failed',
-        message: msg.slice(0, 400),
-        data: { attempts, retryAt: retryAt?.toISOString() || null },
-      })
-      report.processed = 1
-      report.failed = msg.slice(0, 180)
+
+      try {
+        const listed = await listOneViaInternal(req, {
+          userId,
+          accountId: job.account_id ?? accountId,
+          asin: job.asin,
+          niche: job.source_niche,
+          categoryId: job.category_id,
+        })
+        await markCompleted(job.id, listed.listingId)
+        await logAutoListingEvent({
+          userId,
+          accountId: job.account_id ?? accountId,
+          queueId: job.id,
+          asin: job.asin,
+          eventType: 'listed',
+          message: `Listed successfully (${listed.listingId}).`,
+          data: { listingId: listed.listingId, listingUrl: listed.listingUrl },
+        })
+        listedCount += 1
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        const code = (error as { code?: string })?.code
+        const attempts = Number(job.attempts || 0)
+        const retryAt = attempts <= 1 ? new Date(Date.now() + jitterRetryMinutes() * 60 * 1000) : null
+        await markFailed(job.id, msg.slice(0, 900), retryAt)
+        await logAutoListingEvent({
+          userId,
+          accountId: job.account_id ?? accountId,
+          queueId: job.id,
+          asin: job.asin,
+          eventType: retryAt ? 'retry_scheduled' : 'failed',
+          message: msg.slice(0, 400),
+          data: { attempts, retryAt: retryAt?.toISOString() || null },
+        })
+        failedCount += 1
+        if (failureSamples.length < 5) failureSamples.push(msg.slice(0, 140))
+        // eBay quota errors mean every further call this tick will also fail — stop now.
+        if (code === 'EBAY_API_QUOTA_EXCEEDED' || /quota|usage limit/i.test(msg)) { report.stoppedBy = 'ebay_quota'; break }
+      }
     }
 
+    report.listed = listedCount
+    report.failed = failedCount
+    report.processed = listedCount + failedCount
+    if (failureSamples.length) report.failureSamples = failureSamples
     report.durationMs = Date.now() - startedAt
     return report
   } finally {
