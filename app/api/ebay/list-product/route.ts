@@ -134,11 +134,37 @@ const NICHE_FALLBACK_LEAF_CATEGORY: Record<string, string> = {
 
 const DEFAULT_LEAF_CATEGORY = '26677'
 
-// eBay charges a per-listing INSERTION FEE for certain categories even within your store
-// allowance — notably "Business & Industrial > Heavy Equipment" (category 95495). An
-// auto-categorized truck crane landed there and cost the user a surprise $20. Never
-// auto-list into these; drop them from the candidates and fall back to the niche/default.
+// eBay charges a per-listing INSERTION FEE for certain "Select Business & Industrial"
+// categories even within your store allowance — there is NO free-listing quota for them:
+//   • Heavy Equipment (an auto-categorized truck crane landed here → surprise $20)
+//   • Printing & Graphic Arts > Commercial Printing Presses
+//   • Restaurant & Food Service > Food Trucks, Trailers & Carts
+// This hardcoded ID list is a fast-path safety net (IDs can change / be wrong), but the
+// PRIMARY defense is the live fee check below: every Verify response carries eBay's own
+// fee quote, so we refuse any category whose insertion fee is >= the threshold — that
+// catches these three and any future fee category by the ACTUAL fee, not a guessed ID.
 const FEE_INSERTION_CATEGORY_BLOCKLIST = new Set(['95495'])
+
+// A normal listing inside the store allowance quotes a $0.00 insertion fee; the special
+// fee categories quote $20. Anything at/above this threshold is treated as a fee trap and
+// skipped. Set well below $20 but above any incidental over-allowance overage (~$0.35).
+const FEE_INSERTION_BLOCK_THRESHOLD = 5
+
+// Pull the total INSERTION fee (in dollars) out of an eBay Verify/Add <Fees> block.
+// eBay returns repeated <Fee><Name>…</Name><Fee currencyID="USD">amount</Fee></Fee>
+// groups; we sum every fee whose Name mentions "Insertion".
+function extractInsertionFee(responseXml: string): number {
+  let total = 0
+  const feeGroup = /<Fee>\s*<Name>([^<]+)<\/Name>\s*<Fee[^>]*>([\d.]+)<\/Fee>/gi
+  let match: RegExpExecArray | null
+  while ((match = feeGroup.exec(responseXml)) !== null) {
+    if (/insertion/i.test(match[1])) {
+      const amount = parseFloat(match[2])
+      if (Number.isFinite(amount)) total += amount
+    }
+  }
+  return total
+}
 
 const EBAY_SHIP_FROM_LOCATION = 'King City, California, United States'
 const EBAY_SHIP_FROM_POSTAL_CODE = '93930'
@@ -3151,13 +3177,33 @@ export async function POST(req: NextRequest) {
       const verifyAck = responseText.match(/<Ack>(.*?)<\/Ack>/)?.[1] || ''
 
       if (verifyAck && verifyAck !== 'Failure' && errorKind !== 'leaf' && errorKind !== 'specific') {
+        // eBay quotes the listing's fees in the Verify response. If this category carries a
+        // surprise insertion fee ($20 Heavy Equipment / Printing Presses / Food Trucks),
+        // reject it here so the loop moves on to a normal free category instead of charging.
+        const insertionFee = extractInsertionFee(responseText)
+        if (insertionFee >= FEE_INSERTION_BLOCK_THRESHOLD) {
+          return {
+            ok: false as const,
+            categoryId: activeCategoryId,
+            itemSpecificsXml: workingSpecificsXml,
+            responseText,
+            parsed: { ...parsed, short: `Category ${activeCategoryId} carries a $${insertionFee.toFixed(2)} insertion fee — skipped`, long: '' },
+            attemptedCategoryIds,
+            errorKind: 'other' as const,
+            feeBlocked: true,
+            insertionFee,
+          }
+        }
         return {
-          ok: true,
+          ok: true as const,
           categoryId: activeCategoryId,
           itemSpecificsXml: workingSpecificsXml,
           responseText,
           parsed,
           attemptedCategoryIds,
+          errorKind: 'other' as const,
+          feeBlocked: false,
+          insertionFee,
         }
       }
 
@@ -3185,13 +3231,15 @@ export async function POST(req: NextRequest) {
     }
 
     return {
-      ok: false,
+      ok: false as const,
       categoryId: activeCategoryId,
       itemSpecificsXml: workingSpecificsXml,
       responseText,
       parsed,
       attemptedCategoryIds,
       errorKind,
+      feeBlocked: false,
+      insertionFee: 0,
     }
   }
 
@@ -3277,6 +3325,8 @@ export async function POST(req: NextRequest) {
   let verificationAttempts: string[] = []
   let verificationResponseText = ''
   let verificationError = ''
+  // Categories eBay quoted a surprise insertion fee for during this run — never publish into them.
+  const feeBlockedCategoryIds = new Set<string>()
 
   // FAST PATH: when the category came from our cache, it has already worked for this
   // ASIN before. Skip the verify loop (which costs 1-6 eBay API calls per candidate)
@@ -3302,6 +3352,10 @@ export async function POST(req: NextRequest) {
       )
     }
 
+    if (verification.feeBlocked) {
+      feeBlockedCategoryIds.add(verification.categoryId)
+    }
+
     if (verification.ok) {
       verifiedParams = {
         categoryId: verification.categoryId,
@@ -3318,6 +3372,16 @@ export async function POST(req: NextRequest) {
 
   if (!verificationResponseText && categoryCandidates.length === 0) {
     verificationError = 'No usable eBay category candidates were returned for this listing.'
+  }
+
+  // SAFETY NET: never let the publish step use a category we know charges a surprise
+  // insertion fee. If the only "preferred" candidate turned out to be a fee category (or
+  // it's on the hardcoded blocklist), fall back to the default free category instead.
+  if (
+    feeBlockedCategoryIds.has(verifiedParams.categoryId) ||
+    FEE_INSERTION_CATEGORY_BLOCKLIST.has(verifiedParams.categoryId)
+  ) {
+    verifiedParams = { categoryId: DEFAULT_LEAF_CATEGORY, itemSpecificsXml }
   }
 
   // ── Retry chain ──────────────────────────────────────────────────────────────
@@ -3408,6 +3472,7 @@ export async function POST(req: NextRequest) {
   if ((et === 'leaf' || et === 'specific') && leafSuggestedCategoryIds.length > 1) {
     for (const categoryId of leafSuggestedCategoryIds.slice(1)) {
       if (categoryId === preferredCategoryId || attemptedCategoryIds.includes(categoryId)) continue
+      if (feeBlockedCategoryIds.has(categoryId) || FEE_INSERTION_CATEGORY_BLOCKLIST.has(categoryId)) continue
       attempt = await attemptListing({ ...xmlParams, categoryId, itemSpecificsXml })
       responseText = attempt.responseText
       p = attempt.parsed
@@ -3422,6 +3487,7 @@ export async function POST(req: NextRequest) {
   if (et === 'leaf' || et === 'specific') {
     for (const categoryId of categoryCandidates) {
       if (!categoryId || attemptedCategoryIds.includes(categoryId)) continue
+      if (feeBlockedCategoryIds.has(categoryId) || FEE_INSERTION_CATEGORY_BLOCKLIST.has(categoryId)) continue
       attempt = await attemptListing({ ...xmlParams, categoryId, itemSpecificsXml })
       responseText = attempt.responseText
       p = attempt.parsed
