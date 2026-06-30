@@ -90,6 +90,22 @@ export async function POST(req: NextRequest) {
     return apiError('Pass { confirmed: true } to end likely-loss listings.', { status: 400, code: 'NOT_CONFIRMED' })
   }
 
+  // ── SAFETY PAUSE (2026-06-30) ────────────────────────────────────────────────
+  // The stored Amazon prices this relies on were found UNRELIABLE: the user verified that
+  // items flagged here as "loss-makers" actually have LOWER real prices on Amazon (false
+  // positives). Auto-ending on them would delete good listings, so the destructive action is
+  // disabled — the GET preview still works as a manual REVIEW list (suspects to check on
+  // Amazon yourself). Re-enable only when there is a trustworthy live price source.
+  if (process.env.LIKELY_LOSS_END_ENABLED !== 'true') {
+    return apiOk({
+      cleared: 0,
+      failed: 0,
+      remaining: 0,
+      paused: true,
+      message: 'Paused for safety — the Amazon prices here were found unreliable (items flagged as losses had LOWER real prices on Amazon). Nothing ended. Use this as a list to spot-check on Amazon yourself.',
+    })
+  }
+
   try {
     const credentials = await getValidEbayAccessToken(session.user.id)
     if (!credentials?.accessToken) {
