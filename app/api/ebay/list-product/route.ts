@@ -1904,7 +1904,7 @@ function buildXml(params: {
     <Currency>USD</Currency>
     <Location>${EBAY_SHIP_FROM_LOCATION.replace(/&/g, '&amp;')}</Location>
     <PostalCode>${EBAY_SHIP_FROM_POSTAL_CODE}</PostalCode>
-    <DispatchTimeMax>3</DispatchTimeMax>
+    <DispatchTimeMax>2</DispatchTimeMax>
     <ListingDuration>GTC</ListingDuration>
     <ListingType>FixedPriceItem</ListingType>
     <Quantity>2</Quantity>
