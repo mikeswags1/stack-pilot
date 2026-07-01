@@ -2799,7 +2799,14 @@ export async function POST(req: NextRequest) {
   const primaryProxyImage = primarySourceImage.includes('/api/image/')
     ? primarySourceImage
     : `${siteUrl}/api/image/proxy?url=${encodeURIComponent(primarySourceImage)}`
-  const badgeUrl = `${siteUrl}/api/image/badge?url=${encodeURIComponent(primaryProxyImage)}&asin=${encodeURIComponent(asin)}&title=${encodeURIComponent(listingTitle)}&badge=v10`
+  // Build the FREE SHIPPING badge from a SHORT raw-Amazon 1500px source (keeps the whole
+  // URL under eBay's 500-char PictureURL limit) + a truncated title. eBay reliably fetches
+  // this self-hosted high-res badged image (verified on live listings).
+  const badgeSourceImage = (() => {
+    const m = primarySourceImage.match(/\/images\/I\/([^./]+)/)
+    return m ? `https://m.media-amazon.com/images/I/${m[1]}._AC_SL1500_.jpg` : primaryProxyImage
+  })()
+  const badgeUrl = `${siteUrl}/api/image/badge?url=${encodeURIComponent(badgeSourceImage)}&asin=${encodeURIComponent(asin)}&title=${encodeURIComponent(listingTitle.slice(0, 40))}&badge=v10`
   const cleanDescriptionPrimary = primarySourceImage.includes('/api/image/')
     ? primarySourceImage
     : `${siteUrl}/api/image/proxy?url=${encodeURIComponent(primarySourceImage)}`
@@ -2841,13 +2848,11 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Trusted/bulk is self-hosted: lead with the PROXY primary (fast, reliably fetchable by
-  // eBay) rather than the badge endpoint (slow sharp render → eBay fetch timeouts). Manual
-  // keeps badge-first because its primary is EPS-uploaded and this list is only a fallback.
+  // Lead with the badged primary (v10 FREE SHIPPING stamp) for BOTH paths — the self-hosted
+  // high-res badge URL is now short enough and eBay fetches it reliably. Proxy/raw are only
+  // fallbacks if the badge URL is somehow too long. Manual's real primary is the EPS upload.
   const directPrimaryFallbacks = dedupeImageUrls(
-    trusted
-      ? [cleanDescriptionPrimary, primarySourceImage, badgeUrl]
-      : [badgeUrl, cleanDescriptionPrimary, primarySourceImage]
+    [badgeUrl, cleanDescriptionPrimary, primarySourceImage]
   ).filter((url) => url.length <= 500)
   const primaryPictureUrl =
     pictureList[0] && pictureList[0].length <= 500
