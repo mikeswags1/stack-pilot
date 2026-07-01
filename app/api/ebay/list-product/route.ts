@@ -16,6 +16,7 @@ import { checkAmazonLiveAvailability } from '@/lib/amazon-availability'
 import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getNetProfit, getPricingRecommendation, getRecommendedEbayPrice, MIN_NET_PROFIT, priceForNetProfit } from '@/lib/listing-pricing'
 import { getListingPolicyBlockReason, getListingPolicyFlags, hasBlockedListingPolicyFlag } from '@/lib/listing-policy'
 import { chooseBestListingTitle, isWeakListingTitle } from '@/lib/listing-quality'
+import { stripLeadingBrand } from '@/lib/brand-strip'
 import { getRapidApiKey } from '@/lib/rapidapi'
 
 // ── VeRO Protection ──────────────────────────────────────────────────────────
@@ -979,21 +980,8 @@ function inferBrandFromProduct(title: string, specs: Array<[string, string]>) {
   return firstWord.length > 1 ? normalizeBrandValue(firstWord).slice(0, 80) : ''
 }
 
-// Amazon titles almost always LEAD with an obscure marketplace brand ("Kacctyen",
-// "SHAPON", "XY-WQ") that means nothing to eBay buyers and just wastes the 80-char
-// title budget. Strip that leading brand token from the TITLE — the brand still lives
-// in the Brand item-specific, so buyers can still filter by it. Only strips when the
-// title actually starts with the product's real brand AND a substantial product title
-// is left over, so it never turns a good title into a bare fragment.
-function stripLeadingBrandFromTitle(title: string, specs: Array<[string, string]>): string {
-  const brandRaw = specs.find(([key]) => /brand/i.test(key))?.[1] || ''
-  const brand = cleanItemSpecificValue(brandRaw).trim()
-  if (!brand || brand.length < 2 || GENERIC_BRAND_VALUES.has(brand.toLowerCase())) return title
-  const escaped = brand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  // Remove the leading brand token, any ®/™, and the separators that follow it.
-  const stripped = title.replace(new RegExp(`^\\s*${escaped}[®™]?\\b[\\s:\\-|,]*`, 'i'), '').trim()
-  return stripped.length >= 12 && /[a-z]/i.test(stripped) ? stripped : title
-}
+// Leading-brand stripping now lives in lib/brand-strip.ts (shared with the retitle tool),
+// combining the precise Brand-spec match with a shape heuristic for obscure brands.
 
 function inferTypeFromProduct(title: string, niche: string | null, specs: Array<[string, string]>) {
   const typeSpec = specs.find(([key]) => /^type$/i.test(key))
@@ -2445,7 +2433,8 @@ export async function POST(req: NextRequest) {
     .trim()
   // Drop the obscure leading Amazon brand ("Kacctyen ...") so the title leads with the
   // product type + keywords buyers actually search. Brand stays in the Brand specific.
-  const brandlessTitle = stripLeadingBrandFromTitle(cleanTitle, validatedAmazon.specs || [])
+  const brandSpecValue = (validatedAmazon.specs || []).find(([key]) => /brand/i.test(key))?.[1]
+  const brandlessTitle = stripLeadingBrand(cleanTitle, brandSpecValue)
   const rawSafeTitle = (() => {
     if (brandlessTitle.length <= 80) return brandlessTitle
     // Remove last partial word after slicing to 80 chars

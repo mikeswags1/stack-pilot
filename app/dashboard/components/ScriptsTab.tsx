@@ -60,6 +60,10 @@ export function ScriptsTab({
   const [lossCount, setLossCount] = useState<number>(0)
   const [lossSamples, setLossSamples] = useState<string[]>([])
   const [lossMessage, setLossMessage] = useState<string | null>(null)
+  const [retitleState, setRetitleState] = useState<'idle' | 'previewing' | 'ready' | 'running' | 'done' | 'error'>('idle')
+  const [retitleCount, setRetitleCount] = useState<number>(0)
+  const [retitleSamples, setRetitleSamples] = useState<Array<{ before: string; after: string }>>([])
+  const [retitleMessage, setRetitleMessage] = useState<string | null>(null)
 
   const handleEndLoss = async () => {
     if (lossState === 'idle' || lossState === 'error' || lossState === 'done') {
@@ -99,6 +103,49 @@ export function ScriptsTab({
     } catch {
       setLossState('error')
       setLossMessage('Request failed. Check your eBay connection.')
+    }
+  }
+
+  const handleRetitle = async () => {
+    // First click previews how many titles would change; second click applies them.
+    // Large stores return `remaining` and drop back to ready so you can click again.
+    if (retitleState === 'idle' || retitleState === 'error' || retitleState === 'done') {
+      setRetitleState('previewing')
+      setRetitleMessage(null)
+      try {
+        const res = await fetch('/api/ebay/retitle-brands')
+        const data = await res.json()
+        setRetitleCount(data.count || 0)
+        setRetitleSamples(Array.isArray(data.samples) ? data.samples : [])
+        setRetitleMessage(data.message || (res.ok ? 'Preview complete.' : 'Something went wrong.'))
+        setRetitleState(res.ok ? 'ready' : 'error')
+      } catch {
+        setRetitleState('error')
+        setRetitleMessage('Request failed. Check your eBay connection.')
+      }
+      return
+    }
+
+    if (retitleState !== 'ready' || retitleCount <= 0) return
+    setRetitleState('running')
+    setRetitleMessage(`Cleaning ${retitleCount} title${retitleCount === 1 ? '' : 's'} on eBay...`)
+    try {
+      const res = await fetch('/api/ebay/retitle-brands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed: true }),
+      })
+      const data = await res.json()
+      setRetitleMessage(data.message || (res.ok ? 'Done.' : 'Something went wrong.'))
+      if (res.ok && (data.remaining || 0) > 0) {
+        setRetitleCount(data.remaining)
+        setRetitleState('ready')
+      } else {
+        setRetitleState(res.ok ? 'done' : 'error')
+      }
+    } catch {
+      setRetitleState('error')
+      setRetitleMessage('Request failed. Check your eBay connection.')
     }
   }
 
@@ -361,6 +408,58 @@ export function ScriptsTab({
             </button>
             {lossState === 'ready' && lossCount > 0 ? (
               <button className="btn btn-ghost btn-sm" style={{ width: '100%', marginTop: '8px' }} onClick={() => { setLossState('idle'); setLossMessage(null); setLossSamples([]) }}>
+                Cancel
+              </button>
+            ) : null}
+          </div>
+
+          {/* Clean Brand Titles — strip obscure Amazon brand prefixes for SEO (non-destructive) */}
+          <div className="card" style={{ padding: '28px', border: retitleState === 'ready' && retitleCount > 0 ? '1px solid rgba(63,185,80,0.45)' : undefined }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px', gap: '12px' }}>
+              <div style={{ fontFamily: 'var(--serif)', fontSize: '20px', fontWeight: 600, color: 'var(--txt)' }}>Clean Brand Titles</div>
+              <span style={{ padding: '3px 10px', borderRadius: '20px', fontSize: '8px', fontWeight: 700, background: 'rgba(63,185,80,0.10)', color: 'var(--grn)', border: '1px solid rgba(63,185,80,0.28)' }}>
+                SEO
+              </span>
+            </div>
+            <div style={{ fontSize: '13px', color: 'var(--sil)', marginBottom: '22px', lineHeight: 1.6 }}>
+              Rewrites live listings that lead with an obscure Amazon brand (SONGMICS, DkOvn…) so the title starts with product keywords buyers actually search. The brand stays in the Brand filter — nothing is deleted. Click once to preview, again to apply.
+            </div>
+            {retitleMessage ? (
+              <div style={{ marginBottom: '12px', fontSize: '12px', color: retitleState === 'error' ? 'var(--red)' : retitleState === 'done' ? 'var(--grn)' : 'var(--gold)', padding: '8px 12px', borderRadius: '8px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                {retitleMessage}
+              </div>
+            ) : null}
+            {retitleState === 'ready' && retitleSamples.length > 0 ? (
+              <div style={{ marginBottom: '12px', maxHeight: '180px', overflow: 'auto', fontSize: '11px', color: 'var(--dim)', lineHeight: 1.5 }}>
+                <div style={{ color: 'var(--sil)', marginBottom: '6px', fontWeight: 600 }}>Preview (before → after):</div>
+                {retitleSamples.map((s, idx) => (
+                  <div key={idx} style={{ marginBottom: '7px' }}>
+                    <div style={{ color: 'var(--red)', textDecoration: 'line-through', opacity: 0.7 }}>{s.before}</div>
+                    <div style={{ color: 'var(--grn)' }}>{s.after}</div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            <button
+              className={`btn btn-sm ${retitleState === 'ready' && retitleCount > 0 ? 'btn-primary' : 'btn-ghost'}`}
+              disabled={retitleState === 'previewing' || retitleState === 'running' || (retitleState === 'ready' && retitleCount === 0)}
+              onClick={handleRetitle}
+              style={{ width: '100%' }}
+            >
+              {retitleState === 'previewing'
+                ? 'Scanning titles...'
+                : retitleState === 'running'
+                  ? 'Cleaning titles...'
+                  : retitleState === 'ready' && retitleCount > 0
+                    ? `Clean ${retitleCount} Title${retitleCount === 1 ? '' : 's'}`
+                    : retitleState === 'ready'
+                      ? 'No brand-heavy titles found'
+                      : retitleState === 'done'
+                        ? 'Done'
+                        : 'Scan Titles for Obscure Brands'}
+            </button>
+            {retitleState === 'ready' && retitleCount > 0 ? (
+              <button className="btn btn-ghost btn-sm" style={{ width: '100%', marginTop: '8px' }} onClick={() => { setRetitleState('idle'); setRetitleMessage(null); setRetitleSamples([]) }}>
                 Cancel
               </button>
             ) : null}
