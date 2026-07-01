@@ -2808,9 +2808,12 @@ export async function POST(req: NextRequest) {
     filteredImages.length > 0
       ? [badgeUrl, ...cleanGalleryUrls]
       : [badgeUrl]
-  const epsUploadUrls = trusted ? epsSourceUrls.slice(0, 1) : epsSourceUrls
-  // Non-trusted/manual still uses sequential EPS uploads for maximum gallery
-  // reliability. Bulk trusted mode takes the fast primary-only EPS path above.
+  // TRUSTED/BULK: ZERO EPS uploads. eBay's UploadSiteHostedPictures endpoint has a low
+  // daily cap; a 600/day autopilot (1 upload per listing) exhausts it within hours, and a
+  // maxed upload quota then blocks EVERY listing. eBay fetches our self-hosted proxy URLs
+  // directly via <PictureURL>, so bulk mode goes fully self-hosted. Manual listing (far
+  // lower volume) keeps EPS for maximum gallery reliability + the FREE SHIPPING stamp.
+  const epsUploadUrls = trusted ? [] : epsSourceUrls
   const pictureList: string[] = []
   for (const epsUrl of epsUploadUrls) {
     pictureList.push(await uploadToEPS(epsUrl, credentials.accessToken, appId, effectiveUserId))
@@ -2819,22 +2822,24 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // If badge upload failed (eBay timed out fetching our slow sharp endpoint),
-  // synchronously upload the proxied primary image (same product, no stamp) so the
-  // first image is still the primary product — not a random gallery shot. Only adds
-  // 1 extra eBay API call when badge actually failed (rare).
-  if (!pictureList[0] || pictureList[0].length > 500) {
+  // Manual only: if the badge upload failed (eBay timed out fetching our slow sharp
+  // endpoint), upload the proxied primary image (same product, no stamp) so the first
+  // image is still the primary product. Trusted/bulk never uploads, so it skips this.
+  if (!trusted && (!pictureList[0] || pictureList[0].length > 500)) {
     const fallbackPrimary = await uploadToEPS(cleanDescriptionPrimary, credentials.accessToken, appId, effectiveUserId)
     if (fallbackPrimary && fallbackPrimary.length <= 500) {
       pictureList[0] = fallbackPrimary
     }
   }
 
-  const directPrimaryFallbacks = dedupeImageUrls([
-    badgeUrl,
-    cleanDescriptionPrimary,
-    primarySourceImage,
-  ]).filter((url) => url.length <= 500)
+  // Trusted/bulk is self-hosted: lead with the PROXY primary (fast, reliably fetchable by
+  // eBay) rather than the badge endpoint (slow sharp render → eBay fetch timeouts). Manual
+  // keeps badge-first because its primary is EPS-uploaded and this list is only a fallback.
+  const directPrimaryFallbacks = dedupeImageUrls(
+    trusted
+      ? [cleanDescriptionPrimary, primarySourceImage, badgeUrl]
+      : [badgeUrl, cleanDescriptionPrimary, primarySourceImage]
+  ).filter((url) => url.length <= 500)
   const primaryPictureUrl =
     pictureList[0] && pictureList[0].length <= 500
       ? pictureList[0]

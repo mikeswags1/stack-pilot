@@ -17,17 +17,18 @@ export async function canScheduleMoreToday(userId: string | number, settings: Au
 }
 
 export async function computeDailyWindow(userId: string | number) {
-  // Keep it simple and “natural”: spread across 16 hours starting at 8am server-local.
-  // Vercel runs UTC; this still spreads evenly and avoids bursts.
-  const start = new Date()
-  start.setUTCHours(12, 0, 0, 0) // 8am ET-ish baseline
-  const end = new Date(start.getTime() + 16 * 60 * 60 * 1000)
+  // ALWAYS drip starting from NOW. The old logic pinned the window start to 12:00 UTC,
+  // so every morning before noon UTC the autopilot scheduled all jobs for the future and
+  // sat completely idle — a dead zone of several hours a day. Starting at `now` removes it.
   const now = new Date()
-  if (now > end) {
-    // If late, start now for the remainder.
-    return { start: now, end: new Date(now.getTime() + 4 * 60 * 60 * 1000) }
+  // End the day's window at the next 04:00 UTC; remaining listings spread from now to then.
+  const end = new Date(now)
+  end.setUTCHours(4, 0, 0, 0)
+  if (end <= now) end.setUTCDate(end.getUTCDate() + 1)
+  // Guarantee at least a 2h spread so a big backlog still drips out gently (no eBay burst).
+  if (end.getTime() - now.getTime() < 2 * 60 * 60 * 1000) {
+    return { start: now, end: new Date(now.getTime() + 2 * 60 * 60 * 1000) }
   }
-  if (now < start) return { start, end }
   return { start: now, end }
 }
 
