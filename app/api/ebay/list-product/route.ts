@@ -979,6 +979,22 @@ function inferBrandFromProduct(title: string, specs: Array<[string, string]>) {
   return firstWord.length > 1 ? normalizeBrandValue(firstWord).slice(0, 80) : ''
 }
 
+// Amazon titles almost always LEAD with an obscure marketplace brand ("Kacctyen",
+// "SHAPON", "XY-WQ") that means nothing to eBay buyers and just wastes the 80-char
+// title budget. Strip that leading brand token from the TITLE — the brand still lives
+// in the Brand item-specific, so buyers can still filter by it. Only strips when the
+// title actually starts with the product's real brand AND a substantial product title
+// is left over, so it never turns a good title into a bare fragment.
+function stripLeadingBrandFromTitle(title: string, specs: Array<[string, string]>): string {
+  const brandRaw = specs.find(([key]) => /brand/i.test(key))?.[1] || ''
+  const brand = cleanItemSpecificValue(brandRaw).trim()
+  if (!brand || brand.length < 2 || GENERIC_BRAND_VALUES.has(brand.toLowerCase())) return title
+  const escaped = brand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // Remove the leading brand token, any ®/™, and the separators that follow it.
+  const stripped = title.replace(new RegExp(`^\\s*${escaped}[®™]?\\b[\\s:\\-|,]*`, 'i'), '').trim()
+  return stripped.length >= 12 && /[a-z]/i.test(stripped) ? stripped : title
+}
+
 function inferTypeFromProduct(title: string, niche: string | null, specs: Array<[string, string]>) {
   const typeSpec = specs.find(([key]) => /^type$/i.test(key))
   if (typeSpec?.[1]) return sanitizeContent(typeSpec[1]).slice(0, 120)
@@ -2427,10 +2443,13 @@ export async function POST(req: NextRequest) {
     .replace(/\s*[-|,]\s*(Pack of|Pack|Count|Piece|Pcs|Units?|Set of)\s*\d+/gi, '')
     .replace(/\s{2,}/g, ' ')
     .trim()
+  // Drop the obscure leading Amazon brand ("Kacctyen ...") so the title leads with the
+  // product type + keywords buyers actually search. Brand stays in the Brand specific.
+  const brandlessTitle = stripLeadingBrandFromTitle(cleanTitle, validatedAmazon.specs || [])
   const rawSafeTitle = (() => {
-    if (cleanTitle.length <= 80) return cleanTitle
+    if (brandlessTitle.length <= 80) return brandlessTitle
     // Remove last partial word after slicing to 80 chars
-    let t = cleanTitle.slice(0, 80).replace(/\s+\S*$/, '').trim()
+    let t = brandlessTitle.slice(0, 80).replace(/\s+\S*$/, '').trim()
     // Strip trailing prepositions/connectors that leave a dangling incomplete phrase
     // e.g. "...Sleep Mask with Zero" → "...Sleep Mask"
     t = t.replace(/\s+(?:with|for|in|to|of|and|or|a|an|the|by|at|from|as|into|zero|one|two|three|four|five|&|\+)$/i, '').trim()
@@ -2481,9 +2500,10 @@ export async function POST(req: NextRequest) {
     const baseLower = base.toLowerCase()
     const candidates = SEO_KEYWORDS[productNiche || ''] || []
 
-    // Also pull high-value spec values not already in title
+    // Also pull high-value spec values not already in title. Brand is deliberately
+    // excluded — we strip the obscure Amazon brand from titles, so never add it back.
     const specValues = productSpecs
-      .filter(([k]) => /brand|model|compatible|size|material|connectivity/i.test(k))
+      .filter(([k]) => /model|compatible|size|material|connectivity/i.test(k))
       .map(([, v]) => sanitizeContent(v).split(/[,/]/)[0].trim())
       .filter(v => v.length > 2 && v.length < 20 && !baseLower.includes(v.toLowerCase()))
 
