@@ -388,13 +388,17 @@ export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: 
         continue
       }
 
-      if (!isViableProduct(amazonTop.price, ebayMinPrice, amazonTop.title)) {
+      // Margin gate vs THIS listing's own eBay price — not the seed's minimum. The seed
+      // min compares apples to oranges (a $150 Browning camera vs some $19 junk camera in
+      // the same niche) and rejected every real match. hit.price is what THIS product
+      // demonstrably sells for on eBay right now — the actual arbitrage question.
+      if (!isViableProduct(amazonTop.price, hit.price, amazonTop.title)) {
         skipped++
-        const ratio = (amazonTop.price / ebayMinPrice).toFixed(2)
+        const ratio = (amazonTop.price / hit.price).toFixed(2)
         const reason = amazonTop.price < 8
           ? `Amazon price $${amazonTop.price} below $8 floor`
-          : amazonTop.price > ebayMinPrice * MAX_AMAZON_COST_RATIO
-            ? `Amazon $${amazonTop.price} > ${MAX_AMAZON_COST_RATIO} × eBay min $${ebayMinPrice} (ratio ${ratio})`
+          : amazonTop.price > hit.price * MAX_AMAZON_COST_RATIO
+            ? `Amazon $${amazonTop.price} > ${MAX_AMAZON_COST_RATIO} × this listing's eBay $${hit.price} (ratio ${ratio})`
             : isWeakListingTitle(amazonTop.title)
               ? 'Amazon title flagged as weak/junk'
               : 'Amazon title matched listing-policy blocklist'
