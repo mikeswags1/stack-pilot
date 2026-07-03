@@ -20,72 +20,69 @@ import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getRecommendedEbayPrice } fro
 import { upsertProductSourceItems } from '@/lib/product-source-engine'
 import { getRapidApiKey } from '@/lib/rapidapi'
 
-// ── Demand seeds — curated for eBay's high-demand buyer demographic ─────────────
+// ── Demand seeds — built from eBay Seller Hub SOURCING INSIGHTS (2026-07-03) ─────
+// Top categories by search-to-listing ratio + sell-through rate over the last 30 days,
+// filtered by our rules: dropshippable from Amazon Prime, no collectibles (coins/cards/
+// memorabilia stay cut), no clothing/shoes (sizing returns), no handbags (authenticity).
+//   Video Game Consoles  ratio 7.88  STR 17.7%  (GREAT)
+//   Cell Phones          ratio 6.53  STR 12.1%  (GOOD — accessories only, phones = fraud)
+//   Wristwatches         ratio 2.90  STR  4.6%
+//   Golf Clubs           ratio 2.68  STR  7.4%  (GOOD)
+//   Dolls & Playsets     ratio 1.74  STR  5.2%  (GOOD)
+//   Action Figures       ratio 1.57  STR  6.1%  (GOOD)
+//   Video Games          ratio 1.15  STR  7.8%
+//   Party Gags & Tricks  eBay's "BEST OPPORTUNITY" pick for this account
+//   Baby Carriers/Bags   ratio 1.14  STR  6.3%  (GREAT — bags/organizers angle)
 const DEMAND_SEEDS: Array<{ niche: string; query: string }> = [
-  // Auto parts & accessories — huge on eBay
-  { niche: 'Auto Accessories', query: 'car phone mount magnetic vent' },
-  { niche: 'Auto Accessories', query: 'dash cam front rear' },
-  { niche: 'Auto Accessories', query: 'obd2 scanner bluetooth' },
-  { niche: 'Auto Accessories', query: 'led headlight bulbs h11' },
-  { niche: 'Auto Accessories', query: 'jump starter portable' },
-  { niche: 'Auto Accessories', query: 'tire pressure gauge digital' },
-  { niche: 'Auto Accessories', query: 'car cleaning detail kit' },
-  { niche: 'Auto Accessories', query: 'seat cover universal' },
-  // Tools & home improvement — Amazon doesn't crush here, eBay buyers love deals
-  { niche: 'Tools', query: 'magnetic wristband tool' },
-  { niche: 'Tools', query: 'ratchet wrench set' },
-  { niche: 'Tools', query: 'digital caliper' },
-  { niche: 'Tools', query: 'stud finder wall scanner' },
-  { niche: 'Tools', query: 'drill bit set titanium' },
-  { niche: 'Tools', query: 'multimeter electrical' },
-  { niche: 'Tools', query: 'precision screwdriver set' },
-  { niche: 'Tools', query: 'tape measure heavy duty 25ft' },
-  // Fishing & hunting — eBay strength
-  { niche: 'Fishing', query: 'fishing tackle box organizer' },
-  { niche: 'Fishing', query: 'fishing lure kit bass' },
-  { niche: 'Fishing', query: 'braided fishing line 30lb' },
-  { niche: 'Fishing', query: 'fishing rod combo spinning' },
-  { niche: 'Hunting', query: 'trail camera hunting' },
-  { niche: 'Hunting', query: 'hunting knife folding' },
-  { niche: 'Hunting', query: 'rangefinder hunting' },
-  // Sporting goods
-  { niche: 'Sporting Goods', query: 'resistance bands set workout' },
-  { niche: 'Sporting Goods', query: 'foam roller muscle recovery' },
-  { niche: 'Sporting Goods', query: 'yoga mat non slip thick' },
-  { niche: 'Sporting Goods', query: 'pickleball paddle set' },
-  { niche: 'Sporting Goods', query: 'jump rope speed' },
-  { niche: 'Sporting Goods', query: 'ab roller wheel' },
-  // Pet supplies
-  { niche: 'Pet Supplies', query: 'dog grooming kit clippers' },
-  { niche: 'Pet Supplies', query: 'pet hair remover brush' },
-  { niche: 'Pet Supplies', query: 'dog harness no pull' },
-  { niche: 'Pet Supplies', query: 'cat litter mat large' },
-  { niche: 'Pet Supplies', query: 'automatic pet feeder' },
-  { niche: 'Pet Supplies', query: 'dog dental chews' },
-  // Garden & outdoor
-  { niche: 'Garden', query: 'garden hose nozzle heavy duty' },
-  { niche: 'Garden', query: 'pruning shears bypass' },
-  { niche: 'Garden', query: 'weed puller stand up' },
-  { niche: 'Garden', query: 'solar pathway lights outdoor' },
-  { niche: 'Garden', query: 'garden kneeling pad foam' },
-  // Computer & electronics accessories
-  { niche: 'Computer Accessories', query: 'usb c hub multiport hdmi' },
-  { niche: 'Computer Accessories', query: 'wireless mouse ergonomic' },
-  { niche: 'Computer Accessories', query: 'mechanical keyboard compact' },
-  { niche: 'Computer Accessories', query: 'laptop stand aluminum adjustable' },
-  { niche: 'Computer Accessories', query: 'monitor arm desk mount' },
-  { niche: 'Computer Accessories', query: 'cable management organizer desk' },
-  // Mobile accessories (eBay buyers love deals here)
-  { niche: 'Phone Accessories', query: 'phone tripod stand desktop' },
-  { niche: 'Phone Accessories', query: 'magsafe wireless charger' },
-  { niche: 'Phone Accessories', query: 'wireless earbuds case airpods' },
+  // Video Game Consoles — eBay's #1 opportunity (7.88 ratio, 17.7% sell-through)
+  { niche: 'Gaming', query: 'handheld game console retro' },
+  { niche: 'Gaming', query: 'ps5 controller charging station' },
+  { niche: 'Gaming', query: 'nintendo switch accessories kit' },
+  { niche: 'Gaming', query: 'xbox controller battery pack' },
+  { niche: 'Gaming', query: 'gaming headset wireless' },
+  { niche: 'Gaming', query: 'switch carrying case' },
+  { niche: 'Gaming', query: 'controller wall mount holder' },
+  { niche: 'Gaming', query: 'racing wheel stand' },
+  // Cell phone accessories — 6.53 ratio, 12.1% sell-through
+  { niche: 'Phone Accessories', query: 'magsafe wireless charger stand' },
+  { niche: 'Phone Accessories', query: 'phone case magnetic iphone' },
+  { niche: 'Phone Accessories', query: 'screen protector privacy iphone' },
   { niche: 'Phone Accessories', query: 'power bank 20000mah fast charge' },
-  // Hobby / crafts / collectibles supplies
-  { niche: 'Hobbies', query: 'trading card sleeves deck protector' },
-  { niche: 'Hobbies', query: 'card binder 9 pocket' },
-  { niche: 'Hobbies', query: 'lego storage drawer organizer' },
-  { niche: 'Hobbies', query: 'dice set polyhedral rpg' },
-  { niche: 'Hobbies', query: 'model paint brush set fine' },
+  { niche: 'Phone Accessories', query: 'car phone mount magnetic' },
+  { niche: 'Phone Accessories', query: 'phone tripod stand ring light' },
+  // Wristwatches — 11.1M searches, 2.90 ratio
+  { niche: 'Watches', query: 'mens watch automatic skeleton' },
+  { niche: 'Watches', query: 'digital sports watch men waterproof' },
+  { niche: 'Watches', query: 'watch box organizer men' },
+  { niche: 'Watches', query: 'watch band leather quick release' },
+  { niche: 'Watches', query: 'womens watch rose gold bracelet' },
+  // Golf — 2.68 ratio, 7.4% sell-through
+  { niche: 'Golf', query: 'golf rangefinder slope' },
+  { niche: 'Golf', query: 'golf practice net hitting mat' },
+  { niche: 'Golf', query: 'golf grips midsize set' },
+  { niche: 'Golf', query: 'golf balls used bulk' },
+  { niche: 'Golf', query: 'golf push cart accessories' },
+  { niche: 'Golf', query: 'putting green indoor mat' },
+  // Dolls & playsets — 1.74 ratio (GOOD)
+  { niche: 'Dolls & Toys', query: 'doll clothes 18 inch accessories' },
+  { niche: 'Dolls & Toys', query: 'baby doll playset stroller' },
+  { niche: 'Dolls & Toys', query: 'dollhouse furniture wooden' },
+  // Action figures — 1.57 ratio (GOOD) — modern retail toys, NOT collectibles
+  { niche: 'Action Figures', query: 'action figure display case stand' },
+  { niche: 'Action Figures', query: 'dinosaur toys figures set' },
+  { niche: 'Action Figures', query: 'robot action figure transforming' },
+  // Video games adjacent — 1.15 ratio, 7.8% sell-through
+  { niche: 'Gaming', query: 'game cartridge storage case' },
+  { niche: 'Gaming', query: 'gaming mouse pad xl rgb' },
+  // Party Gags & Tricks — eBay flagged BEST OPPORTUNITY for this account
+  { niche: 'Party Supplies', query: 'prank kit funny gag gifts' },
+  { niche: 'Party Supplies', query: 'magic trick set kids' },
+  { niche: 'Party Supplies', query: 'party favors bulk kids' },
+  { niche: 'Party Supplies', query: 'whoopee cushion self inflating' },
+  // Baby carriers & bags — 1.14 ratio, 6.3% STR (bags/organizer angle, not safety gear)
+  { niche: 'Baby', query: 'diaper bag backpack large' },
+  { niche: 'Baby', query: 'stroller organizer caddy' },
+  { niche: 'Baby', query: 'baby bag essentials organizer' },
 ]
 
 // Rolling seed index in DB so each cron run advances through the list rather than
