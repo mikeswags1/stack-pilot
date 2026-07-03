@@ -186,6 +186,53 @@ async function searchAmazonViaRapidApi(query: string): Promise<{ asin: string; t
   return null
 }
 
+// Reliable paid fallback: ScraperAPI structured Amazon search (the same funded feed the
+// cleanup audit uses). Prefers Prime results — non-Prime sources fail our listing rules
+// downstream anyway. Quota-gated at the shared scraperapi daily cap (see quota-tracker).
+async function searchAmazonViaScraperApi(query: string): Promise<{ asin: string; title: string; price: number; imageUrl: string; rating?: number; reviewCount?: number } | null> {
+  const key = String(process.env.SCRAPERAPI_KEY || '').trim()
+  if (!key) return null
+
+  const { recordApiCall, getThrottleState } = await import('@/lib/quota-tracker')
+  const throttle = await getThrottleState('scraperapi', 'structured-search').catch(() => 'ok' as const)
+  if (throttle === 'block') return null
+
+  const startedAt = Date.now()
+  const url = `https://api.scraperapi.com/structured/amazon/search?api_key=${key}&query=${encodeURIComponent(query)}&country=us`
+  const res = await fetch(url, { signal: AbortSignal.timeout(25000) }).catch(() => null)
+  if (!res || !res.ok) {
+    recordApiCall({ provider: 'scraperapi', callName: 'structured-search', success: false, durationMs: Date.now() - startedAt, errorCode: res ? `HTTP_${res.status}` : 'NETWORK' }).catch(() => {})
+    return null
+  }
+  type Hit = { asin?: string; name?: string; price?: number; price_string?: string; image?: string; stars?: number; total_reviews?: number; has_prime?: boolean; type?: string }
+  const j = (await res.json().catch(() => null)) as { results?: Hit[] } | null
+  recordApiCall({ provider: 'scraperapi', callName: 'structured-search', success: true, durationMs: Date.now() - startedAt }).catch(() => {})
+
+  const toCandidate = (p: Hit) => {
+    const asin = String(p?.asin || '').toUpperCase().trim()
+    if (!/^[A-Z0-9]{10}$/.test(asin)) return null
+    const price = Number.isFinite(p?.price) && Number(p?.price) > 0
+      ? Number(p?.price)
+      : parseFloat(String(p?.price_string || '').replace(/[^0-9.]/g, ''))
+    if (!Number.isFinite(price) || price <= 0) return null
+    const title = String(p?.name || '').trim()
+    if (!title) return null
+    return {
+      asin,
+      title,
+      price,
+      imageUrl: String(p?.image || ''),
+      rating: Number.isFinite(p?.stars) ? Number(p?.stars) : undefined,
+      reviewCount: Number.isFinite(p?.total_reviews) ? Number(p?.total_reviews) : undefined,
+    }
+  }
+  const results = (j?.results || []).slice(0, 8)
+  // Prime results first — they're the only ones that pass our fulfillment rules.
+  for (const p of results) { if (p?.has_prime) { const c = toCandidate(p); if (c) return c } }
+  for (const p of results) { const c = toCandidate(p); if (c) return c }
+  return null
+}
+
 // ── Observability — every candidate's full pipeline trace is written here so we
 // can see exactly where the scout funnel is breaking. Outcomes: 'browse_empty',
 // 'policy_blocked', 'amazon_query_empty', 'amazon_not_found', 'already_known',
@@ -222,7 +269,7 @@ type TraceRow = {
   amazon_asin?: string | null
   amazon_price?: number | null
   amazon_title?: string | null
-  amazon_source?: 'scrape' | 'rapidapi' | 'none' | null
+  amazon_source?: 'scrape' | 'scraperapi' | 'rapidapi' | 'none' | null
   reason?: string | null
 }
 
@@ -308,21 +355,26 @@ export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: 
         continue
       }
 
-      // Try free scrape first; fall back to RapidAPI search when Amazon blocks the
-      // scrape (search pages are anti-bot-heavy from datacenter IPs).
+      // Try free scrape first; fall back to ScraperAPI (paid, reliable), then RapidAPI
+      // (dead key — returns null instantly) when Amazon blocks the scrape.
       let amazonTop: { asin: string; title: string; price: number; imageUrl: string; rating?: number; reviewCount?: number } | null = null
-      let amazonSource: 'scrape' | 'rapidapi' | 'none' = 'none'
+      let amazonSource: 'scrape' | 'scraperapi' | 'rapidapi' | 'none' = 'none'
       const scraped = await scrapeAmazonSearch(amazonQuery).catch(() => [])
       if (scraped[0]?.asin && scraped[0]?.title && scraped[0]?.price > 0) {
         amazonTop = scraped[0]
         amazonSource = 'scrape'
       } else {
-        amazonTop = await searchAmazonViaRapidApi(amazonQuery)
-        if (amazonTop) amazonSource = 'rapidapi'
+        amazonTop = await searchAmazonViaScraperApi(amazonQuery)
+        if (amazonTop) {
+          amazonSource = 'scraperapi'
+        } else {
+          amazonTop = await searchAmazonViaRapidApi(amazonQuery)
+          if (amazonTop) amazonSource = 'rapidapi'
+        }
       }
       if (!amazonTop) {
         skipped++
-        await trace(runId, { ...base, outcome: 'amazon_not_found', amazon_query: amazonQuery, amazon_source: 'none', reason: `Both scrape and RapidAPI returned 0 valid Amazon results for query "${amazonQuery}"` })
+        await trace(runId, { ...base, outcome: 'amazon_not_found', amazon_query: amazonQuery, amazon_source: 'none', reason: `Scrape, ScraperAPI, and RapidAPI all returned 0 valid Amazon results for query "${amazonQuery}"` })
         continue
       }
 
