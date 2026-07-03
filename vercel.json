@@ -90,6 +90,10 @@
     {
       "path": "/api/cron/replenish-ready-queue?platformTarget=300&rawTarget=5000",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/demand-scout?seedsPerRun=6&perSeed=15",
+      "schedule": "0 13,21 * * *"
     }
   ]
 }
