@@ -12,7 +12,7 @@ import { queryRows, sql } from '@/lib/db'
 
 // ────────────────────────────── Provider constants ──────────────────────────────
 
-export type ApiProvider = 'ebay' | 'rapidapi' | 'anthropic' | 'amazon-scrape' | 'openrouter'
+export type ApiProvider = 'ebay' | 'rapidapi' | 'anthropic' | 'amazon-scrape' | 'openrouter' | 'scraperapi'
 
 /**
  * Conservative limits per provider × call. Tuned to typical defaults; warnings fire well
@@ -51,6 +51,14 @@ export const QUOTA_RULES = {
   'amazon-scrape': {
     // Free / unmetered scraping. Track for diagnostics, no throttle.
     Other:                       { dailyHardLimit: 100000, hourlyHardLimit: 50000, warnPct: 0.99, blockPct: 1.0 },
+  },
+  scraperapi: {
+    // Hobby plan: 100k credits/month, Amazon structured = 5 credits/request ⇒ ~20k requests/mo.
+    // 600/day hard cap = max 90k credits/mo if maxed EVERY day — leaves headroom for the
+    // standalone cleanup-audit scripts. Plan is set to "Interrupted Scraping" (never overbills),
+    // this cap just keeps the app from eating the month's budget in one runaway loop.
+    'structured-product':        { dailyHardLimit: 600,  hourlyHardLimit: 150,  warnPct: 0.70, blockPct: 0.90 },
+    Other:                       { dailyHardLimit: 600,  hourlyHardLimit: 150,  warnPct: 0.70, blockPct: 0.90 },
   },
 } satisfies Record<ApiProvider, Record<string, QuotaRule>>
 

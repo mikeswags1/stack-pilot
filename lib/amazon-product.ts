@@ -395,7 +395,9 @@ export async function saveCachedAmazonProduct(product: ValidatedAmazonProduct) {
     )
     ON CONFLICT (asin) DO UPDATE SET
       title = EXCLUDED.title,
-      amazon_price = EXCLUDED.amazon_price,
+      -- Never let a price-less write (e.g. a bot-blocked scrape) downgrade a known
+      -- cost to 0.00 — a zero cache price hides the listing from the reprice agent.
+      amazon_price = CASE WHEN EXCLUDED.amazon_price > 0 THEN EXCLUDED.amazon_price ELSE amazon_product_cache.amazon_price END,
       primary_image = EXCLUDED.primary_image,
       images = EXCLUDED.images,
       features = EXCLUDED.features,
@@ -539,6 +541,73 @@ async function fetchProductFromSearch(asin: string, fallbackImage?: string) {
       source: 'search',
     })
   } catch {
+    return null
+  }
+}
+
+// ScraperAPI structured Amazon product endpoint — the RELIABLE paid feed (replaces dead
+// RapidAPI). Returns clean price / availability_status / sold_by / ships_from / images.
+// Quota-gated: getThrottleState blocks at 90% of the 600-requests/day cap, and every call
+// (success or fail) is logged to api_usage_log so a runaway loop can't drain the month.
+async function fetchProductFromScraperApi(asin: string, fallbackImage?: string): Promise<ValidatedAmazonProduct | null> {
+  const key = String(process.env.SCRAPERAPI_KEY || '').trim()
+  if (!key) return null
+
+  const { recordApiCall, getThrottleState } = await import('@/lib/quota-tracker')
+  const throttle = await getThrottleState('scraperapi', 'structured-product').catch(() => 'ok' as const)
+  if (throttle === 'block') return null
+
+  const startedAt = Date.now()
+  try {
+    const url = `https://api.scraperapi.com/structured/amazon/product?api_key=${key}&asin=${asin}&country=us`
+    const res = await fetch(url, { signal: AbortSignal.timeout(25000) })
+
+    if (res.status === 401 || res.status === 403 || res.status === 429) {
+      recordApiCall({ provider: 'scraperapi', callName: 'structured-product', success: false, durationMs: Date.now() - startedAt, errorCode: 'QUOTA_EXCEEDED', errorMessage: `HTTP ${res.status}` }).catch(() => {})
+      return null
+    }
+    if (!res.ok) {
+      recordApiCall({ provider: 'scraperapi', callName: 'structured-product', success: false, durationMs: Date.now() - startedAt, errorCode: `HTTP_${res.status}` }).catch(() => {})
+      return null
+    }
+
+    const data = (await res.json()) as Record<string, unknown>
+    const availability = sanitizeText(data.availability_status)
+    const soldBy = sanitizeText(data.sold_by)
+    const shipsFrom = sanitizeText(data.ships_from)
+    const price = parseAmazonPrice(data.pricing)
+    // Only an EXPLICIT "unavailable" reading counts as OOS. Missing/ambiguous availability
+    // must NEVER read as out-of-stock (that bug once deleted 14 good listings).
+    const explicitOOS = /unavailable|out of stock|temporarily out/i.test(availability)
+    const haveSeller = Boolean(soldBy || shipsFrom)
+    const amazonFulfilled = /amazon/i.test(soldBy) || /amazon/i.test(shipsFrom)
+    const images = dedupeImages([
+      ...(Array.isArray(data.images) ? (data.images as unknown[]).map((entry) => normalizeImageUrl(entry)) : []),
+      normalizeImageUrl((data as Record<string, unknown>).main_image),
+    ])
+
+    recordApiCall({ provider: 'scraperapi', callName: 'structured-product', success: true, durationMs: Date.now() - startedAt }).catch(() => {})
+    return toProduct({
+      asin,
+      title: sanitizeTitle(data.name || data.title),
+      amazonPrice: price,
+      images: images.length > 0 ? images : dedupeImages([normalizeImageUrl(fallbackImage)]),
+      features: data.feature_bullets || [],
+      description: sanitizeText(data.full_description || data.small_description || ''),
+      specs: toSpecEntries(data.product_information),
+      brand: sanitizeText(data.brand),
+      available: !explicitOOS && price > 0,
+      primeEligible: haveSeller ? amazonFulfilled : null,
+      deliveryDaysMax: null,
+      fastFulfillment: haveSeller ? amazonFulfilled : null,
+      fulfillmentSummary:
+        [availability, soldBy ? `Sold by ${soldBy}` : '', shipsFrom ? `Ships from ${shipsFrom}` : '']
+          .filter(Boolean)
+          .join(' | ') || null,
+      source: 'api',
+    })
+  } catch (err) {
+    recordApiCall({ provider: 'scraperapi', callName: 'structured-product', success: false, durationMs: Date.now() - startedAt, errorCode: 'NETWORK', errorMessage: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200) }).catch(() => {})
     return null
   }
 }
@@ -698,18 +767,23 @@ export async function fetchAmazonProductByAsin(
   )
 
   // Only spend paid API quota when the free scrape wasn't good enough.
+  // ScraperAPI (paid, reliable, quota-capped) is the primary fallback; RapidAPI is dead
+  // (returns null without a key) and search is the last resort.
+  let scraperApiResult: ValidatedAmazonProduct | null = null
   let apiResult: ValidatedAmazonProduct | null = null
   let searchResult: ValidatedAmazonProduct | null = null
   if (!scrapeIsListReady) {
     const settled = await Promise.allSettled([
+      fetchProductFromScraperApi(asin, options.fallbackImage),
       fetchProductDetailsFromApi(asin, options.fallbackImage),
       fetchProductFromSearch(asin, options.fallbackImage),
     ])
-    apiResult = settled[0].status === 'fulfilled' ? settled[0].value : null
-    searchResult = settled[1].status === 'fulfilled' ? settled[1].value : null
+    scraperApiResult = settled[0].status === 'fulfilled' ? settled[0].value : null
+    apiResult = settled[1].status === 'fulfilled' ? settled[1].value : null
+    searchResult = settled[2].status === 'fulfilled' ? settled[2].value : null
   }
 
-  const merged = mergeProducts(asin, [scrapeResult, apiResult, searchResult, cached], options)
+  const merged = mergeProducts(asin, [scrapeResult, scraperApiResult, apiResult, searchResult, cached], options)
   if (merged) {
     await saveCachedAmazonProduct(merged)
     return merged
