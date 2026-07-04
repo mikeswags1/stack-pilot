@@ -54,11 +54,12 @@ export const QUOTA_RULES = {
   },
   scraperapi: {
     // Hobby plan: 100k credits/month, Amazon structured = 5 credits/request ⇒ ~20k requests/mo.
-    // 600/day hard cap = max 90k credits/mo if maxed EVERY day — leaves headroom for the
-    // standalone cleanup-audit scripts. Plan is set to "Interrupted Scraping" (never overbills),
-    // this cap just keeps the app from eating the month's budget in one runaway loop.
-    'structured-product':        { dailyHardLimit: 600,  hourlyHardLimit: 150,  warnPct: 0.70, blockPct: 0.90 },
-    Other:                       { dailyHardLimit: 600,  hourlyHardLimit: 150,  warnPct: 0.70, blockPct: 0.90 },
+    // Tightened 7/4 after day-1 burn ran ~5.9k credits/day (100k pace breach): 400 requests/day
+    // = 2k credits/day = ~60k/mo worst case, leaving ~40k for audits + scout. Enrichment
+    // processes best-scored products first, so the cap trims the tail, not the winners.
+    // Plan is "Interrupted Scraping" (never overbills) — this cap prevents runaway loops.
+    'structured-product':        { dailyHardLimit: 400,  hourlyHardLimit: 100,  warnPct: 0.70, blockPct: 0.90 },
+    Other:                       { dailyHardLimit: 400,  hourlyHardLimit: 100,  warnPct: 0.70, blockPct: 0.90 },
   },
 } satisfies Record<ApiProvider, Record<string, QuotaRule>>
 

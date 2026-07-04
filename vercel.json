@@ -56,7 +56,7 @@
       "schedule": "0 */8 * * *"
     },
     {
-      "path": "/api/cron/auto-listing-tick?limit=15",
+      "path": "/api/cron/auto-listing-tick?limit=40",
       "schedule": "*/30 * * * *"
     },
     {
