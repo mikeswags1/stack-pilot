@@ -98,13 +98,42 @@ async function ensureScoutCursor() {
   await sql`INSERT INTO demand_scout_state (id) VALUES (1) ON CONFLICT DO NOTHING`.catch(() => {})
 }
 
+// Performance-weighted seed selection ("never run out of supply"): half of each batch
+// re-hunts the seeds that have historically PRODUCED inserts (exploit), the other half
+// continues rotating through the full list so nothing goes unexplored (explore). Yield
+// stats come from the scout's own trace — the system learns which niches feed the store.
 async function nextSeedBatch(perRun: number): Promise<typeof DEMAND_SEEDS> {
   await ensureScoutCursor()
+
+  const stats = await queryRows<{ seed_query: string; inserted: number; runs: number }>`
+    SELECT seed_query,
+      COUNT(*) FILTER (WHERE outcome = 'inserted')::int AS inserted,
+      COUNT(DISTINCT run_id)::int AS runs
+    FROM demand_scout_trace
+    WHERE created_at > NOW() - INTERVAL '30 days' AND seed_query IS NOT NULL
+    GROUP BY 1
+  `.catch(() => [])
+  const yieldBySeed = new Map(stats.map((s) => [s.seed_query, s.inserted / Math.max(1, s.runs)]))
+
+  const exploitCount = Math.min(Math.floor(perRun / 2), DEMAND_SEEDS.length)
+  const exploit = [...DEMAND_SEEDS]
+    .filter((s) => (yieldBySeed.get(s.query) ?? 0) > 0)
+    .sort((a, b) => (yieldBySeed.get(b.query) ?? 0) - (yieldBySeed.get(a.query) ?? 0))
+    .slice(0, exploitCount)
+
   const rows = await queryRows<{ seed_cursor: number }>`SELECT seed_cursor FROM demand_scout_state WHERE id = 1`.catch(() => [])
   const start = (rows[0]?.seed_cursor ?? 0) % DEMAND_SEEDS.length
-  const batch: typeof DEMAND_SEEDS = []
-  for (let i = 0; i < perRun; i++) batch.push(DEMAND_SEEDS[(start + i) % DEMAND_SEEDS.length])
-  const next = (start + perRun) % DEMAND_SEEDS.length
+  const chosen = new Set(exploit.map((s) => s.query))
+  const batch: typeof DEMAND_SEEDS = [...exploit]
+  let advanced = 0
+  for (let i = 0; batch.length < perRun && i < DEMAND_SEEDS.length; i++) {
+    const seed = DEMAND_SEEDS[(start + i) % DEMAND_SEEDS.length]
+    advanced = i + 1
+    if (chosen.has(seed.query)) continue
+    chosen.add(seed.query)
+    batch.push(seed)
+  }
+  const next = (start + advanced) % DEMAND_SEEDS.length
   await sql`UPDATE demand_scout_state SET seed_cursor = ${next}, updated_at = NOW() WHERE id = 1`.catch(() => {})
   return batch
 }
