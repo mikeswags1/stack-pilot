@@ -83,6 +83,28 @@ const DEMAND_SEEDS: Array<{ niche: string; query: string }> = [
   { niche: 'Baby', query: 'diaper bag backpack large' },
   { niche: 'Baby', query: 'stroller organizer caddy' },
   { niche: 'Baby', query: 'baby bag essentials organizer' },
+  // ── From Mike's OWN 90-day sales history (added 2026-07-06) — proven buyers ──
+  // Storage & garage was the standout ($382 parts cabinet, $157 truck bed organizer,
+  // pegboard bins, wardrobe racks all sold). Display CASES sell repeatedly (cases are
+  // allowed — only coins/cards themselves are banned). Replacement-parts angle sells
+  // with low competition (foam cannon bottle, clipper blades).
+  { niche: 'Storage & Garage', query: 'small parts organizer cabinet drawers' },
+  { niche: 'Storage & Garage', query: 'truck bed storage organizer' },
+  { niche: 'Storage & Garage', query: 'pegboard bins storage trays' },
+  { niche: 'Storage & Garage', query: 'portable wardrobe closet organizer' },
+  { niche: 'Display Cases', query: 'graded card display case wall mount' },
+  { niche: 'Display Cases', query: 'acrylic display case shelf' },
+  { niche: 'Tech Accessories', query: 'battery charging case iphone' },
+  { niche: 'Tech Accessories', query: 'hdmi capture card usb streaming' },
+  { niche: 'Tech Accessories', query: 'video doorbell camera wireless' },
+  { niche: 'Tech Accessories', query: 'mechanical gaming keyboard wireless' },
+  { niche: 'Outdoor & Fishing', query: 'telescopic fishing rod travel' },
+  { niche: 'Outdoor & Fishing', query: 'misting fan rechargeable outdoor' },
+  { niche: 'Outdoor & Fishing', query: 'camp kitchen organizer utensil' },
+  { niche: 'Motorcycle Gear', query: 'motorcycle armor protective pads' },
+  { niche: 'Motorcycle Gear', query: 'motorcycle gloves leather riding' },
+  { niche: 'Replacement Parts', query: 'foam cannon replacement bottle parts' },
+  { niche: 'Replacement Parts', query: 'pet clipper replacement blades' },
 ]
 
 // Rolling seed index in DB so each cron run advances through the list rather than
