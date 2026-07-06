@@ -58,7 +58,9 @@ export const QUOTA_RULES = {
     // = 2k credits/day = ~60k/mo worst case, leaving ~40k for audits + scout. Enrichment
     // processes best-scored products first, so the cap trims the tail, not the winners.
     // Plan is "Interrupted Scraping" (never overbills) — this cap prevents runaway loops.
-    'structured-product':        { dailyHardLimit: 400,  hourlyHardLimit: 100,  warnPct: 0.70, blockPct: 0.90 },
+    // 7/6 rebalance: product-enrichment trimmed 400→300/day to fund 6x-daily scout hunts
+    // (search bucket) — discovery is the growth constraint, enrichment was half-idle.
+    'structured-product':        { dailyHardLimit: 300,  hourlyHardLimit: 80,   warnPct: 0.70, blockPct: 0.90 },
     Other:                       { dailyHardLimit: 400,  hourlyHardLimit: 100,  warnPct: 0.70, blockPct: 0.90 },
   },
 } satisfies Record<ApiProvider, Record<string, QuotaRule>>
