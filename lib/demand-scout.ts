@@ -105,6 +105,17 @@ const DEMAND_SEEDS: Array<{ niche: string; query: string }> = [
   { niche: 'Motorcycle Gear', query: 'motorcycle gloves leather riding' },
   { niche: 'Replacement Parts', query: 'foam cannon replacement bottle parts' },
   { niche: 'Replacement Parts', query: 'pet clipper replacement blades' },
+  // ── Big Ticket (added 2026-07-07, user: "get those bigger price listings up") ──
+  // High-dollar practical items in his proven wheelhouse; $100-300 Amazon cost range
+  // now flows (risk bands loosened). One sale here = 10-20 small-item sales.
+  { niche: 'Big Ticket', query: 'rolling tool chest cabinet drawers' },
+  { niche: 'Big Ticket', query: 'garage storage cabinet metal tall' },
+  { niche: 'Big Ticket', query: 'heavy duty shelving unit garage' },
+  { niche: 'Big Ticket', query: 'workbench with drawers garage' },
+  { niche: 'Big Ticket', query: 'truck bed tool box' },
+  { niche: 'Big Ticket', query: 'parts organizer cabinet industrial' },
+  { niche: 'Big Ticket', query: 'wall mounted garage cabinet set' },
+  { niche: 'Big Ticket', query: 'outdoor storage cabinet waterproof' },
 ]
 
 // Rolling seed index in DB so each cron run advances through the list rather than
@@ -457,8 +468,10 @@ export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: 
 
       const ebayPrice = getRecommendedEbayPrice(amazonTop.price, EBAY_DEFAULT_FEE_RATE)
       const { profit, roi } = getListingMetrics(amazonTop.price, ebayPrice, EBAY_DEFAULT_FEE_RATE)
-      // Risk: bigger price → more return risk; mid-range is the sweet spot.
-      const risk = amazonTop.price > 120 ? 'HIGH' : amazonTop.price > 60 ? 'MEDIUM' : 'LOW'
+      // Risk bands loosened 7/7 per Mike: his sales history proves big practical items
+      // (parts cabinets, truck organizers) are top earners — HIGH (blocked from
+      // enrichment) now only above $300 Amazon cost; $120-300 is MEDIUM.
+      const risk = amazonTop.price > 300 ? 'HIGH' : amazonTop.price > 120 ? 'MEDIUM' : 'LOW'
 
       itemsToUpsert.push({
         asin: amazonTop.asin,
