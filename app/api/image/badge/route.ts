@@ -216,10 +216,12 @@ function buildFallbackSvg() {
 async function compositeBadge(source: sharp.Sharp, width: number, height: number, variant: BadgeVariant) {
   if (variant === 'none') return source.jpeg({ quality: 92 }).toBuffer()
 
-  const badgeWidth = Math.max(250, Math.min(430, Math.round(width * 0.31)))
+  // 20% of image width, capped (was 31% with a 250px floor — on typical photos the
+  // badge swallowed a third of the picture; user: "placed horribly and too big").
+  const badgeWidth = Math.max(140, Math.min(280, Math.round(width * 0.20)))
   const badge = await prepareBadgeAsset(variant, badgeWidth)
-  const insetX = Math.max(22, Math.round(width * 0.032))
-  const insetY = Math.max(18, Math.round(height * 0.032))
+  const insetX = Math.max(16, Math.round(width * 0.025))
+  const insetY = Math.max(14, Math.round(height * 0.025))
   const badgeArea = {
     left: insetX,
     top: Math.max(insetY, height - badge.height - insetY),
