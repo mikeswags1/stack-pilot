@@ -115,15 +115,19 @@ function summarizeMarket(input: PricingMarketSignal, amazonPrice: number) {
 }
 
 export function getTargetRoi(amazonPrice: number, input: { risk?: string; demandScore?: number } = {}) {
+  // Upper bands raised 7/8 (user: "$74 sale netted ~$5 — I want better ROI especially
+  // when the eBay item is pricier"): the old targets didn't cover the 2% Promoted
+  // Listings campaign + ~7% Amazon purchase tax, which eat big-ticket margins in
+  // dollar terms. Competitive ceiling still caps prices at market rates.
   const base =
     amazonPrice < 8 ? 105 :
     amazonPrice < 15 ? 82 :
     amazonPrice < 25 ? 64 :
     amazonPrice < 40 ? 52 :
-    amazonPrice < 75 ? 42 :
-    amazonPrice < 125 ? 34 :
-    amazonPrice < 200 ? 28 :
-    22
+    amazonPrice < 75 ? 46 :
+    amazonPrice < 125 ? 40 :
+    amazonPrice < 200 ? 34 :
+    28
 
   const demandScore = typeof input.demandScore === 'number' ? clamp(input.demandScore, 0, 1) : 0.5
   const demandAdjustment = (0.5 - demandScore) * 10
@@ -136,10 +140,10 @@ export function getMinimumProfit(amazonPrice: number) {
   if (amazonPrice < 15) return 6.5
   if (amazonPrice < 25) return 8
   if (amazonPrice < 40) return 10
-  if (amazonPrice < 75) return 13
-  if (amazonPrice < 125) return Math.max(17, amazonPrice * 0.15)
-  if (amazonPrice < 200) return Math.max(24, amazonPrice * 0.13)
-  return Math.max(34, amazonPrice * 0.11)
+  if (amazonPrice < 75) return 15
+  if (amazonPrice < 125) return Math.max(20, amazonPrice * 0.17)
+  if (amazonPrice < 200) return Math.max(28, amazonPrice * 0.15)
+  return Math.max(40, amazonPrice * 0.13)
 }
 
 export function getTargetProfit(amazonPrice: number, input: { risk?: string; demandScore?: number } = {}) {
