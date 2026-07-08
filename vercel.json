@@ -92,7 +92,7 @@
       "schedule": "0 * * * *"
     },
     {
-      "path": "/api/cron/demand-scout?seedsPerRun=8&perSeed=15",
+      "path": "/api/cron/demand-scout?seedsPerRun=8&perSeed=21",
       "schedule": "0 1,5,9,13,17,21 * * *"
     }
   ]
