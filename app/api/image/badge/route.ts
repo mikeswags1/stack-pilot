@@ -176,9 +176,11 @@ async function isBusyBadgeArea(source: sharp.Sharp, area: { left: number; top: n
     for (const value of data) variance += (value - mean) ** 2
     const stdDev = Math.sqrt(variance / data.length)
 
-    // Clean product photography usually has bright, low-detail corners. If the
-    // corner is dark or visually busy, skip the badge rather than covering details.
-    return mean < 205 || stdDev > 42
+    // Skip only when the corner is truly dark or chaotic. The old bar (mean<205,
+    // stdDev>42) demanded a near-pure-white corner and silently skipped the badge on
+    // MOST photos — user wants badges on as many listings as possible, and the badge
+    // is now small enough (20% width) that mild corner detail is fine to cover.
+    return mean < 120 || stdDev > 75
   } catch {
     return true
   }
