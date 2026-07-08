@@ -395,8 +395,9 @@ export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: 
     // Min competitor price for this seed = the bottom-of-market reference.
     const ebayMinPrice = Math.min(...hits.map((h) => h.price))
 
-    // Look at the top ~5 hits (best demand signal) and try to source each from Amazon.
-    for (const hit of hits.slice(0, 5)) {
+    // Source the top hits (best demand signal) from Amazon. Was top-5; raised to top-7
+    // on 7/7 — volume is supply-bound and the credit budget has headroom.
+    for (const hit of hits.slice(0, 7)) {
       considered++
       const base: Pick<TraceRow, 'seed_query' | 'ebay_title' | 'ebay_min_price'> = {
         seed_query: seed.query, ebay_title: hit.title, ebay_min_price: ebayMinPrice,
