@@ -20,6 +20,7 @@ import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getRecommendedEbayPrice } fro
 import { upsertProductSourceItems } from '@/lib/product-source-engine'
 import { getRapidApiKey } from '@/lib/rapidapi'
 
+// Each seed may set priceMin/priceMax to search a specific eBay price shelf.
 // ── Demand seeds — built from eBay Seller Hub SOURCING INSIGHTS (2026-07-03) ─────
 // Top categories by search-to-listing ratio + sell-through rate over the last 30 days,
 // filtered by our rules: dropshippable from Amazon Prime, no collectibles (coins/cards/
@@ -33,7 +34,7 @@ import { getRapidApiKey } from '@/lib/rapidapi'
 //   Video Games          ratio 1.15  STR  7.8%
 //   Party Gags & Tricks  eBay's "BEST OPPORTUNITY" pick for this account
 //   Baby Carriers/Bags   ratio 1.14  STR  6.3%  (GREAT — bags/organizers angle)
-const DEMAND_SEEDS: Array<{ niche: string; query: string }> = [
+const DEMAND_SEEDS: Array<{ niche: string; query: string; priceMin?: number; priceMax?: number }> = [
   // Video Game Consoles — eBay's #1 opportunity (7.88 ratio, 17.7% sell-through)
   { niche: 'Gaming', query: 'handheld game console retro' },
   { niche: 'Gaming', query: 'ps5 controller charging station' },
@@ -106,16 +107,16 @@ const DEMAND_SEEDS: Array<{ niche: string; query: string }> = [
   { niche: 'Replacement Parts', query: 'foam cannon replacement bottle parts' },
   { niche: 'Replacement Parts', query: 'pet clipper replacement blades' },
   // ── Big Ticket (added 2026-07-07, user: "get those bigger price listings up") ──
-  // High-dollar practical items in his proven wheelhouse; $100-300 Amazon cost range
-  // now flows (risk bands loosened). One sale here = 10-20 small-item sales.
-  { niche: 'Big Ticket', query: 'rolling tool chest cabinet drawers' },
-  { niche: 'Big Ticket', query: 'garage storage cabinet metal tall' },
-  { niche: 'Big Ticket', query: 'heavy duty shelving unit garage' },
-  { niche: 'Big Ticket', query: 'workbench with drawers garage' },
-  { niche: 'Big Ticket', query: 'truck bed tool box' },
-  { niche: 'Big Ticket', query: 'parts organizer cabinet industrial' },
-  { niche: 'Big Ticket', query: 'wall mounted garage cabinet set' },
-  { niche: 'Big Ticket', query: 'outdoor storage cabinet waterproof' },
+  // High-dollar practical items in his proven wheelhouse. These seeds search eBay's
+  // $150-600 shelf (everyday seeds stay at $10-150). One sale here = 10-20 small ones.
+  { niche: 'Big Ticket', query: 'rolling tool chest cabinet drawers', priceMin: 150, priceMax: 600 },
+  { niche: 'Big Ticket', query: 'garage storage cabinet metal tall', priceMin: 150, priceMax: 600 },
+  { niche: 'Big Ticket', query: 'heavy duty shelving unit garage', priceMin: 150, priceMax: 600 },
+  { niche: 'Big Ticket', query: 'workbench with drawers garage', priceMin: 150, priceMax: 600 },
+  { niche: 'Big Ticket', query: 'truck bed tool box', priceMin: 150, priceMax: 600 },
+  { niche: 'Big Ticket', query: 'parts organizer cabinet industrial', priceMin: 150, priceMax: 600 },
+  { niche: 'Big Ticket', query: 'wall mounted garage cabinet set', priceMin: 150, priceMax: 600 },
+  { niche: 'Big Ticket', query: 'outdoor storage cabinet waterproof', priceMin: 150, priceMax: 600 },
 ]
 
 // Rolling seed index in DB so each cron run advances through the list rather than
@@ -173,12 +174,14 @@ async function nextSeedBatch(perRun: number): Promise<typeof DEMAND_SEEDS> {
 
 type EbayHit = { title: string; price: number; itemId: string; imageUrl: string }
 
-async function searchEbayDemand(query: string, token: string, limit = 15): Promise<EbayHit[]> {
+async function searchEbayDemand(query: string, token: string, limit = 15, priceMin = 10, priceMax = 150): Promise<EbayHit[]> {
   const url = new URL('https://api.ebay.com/buy/browse/v1/item_summary/search')
   url.searchParams.set('q', query)
   // BEST_MATCH ranks by eBay's own demand signal (sales velocity weighted), so the top
   // results ARE the demand signal — exactly what we want to mirror on our side.
-  url.searchParams.set('filter', 'buyingOptions:{FIXED_PRICE},conditions:{NEW},priceCurrency:USD,price:[10..150]')
+  // Price window is per-seed: default [10..150] for everyday items; Big Ticket seeds
+  // pass [150..600] — before 7/7 the hardcoded $150 cap made $200+ items INVISIBLE.
+  url.searchParams.set('filter', `buyingOptions:{FIXED_PRICE},conditions:{NEW},priceCurrency:USD,price:[${priceMin}..${priceMax}]`)
   url.searchParams.set('limit', String(limit))
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, 'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US' },
@@ -383,7 +386,7 @@ export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: 
   for (const seed of seeds) {
     // Pace Browse API calls — eBay enforces burst protection (429) before the daily cap.
     if (seeds.indexOf(seed) > 0) await new Promise((r) => setTimeout(r, 700))
-    const hits = await searchEbayDemand(seed.query, token, perSeed)
+    const hits = await searchEbayDemand(seed.query, token, perSeed, seed.priceMin, seed.priceMax)
     if (hits.length === 0) {
       await trace(runId, { outcome: 'browse_empty', seed_query: seed.query, reason: 'Browse API returned 0 hits (rate-limit, filter mismatch, or genuinely no inventory)' })
       continue
