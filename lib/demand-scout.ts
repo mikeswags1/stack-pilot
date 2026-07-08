@@ -119,6 +119,111 @@ const DEMAND_SEEDS: Array<{ niche: string; query: string; priceMin?: number; pri
   { niche: 'Big Ticket', query: 'outdoor storage cabinet waterproof', priceMin: 150, priceMax: 600 },
 ]
 
+// ── Self-growing seed map (2026-07-08) ─────────────────────────────────────────
+// Seeds live in demand_scout_seeds (bootstrapped from DEMAND_SEEDS above). After each
+// run the scout PRUNES grounds that stopped producing and PLANTS new ones from eBay's
+// own search suggestions for its best producers — the map grows itself, capped so the
+// rotation stays meaningful. User goal: supply that never runs dry.
+const SEED_CAP = 150
+const SEED_BLOCKLIST = /coin|bullion|trading card|sports card|ccg|tcg|psa |graded slab|memorabilia|autograph|sneaker|jordan|dress\b|shirt|hoodie|shoes|boots|handbag|purse|perfume|supplement|vitamin|weapon|ammo|vape|cigar|lottery|gift card/i
+
+async function ensureSeedTable() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS demand_scout_seeds (
+      id SERIAL PRIMARY KEY,
+      niche TEXT NOT NULL,
+      query TEXT NOT NULL UNIQUE,
+      price_min INTEGER,
+      price_max INTEGER,
+      source TEXT NOT NULL DEFAULT 'manual',
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `.catch(() => {})
+  const n = await queryRows<{ n: number }>`SELECT COUNT(*)::int AS n FROM demand_scout_seeds`.catch(() => [{ n: -1 }])
+  if ((n[0]?.n ?? -1) === 0) {
+    for (const s of DEMAND_SEEDS) {
+      await sql`
+        INSERT INTO demand_scout_seeds (niche, query, price_min, price_max, source)
+        VALUES (${s.niche}, ${s.query}, ${s.priceMin ?? null}, ${s.priceMax ?? null}, 'manual')
+        ON CONFLICT (query) DO NOTHING
+      `.catch(() => {})
+    }
+  }
+}
+
+async function loadActiveSeeds(): Promise<typeof DEMAND_SEEDS> {
+  const rows = await queryRows<{ niche: string; query: string; price_min: number | null; price_max: number | null }>`
+    SELECT niche, query, price_min, price_max FROM demand_scout_seeds WHERE active = TRUE ORDER BY id
+  `.catch(() => [])
+  if (rows.length === 0) return [...DEMAND_SEEDS]
+  return rows.map((r) => ({ niche: r.niche, query: r.query, priceMin: r.price_min ?? undefined, priceMax: r.price_max ?? undefined }))
+}
+
+// eBay's public autosuggest — the same "related searches" buyers see. Free (no ScraperAPI
+// credits, no auth); wrapped defensively since it's an unofficial endpoint.
+async function fetchEbaySuggestions(query: string): Promise<string[]> {
+  try {
+    const res = await fetch(`https://autosug.ebay.com/autosug?kwd=${encodeURIComponent(query)}&sId=0&fmt=json`, { signal: AbortSignal.timeout(6000) })
+    if (!res.ok) return []
+    const text = await res.text()
+    const cleaned = text.includes('(') && !text.trimStart().startsWith('{') ? text.replace(/^[^(]*\(/, '').replace(/\)\s*;?\s*$/, '') : text
+    const json = JSON.parse(cleaned) as { res?: { sug?: unknown[] }; sug?: unknown[] }
+    const sug = json?.res?.sug || json?.sug || []
+    return Array.isArray(sug) ? sug.map((s) => String(s).toLowerCase().trim()).filter(Boolean) : []
+  } catch {
+    return []
+  }
+}
+
+async function expandAndPruneSeeds(): Promise<{ retired: number; planted: number }> {
+  // PRUNE: a seed that's been hunted 6+ times in 30 days and produced NOTHING is dead
+  // ground. (The monthly Sourcing-Insights refresh can always re-plant it.)
+  const retired = await queryRows<{ id: number }>`
+    UPDATE demand_scout_seeds s SET active = FALSE
+    WHERE s.active = TRUE AND s.created_at < NOW() - INTERVAL '7 days'
+      AND (SELECT COUNT(DISTINCT t.run_id) FROM demand_scout_trace t
+           WHERE t.seed_query = s.query AND t.created_at > NOW() - INTERVAL '30 days') >= 6
+      AND (SELECT COUNT(*) FROM demand_scout_trace t
+           WHERE t.seed_query = s.query AND t.outcome = 'inserted'
+             AND t.created_at > NOW() - INTERVAL '30 days') = 0
+    RETURNING s.id
+  `.catch(() => [])
+
+  const countRows = await queryRows<{ n: number }>`SELECT COUNT(*)::int AS n FROM demand_scout_seeds WHERE active = TRUE`.catch(() => [{ n: SEED_CAP }])
+  if ((countRows[0]?.n ?? SEED_CAP) >= SEED_CAP) return { retired: retired.length, planted: 0 }
+
+  // PLANT: expand the best-producing seeds via eBay's own related searches.
+  const top = await queryRows<{ seed_query: string }>`
+    SELECT seed_query FROM demand_scout_trace
+    WHERE outcome = 'inserted' AND created_at > NOW() - INTERVAL '14 days' AND seed_query IS NOT NULL
+    GROUP BY seed_query ORDER BY COUNT(*) DESC LIMIT 5
+  `.catch(() => [])
+
+  let planted = 0
+  for (const t of top) {
+    const parent = await queryRows<{ niche: string; price_min: number | null; price_max: number | null }>`
+      SELECT niche, price_min, price_max FROM demand_scout_seeds WHERE query = ${t.seed_query} LIMIT 1
+    `.catch(() => [])
+    const suggestions = await fetchEbaySuggestions(t.seed_query)
+    let plantedForParent = 0
+    for (const sug of suggestions) {
+      if (plantedForParent >= 3 || planted >= 10) break
+      if (sug.length < 10 || sug === t.seed_query.toLowerCase()) continue
+      if (SEED_BLOCKLIST.test(sug)) continue
+      if (hasBlockedListingPolicyFlag(getListingPolicyFlags({ title: sug }))) continue
+      const inserted = await queryRows<{ id: number }>`
+        INSERT INTO demand_scout_seeds (niche, query, price_min, price_max, source)
+        VALUES (${parent[0]?.niche || 'Auto-Expanded'}, ${sug}, ${parent[0]?.price_min ?? null}, ${parent[0]?.price_max ?? null}, 'auto-expanded')
+        ON CONFLICT (query) DO NOTHING
+        RETURNING id
+      `.catch(() => [])
+      if (inserted.length > 0) { planted++; plantedForParent++ }
+    }
+  }
+  return { retired: retired.length, planted }
+}
+
 // Rolling seed index in DB so each cron run advances through the list rather than
 // processing the first N seeds every time.
 async function ensureScoutCursor() {
@@ -138,6 +243,8 @@ async function ensureScoutCursor() {
 // stats come from the scout's own trace — the system learns which niches feed the store.
 async function nextSeedBatch(perRun: number): Promise<typeof DEMAND_SEEDS> {
   await ensureScoutCursor()
+  await ensureSeedTable()
+  const seeds = await loadActiveSeeds()
 
   const stats = await queryRows<{ seed_query: string; inserted: number; runs: number }>`
     SELECT seed_query,
@@ -149,25 +256,25 @@ async function nextSeedBatch(perRun: number): Promise<typeof DEMAND_SEEDS> {
   `.catch(() => [])
   const yieldBySeed = new Map(stats.map((s) => [s.seed_query, s.inserted / Math.max(1, s.runs)]))
 
-  const exploitCount = Math.min(Math.floor(perRun / 2), DEMAND_SEEDS.length)
-  const exploit = [...DEMAND_SEEDS]
+  const exploitCount = Math.min(Math.floor(perRun / 2), seeds.length)
+  const exploit = [...seeds]
     .filter((s) => (yieldBySeed.get(s.query) ?? 0) > 0)
     .sort((a, b) => (yieldBySeed.get(b.query) ?? 0) - (yieldBySeed.get(a.query) ?? 0))
     .slice(0, exploitCount)
 
   const rows = await queryRows<{ seed_cursor: number }>`SELECT seed_cursor FROM demand_scout_state WHERE id = 1`.catch(() => [])
-  const start = (rows[0]?.seed_cursor ?? 0) % DEMAND_SEEDS.length
+  const start = (rows[0]?.seed_cursor ?? 0) % seeds.length
   const chosen = new Set(exploit.map((s) => s.query))
   const batch: typeof DEMAND_SEEDS = [...exploit]
   let advanced = 0
-  for (let i = 0; batch.length < perRun && i < DEMAND_SEEDS.length; i++) {
-    const seed = DEMAND_SEEDS[(start + i) % DEMAND_SEEDS.length]
+  for (let i = 0; batch.length < perRun && i < seeds.length; i++) {
+    const seed = seeds[(start + i) % seeds.length]
     advanced = i + 1
     if (chosen.has(seed.query)) continue
     chosen.add(seed.query)
     batch.push(seed)
   }
-  const next = (start + advanced) % DEMAND_SEEDS.length
+  const next = (start + advanced) % seeds.length
   await sql`UPDATE demand_scout_state SET seed_cursor = ${next}, updated_at = NOW() WHERE id = 1`.catch(() => {})
   return batch
 }
@@ -518,5 +625,9 @@ export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: 
     inserted = await upsertProductSourceItems(itemsToUpsert).catch(() => 0)
   }
 
-  return { discovered: itemsToUpsert.length, considered, inserted, alreadyKnown, skipped, seeds: seeds.length, runId }
+  // Self-growing map: prune dead grounds, plant fresh ones from eBay's related
+  // searches for whatever is currently producing. Never fatal to the run.
+  const map = await expandAndPruneSeeds().catch(() => ({ retired: 0, planted: 0 }))
+
+  return { discovered: itemsToUpsert.length, considered, inserted, alreadyKnown, skipped, seeds: seeds.length, seedsRetired: map.retired, seedsPlanted: map.planted, runId }
 }
