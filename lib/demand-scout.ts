@@ -427,6 +427,10 @@ async function ensureScoutTraceTable() {
   `.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS demand_scout_trace_run_idx ON demand_scout_trace (run_id)`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS demand_scout_trace_outcome_idx ON demand_scout_trace (outcome, created_at DESC)`.catch(() => {})
+  // Credit-saver: remember every eBay item we've already investigated so we never pay
+  // for the same Amazon reverse-match twice (repeat sightings were ~25% of daily spend).
+  await sql`ALTER TABLE demand_scout_trace ADD COLUMN IF NOT EXISTS ebay_item_id TEXT`.catch(() => {})
+  await sql`CREATE INDEX IF NOT EXISTS demand_scout_trace_item_idx ON demand_scout_trace (ebay_item_id, created_at DESC)`.catch(() => {})
 }
 
 type TraceRow = {
@@ -440,6 +444,7 @@ type TraceRow = {
   amazon_title?: string | null
   amazon_source?: 'scrape' | 'scraperapi' | 'rapidapi' | 'none' | null
   reason?: string | null
+  ebay_item_id?: string | null
 }
 
 async function trace(runId: string, row: TraceRow) {
@@ -450,12 +455,12 @@ async function trace(runId: string, row: TraceRow) {
     INSERT INTO demand_scout_trace (
       run_id, outcome, seed_query, ebay_title, ebay_min_price,
       amazon_query, amazon_asin, amazon_price, amazon_title, amazon_source,
-      margin_ratio, reason
+      margin_ratio, reason, ebay_item_id
     ) VALUES (
       ${runId}, ${row.outcome}, ${row.seed_query}, ${row.ebay_title ?? null}, ${row.ebay_min_price ?? null},
       ${row.amazon_query ?? null}, ${row.amazon_asin ?? null}, ${row.amazon_price ?? null},
       ${row.amazon_title ?? null}, ${row.amazon_source ?? null},
-      ${marginRatio}, ${row.reason ?? null}
+      ${marginRatio}, ${row.reason ?? null}, ${row.ebay_item_id ?? null}
     )
   `.catch(() => {})
 }
@@ -508,11 +513,24 @@ export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: 
     // Deeper hits carry slightly weaker demand signal but are FRESH.
     const windowIndex = Math.floor(Date.now() / (4 * 3600 * 1000)) % 3
     const windowStart = windowIndex * 7
-    const hitWindow = hits.length > windowStart ? hits.slice(windowStart, windowStart + 7) : hits.slice(0, 7)
+    let hitWindow = hits.length > windowStart ? hits.slice(windowStart, windowStart + 7) : hits.slice(0, 7)
+
+    // Credit-saver: drop eBay items we already investigated in the last 21 days —
+    // each one skipped is a paid Amazon reverse-match we don't repeat.
+    const windowIds = hitWindow.map((h) => h.itemId)
+    if (windowIds.length > 0) {
+      const seen = await queryRows<{ ebay_item_id: string }>`
+        SELECT DISTINCT ebay_item_id FROM demand_scout_trace
+        WHERE ebay_item_id = ANY(${windowIds}::text[]) AND created_at > NOW() - INTERVAL '21 days'
+      `.catch(() => [])
+      const seenIds = new Set(seen.map((s) => s.ebay_item_id))
+      hitWindow = hitWindow.filter((h) => !seenIds.has(h.itemId))
+    }
+
     for (const hit of hitWindow) {
       considered++
-      const base: Pick<TraceRow, 'seed_query' | 'ebay_title' | 'ebay_min_price'> = {
-        seed_query: seed.query, ebay_title: hit.title, ebay_min_price: ebayMinPrice,
+      const base: Pick<TraceRow, 'seed_query' | 'ebay_title' | 'ebay_min_price' | 'ebay_item_id'> = {
+        seed_query: seed.query, ebay_title: hit.title, ebay_min_price: ebayMinPrice, ebay_item_id: hit.itemId,
       }
 
       if (hasBlockedListingPolicyFlag(getListingPolicyFlags({ title: hit.title }))) {
