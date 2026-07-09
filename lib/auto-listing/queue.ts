@@ -99,7 +99,12 @@ export async function acquireNextDueJob(userId: string | number) {
       FROM auto_listing_queue
       WHERE user_id = ${userId}
         AND status IN ('queued','retry')
-        AND (scheduled_at IS NULL OR scheduled_at <= NOW())
+        -- Jobs scheduled up to 24h out count as due: pacing is owned by the per-hour
+        -- and per-day caps, not the drip spread. The old strict "<= NOW()" made the
+        -- cloud tick idle overnight while jobs sat future-dated (user woke to ~20
+        -- listings); a local "pull-forward" hack papered over it but died with the
+        -- laptop. This makes the accelerator cloud-native.
+        AND (scheduled_at IS NULL OR scheduled_at <= NOW() + INTERVAL '24 hours')
         AND created_at > NOW() - (${QUEUE_ENTRY_TTL_HOURS} || ' hours')::interval
       ORDER BY score DESC, scheduled_at ASC NULLS FIRST, created_at ASC
       LIMIT 1
