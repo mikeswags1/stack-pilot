@@ -2404,6 +2404,19 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  // STALE-PRICE GATE (2026-07-10, ALL modes incl. trusted/autopilot): if neither the
+  // live scrape nor the paid feed returned a real price TODAY — source degraded to
+  // cache/fallback, or the pool's old price was substituted — do NOT list. Listing on
+  // a stale price is exactly how a $25-sourced item sells after the supplier moves to
+  // $99.99 (the Pixio order, 7/10). No fresh price, no listing; the product stays in
+  // the pool and is retried when Amazon answers.
+  if (validatedAmazon.source === 'cache' || validatedAmazon.source === 'fallback' || validatedAmazon.usedFallbackPrice) {
+    return apiError(
+      `Blocked — could not verify a LIVE Amazon price for this ASIN right now (data source: ${validatedAmazon.source}${validatedAmazon.usedFallbackPrice ? ', stale pool price' : ''}). Listing on a stale price risks selling at a loss; it will retry when Amazon responds.`,
+      { status: 400, code: 'STALE_PRICE_BLOCKED' }
+    )
+  }
+
   // In non-trusted mode: after all supplementation, if we still only have fallback-quality
   // data (1 image, no features), block the listing. This prevents publishing a listing with
   // the wrong product photo and empty description — which is worse than not listing at all.
