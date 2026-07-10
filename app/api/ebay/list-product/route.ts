@@ -2417,15 +2417,8 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // In non-trusted mode: after all supplementation, if we still only have fallback-quality
-  // data (1 image, no features), block the listing. This prevents publishing a listing with
-  // the wrong product photo and empty description — which is worse than not listing at all.
-  if (!trusted && validatedAmazon.source === 'fallback' && validatedAmazon.images.length <= 1) {
-    return apiError(
-      `Cannot validate this product on Amazon — the ASIN may be stale or Amazon is temporarily unavailable. Remove it from your queue and reload to get fresh products.`,
-      { status: 400, code: 'ASIN_VALIDATION_FAILED' }
-    )
-  }
+  // (The old non-trusted fallback-quality check is obsolete: the stale-price gate above
+  // already blocks every 'fallback'-source product in all modes.)
 
   const listingTitle = chooseBestListingTitle([validatedAmazon.title, title]) || title
   const listingAmazonPrice = validatedAmazon.amazonPrice
