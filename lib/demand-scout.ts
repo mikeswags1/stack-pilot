@@ -208,7 +208,7 @@ async function expandAndPruneSeeds(): Promise<{ retired: number; planted: number
     const suggestions = await fetchEbaySuggestions(t.seed_query)
     let plantedForParent = 0
     for (const sug of suggestions) {
-      if (plantedForParent >= 3 || planted >= 10) break
+      if (plantedForParent >= 4 || planted >= 15) break
       if (sug.length < 10 || sug === t.seed_query.toLowerCase()) continue
       if (SEED_BLOCKLIST.test(sug)) continue
       if (hasBlockedListingPolicyFlag(getListingPolicyFlags({ title: sug }))) continue
