@@ -60,10 +60,13 @@ export const QUOTA_RULES = {
     // Plan is "Interrupted Scraping" (never overbills) — this cap prevents runaway loops.
     // 7/6 rebalance: product-enrichment trimmed 400→300/day to fund 6x-daily scout hunts
     // (search bucket) — discovery is the growth constraint, enrichment was half-idle.
-    // 7/10: raised 300→380 — the 21-day eBay-item memory freed ~400 credits/day, and
-    // enrichment (photo-filling) is the current listing bottleneck (146 products waiting).
-    'structured-product':        { dailyHardLimit: 380,  hourlyHardLimit: 100,  warnPct: 0.70, blockPct: 0.90 },
-    Other:                       { dailyHardLimit: 400,  hourlyHardLimit: 100,  warnPct: 0.70, blockPct: 0.90 },
+    // 7/11 rebalance: total burn hit ~4.3k credits/day (enrichment + scout + the cloud
+    // audit sweep combined) — on pace to exhaust the tank by ~Jul 20 and then PAUSE for
+    // two weeks. These caps land the remaining 37k credits exactly on the Aug 3 reset:
+    // ~330 requests/day total ≈ 1,650 credits/day. Slower but never stops.
+    'structured-product':        { dailyHardLimit: 160,  hourlyHardLimit: 40,   warnPct: 0.70, blockPct: 0.90 },
+    'structured-search':         { dailyHardLimit: 120,  hourlyHardLimit: 40,   warnPct: 0.70, blockPct: 0.90 },
+    Other:                       { dailyHardLimit: 60,   hourlyHardLimit: 20,   warnPct: 0.70, blockPct: 0.90 },
   },
 } satisfies Record<ApiProvider, Record<string, QuotaRule>>
 
