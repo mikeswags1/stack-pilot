@@ -14,7 +14,19 @@ function jitterRetryMinutes() {
   return 10 + Math.floor(Math.random() * 25) // 10-35 min
 }
 
-async function listOneViaInternal(req: NextRequest, input: { userId: number; accountId: number | null; asin: string; title?: string | null; niche?: string | null; categoryId?: string | null }) {
+// A retry only makes sense when the SAME attempt could succeed later. Deterministic
+// verdicts (wrong product, duplicate, policy, images, profit, unavailable) will fail
+// identically every time — retrying them burns queue slots and, with the paid
+// verification fallback, real credits.
+const RETRYABLE_CODES = new Set(['AMAZON_LIVE_CHECK_FAILED', 'EBAY_API_FAIL', 'QUOTA_EXCEEDED'])
+function isRetryableFailure(code: string | undefined, message: string) {
+  if (code && RETRYABLE_CODES.has(code)) return true
+  if (code) return false // any other explicit verdict is deterministic
+  // No code — infrastructure-level error. Retry only clear transient signatures.
+  return /timeout|timed out|network|fetch failed|ECONN|EAI_AGAIN|socket|50[0-4]\b|rate.?limit/i.test(message)
+}
+
+async function listOneViaInternal(req: NextRequest, input: { userId: number; accountId: number | null; asin: string; title?: string | null; niche?: string | null; categoryId?: string | null; queueId?: string | number | null }) {
   const host = req.headers.get('host') || ''
   const proto = host.startsWith('localhost') ? 'http' : 'https'
   const siteUrl = `${proto}://${host}`
@@ -60,6 +72,7 @@ async function listOneViaInternal(req: NextRequest, input: { userId: number; acc
     specs,
     trusted: true,
     categoryId: input.categoryId || null,
+    queueId: input.queueId ?? null,
   }
 
   const res = await fetch(`${siteUrl}/api/ebay/list-product`, {
@@ -169,6 +182,7 @@ async function processAutoListingUser(req: NextRequest, userId: number): Promise
           asin: job.asin,
           niche: job.source_niche,
           categoryId: job.category_id,
+          queueId: job.id,
         })
         await markCompleted(job.id, listed.listingId)
         await logAutoListingEvent({
@@ -185,7 +199,9 @@ async function processAutoListingUser(req: NextRequest, userId: number): Promise
         const msg = error instanceof Error ? error.message : String(error)
         const code = (error as { code?: string })?.code
         const attempts = Number(job.attempts || 0)
-        const retryAt = attempts <= 1 ? new Date(Date.now() + jitterRetryMinutes() * 60 * 1000) : null
+        const retryAt = attempts <= 1 && isRetryableFailure(code, msg)
+          ? new Date(Date.now() + jitterRetryMinutes() * 60 * 1000)
+          : null
         await markFailed(job.id, msg.slice(0, 900), retryAt)
         await logAutoListingEvent({
           userId,

@@ -11,7 +11,7 @@ import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getNetProfit, getRecommendedE
 import { getSeasonalQueryExpansions, loadActiveCustomSourceNicheQueries, mergeTrendingNicheQueries } from '@/lib/source-niches'
 import { getNicheStockRepairTargets, getSourceEngineIntelligenceSummary, getWeakSourceNiches, recordSourceEngineRun, runSourceSelfHealing } from '@/lib/source-intelligence'
 import { getTitleMatch } from '@/lib/amazon-mapping'
-import { tryAcquireCronLock } from '@/lib/cron-lock'
+import { tryAcquireCronLock, releaseCronLock } from '@/lib/cron-lock'
 
 export const maxDuration = 300
 
@@ -1048,6 +1048,7 @@ async function auditActiveAmazonListings(limit = 24, riskFirst = false): Promise
   ended: number
   failed: number
   skipped: number
+  breakerTripped?: boolean
 }> {
   await ensureListingAvailabilityAuditColumns()
   const auditLimit = Math.max(1, Math.min(limit, 60))
@@ -1269,7 +1270,21 @@ async function auditActiveAmazonListings(limit = 24, riskFirst = false): Promise
     }
   }
 
-  return { checked: rows.length, available, ended, failed, skipped }
+  // Un-claim whatever never got a verdict: breaker trips and rejected fetches leave
+  // rows stamped check_in_progress with a fresh checked_at, which silently pushed
+  // them a full tier-cadence into the future. NULLing makes them due immediately.
+  const claimedIds = rows.map((r) => r.ebay_listing_id).filter(Boolean)
+  if (claimedIds.length > 0) {
+    await sql`
+      UPDATE listed_asins
+      SET amazon_status_checked_at = NULL,
+          amazon_status_reason = NULL
+      WHERE ebay_listing_id = ANY(${claimedIds}::text[])
+        AND amazon_status_reason = 'check_in_progress'
+    `.catch(() => {})
+  }
+
+  return { checked: rows.length, available, ended, failed, skipped, breakerTripped }
 }
 
 // ── Cron handler ─────────────────────────────────────────────────────────────
@@ -1309,9 +1324,13 @@ export async function GET(req: NextRequest) {
   const hasExplicitStart = req.nextUrl.searchParams.has('start')
   const requestedStartIndex = hasExplicitStart ? Number(req.nextUrl.searchParams.get('start')) : NaN
   const now = new Date()
-  const runMode = autopilotRepair
-    ? sourceOnly ? 'autopilot-sourceOnly' : stockWeak ? 'autopilot-stockWeak' : 'autopilot-catalog'
-    : sourceOnly ? 'sourceOnly' : stockWeak ? 'stockWeak' : backgroundCatalog ? 'backgroundCatalog' : catalogRefresh ? 'catalog' : fullRefresh ? 'full' : 'rolling'
+  // listingAuditOnly MUST come first: without its own mode the 10-minute audit fell
+  // through to 'full' and its lock starved the real 8-hourly full refresh.
+  const runMode = listingAuditOnly
+    ? 'listingAuditOnly'
+    : autopilotRepair
+      ? sourceOnly ? 'autopilot-sourceOnly' : stockWeak ? 'autopilot-stockWeak' : 'autopilot-catalog'
+      : sourceOnly ? 'sourceOnly' : stockWeak ? 'stockWeak' : backgroundCatalog ? 'backgroundCatalog' : catalogRefresh ? 'catalog' : fullRefresh ? 'full' : 'rolling'
   const runTrigger = autopilotRepair ? 'source-autopilot' : isVercelCron ? 'vercel-cron' : authHeader ? 'cron-secret' : 'manual'
   if (autopilotRepair) report.autopilot = true
 
@@ -1351,6 +1370,7 @@ export async function GET(req: NextRequest) {
         message: item.recommendedAction,
       })),
     }).catch(() => {})
+    await releaseCronLock(lockName)
     return apiOk({ success: true, ...report })
   }
 
@@ -1373,6 +1393,7 @@ export async function GET(req: NextRequest) {
       FROM listed_asins
       WHERE ended_at IS NULL AND ebay_listing_id IS NOT NULL
     `.catch(() => [])
+    await releaseCronLock(lockName)
     return apiOk({ success: true, mode: 'listingAuditOnly', ...report, coverage: coverage[0] || null, durationMs: Date.now() - startedAt })
   }
 

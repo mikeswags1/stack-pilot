@@ -127,6 +127,38 @@ export async function ensureQuotaTables() {
   `.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS listing_failure_log_time_idx ON listing_failure_log (created_at DESC)`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS listing_failure_log_code_idx ON listing_failure_log (error_code, created_at DESC)`.catch(() => {})
+
+  // Paid-verification attribution: one row per paid listing-verification call, with
+  // the queue job it served and how the listing attempt ended. Makes credits-per-
+  // successful-listing genuinely computable instead of inferred.
+  await sql`
+    CREATE TABLE IF NOT EXISTS paid_verification_log (
+      id BIGSERIAL PRIMARY KEY,
+      user_id INTEGER,
+      asin TEXT,
+      queue_id BIGINT,
+      paid_call_ok BOOLEAN,
+      outcome TEXT NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `.catch(() => {})
+  await sql`CREATE INDEX IF NOT EXISTS paid_verification_log_pending_idx ON paid_verification_log (user_id, asin, created_at DESC) WHERE outcome = 'pending'`.catch(() => {})
+
+  // Atomic quota counters — the enforcement source of truth for paid calls.
+  // Row-level locking on the UPSERT makes concurrent reservations strictly serial
+  // per (provider, call, day) with no advisory locks and no COUNT(*) races.
+  await sql`
+    CREATE TABLE IF NOT EXISTS quota_counters (
+      provider TEXT NOT NULL,
+      call_name TEXT NOT NULL,
+      day_key TEXT NOT NULL,
+      hour_key TEXT NOT NULL,
+      day_count INTEGER NOT NULL DEFAULT 0,
+      hour_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (provider, call_name, day_key)
+    )
+  `.catch(() => {})
 }
 
 // ────────────────────────────── Write paths ──────────────────────────────
@@ -200,6 +232,18 @@ export async function recordListingFailure(input: RecordListingFailureInput): Pr
       ${input.source || 'unknown'}
     )
   `.catch(() => {})
+  // Stamp the verdict onto any open paid-verification row for this attempt so
+  // every spent credit ends attributed to a concrete outcome.
+  if (input.asin) {
+    await sql`
+      UPDATE paid_verification_log
+      SET outcome = ${input.errorCode.slice(0, 60)}
+      WHERE outcome = 'pending'
+        AND asin = ${input.asin.slice(0, 12)}
+        AND user_id = ${Number.isFinite(userId as number) ? userId : null}
+        AND created_at > NOW() - INTERVAL '15 minutes'
+    `.catch(() => {})
+  }
 }
 
 /**
@@ -238,11 +282,11 @@ export type QuotaReservation = { ok: true; logId: number } | { ok: false; reason
  * Atomically reserve one quota slot BEFORE making a paid call. Fail-closed:
  * if the reservation cannot be recorded, the caller must not make the call.
  *
- * The advisory xact lock serializes reservations per provider+call so two
- * concurrent lambdas cannot both squeeze through the last slot. The usage row
- * is inserted as part of the reservation (marked 'reserved'), so a crash after
- * reserving still counts against the cap — we never under-count paid spend.
- * Call settleQuotaReservation afterwards to stamp success/duration.
+ * Enforcement is a single UPSERT on quota_counters — Postgres row locking makes
+ * concurrent increments strictly serial per (provider, call, day), so the last
+ * slot can only be taken once. The counter is the source of truth; the usage-log
+ * row is written afterwards purely for reporting and cannot loosen enforcement.
+ * Call settleQuotaReservation afterwards to stamp success/duration on the log row.
  */
 export async function reserveQuotaSlot(
   provider: ApiProvider,
@@ -253,33 +297,44 @@ export async function reserveQuotaSlot(
   const rule = getRule(provider, callName)
   const uid = userId ? Number(userId) : null
   try {
-    const rows = await queryRows<{ id: number; daily: number; hourly: number }>`
-      WITH lock AS (
-        SELECT pg_advisory_xact_lock(hashtext(${'quota:' + provider + ':' + callName}))
-      ),
-      usage AS (
-        SELECT
-          COUNT(*) FILTER (WHERE created_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Los_Angeles') AT TIME ZONE 'America/Los_Angeles')::int AS daily,
-          COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour')::int AS hourly
-        FROM api_usage_log, lock
-        WHERE provider = ${provider} AND call_name = ${callName.slice(0, 60)}
-          AND created_at > NOW() - INTERVAL '25 hours'
-      ),
-      ins AS (
-        INSERT INTO api_usage_log (provider, call_name, user_id, success, error_code)
-        SELECT ${provider}, ${callName.slice(0, 60)}, ${Number.isFinite(uid as number) ? uid : null}, TRUE, 'reserved'
-        FROM usage
-        WHERE usage.daily < ${rule.dailyHardLimit} AND usage.hourly < ${rule.hourlyHardLimit}
-        RETURNING id
+    const rows = await queryRows<{ day_count: number; hour_count: number }>`
+      INSERT INTO quota_counters (provider, call_name, day_key, hour_key, day_count, hour_count)
+      VALUES (
+        ${provider},
+        ${callName.slice(0, 60)},
+        (NOW() AT TIME ZONE 'America/Los_Angeles')::date::text,
+        to_char(NOW(), 'YYYY-MM-DD-HH24'),
+        1, 1
       )
-      SELECT ins.id, usage.daily, usage.hourly FROM usage LEFT JOIN ins ON TRUE
+      ON CONFLICT (provider, call_name, day_key) DO UPDATE SET
+        day_count = quota_counters.day_count + 1,
+        hour_count = CASE
+          WHEN quota_counters.hour_key = EXCLUDED.hour_key THEN quota_counters.hour_count + 1
+          ELSE 1
+        END,
+        hour_key = EXCLUDED.hour_key,
+        updated_at = NOW()
+      WHERE quota_counters.day_count < ${rule.dailyHardLimit}
+        AND (CASE WHEN quota_counters.hour_key = EXCLUDED.hour_key THEN quota_counters.hour_count ELSE 0 END) < ${rule.hourlyHardLimit}
+      RETURNING day_count, hour_count
     `
-    const row = rows[0]
-    if (!row) return { ok: false, reason: 'error' }
-    if (row.id === null || row.id === undefined) {
-      return { ok: false, reason: Number(row.daily) >= rule.dailyHardLimit ? 'daily_cap' : 'hourly_cap' }
+    if (rows.length === 0) {
+      // Cap reached — figure out which one for the caller's telemetry.
+      const state = await queryRows<{ day_count: number }>`
+        SELECT day_count FROM quota_counters
+        WHERE provider = ${provider} AND call_name = ${callName.slice(0, 60)}
+          AND day_key = (NOW() AT TIME ZONE 'America/Los_Angeles')::date::text
+      `.catch(() => [])
+      const dayCount = Number(state[0]?.day_count ?? rule.dailyHardLimit)
+      return { ok: false, reason: dayCount >= rule.dailyHardLimit ? 'daily_cap' : 'hourly_cap' }
     }
-    return { ok: true, logId: Number(row.id) }
+    // Reporting row (does not gate anything — the counter above already enforced).
+    const logRows = await queryRows<{ id: number }>`
+      INSERT INTO api_usage_log (provider, call_name, user_id, success, error_code)
+      VALUES (${provider}, ${callName.slice(0, 60)}, ${Number.isFinite(uid as number) ? uid : null}, TRUE, 'reserved')
+      RETURNING id
+    `.catch(() => [])
+    return { ok: true, logId: Number(logRows[0]?.id ?? -1) }
   } catch {
     // Fail-closed: if we cannot prove there is budget, there is no budget.
     return { ok: false, reason: 'error' }

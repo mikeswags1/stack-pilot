@@ -2299,8 +2299,37 @@ export async function POST(req: NextRequest) {
   // Amazon-fast fulfillment — and the ASIN/title-match check below still runs on
   // the result. A confirmed-unavailable free read never reaches this path.
   if (!liveAvailability.ok && liveAvailability.reason === 'CHECK_FAILED') {
+    // ── Free pre-checks BEFORE paying ─────────────────────────────────────────
+    // Anything that will deterministically fail later must fail HERE, before a
+    // credit is spent. These only reject — they never approve.
+    if (isWeakListingTitle(String(title || '')) && isWeakListingTitle(validatedAmazon.title || '')) {
+      recordListingFailure({
+        userId: effectiveUserId, asin, niche: body?.niche,
+        errorCode: 'TITLE_TOO_WEAK',
+        errorMessage: 'Pool and cache titles are both unusable — rejected before paid verification.',
+        stage: 'pre_paid_validation', source: isCron ? 'cron' : 'manual',
+      }).catch(() => {})
+      return apiError('This product has no usable title. Remove it from your queue.', { status: 400, code: 'TITLE_TOO_WEAK' })
+    }
+    if (validatedAmazon.images.length === 0 && !validatedAmazon.imageUrl && !imageUrl) {
+      recordListingFailure({
+        userId: effectiveUserId, asin, niche: body?.niche,
+        errorCode: 'NO_LISTING_IMAGES',
+        errorMessage: 'No images from pool or cache — rejected before paid verification.',
+        stage: 'pre_paid_validation', source: isCron ? 'cron' : 'manual',
+      }).catch(() => {})
+      return apiError('This product has no images. Remove it from your queue.', { status: 400, code: 'NO_LISTING_IMAGES' })
+    }
+
     const { fetchListingVerificationFromScraperApi } = await import('@/lib/amazon-product')
     const paid = await fetchListingVerificationFromScraperApi(asin).catch(() => null)
+    // Attribution: record that a paid verification was spent on this ASIN/job.
+    // recordListingFailure stamps the outcome on failure; the success path stamps
+    // 'listed'. Rows stuck at 'pending' = spent credit with no verdict (a bug).
+    await sql`
+      INSERT INTO paid_verification_log (user_id, asin, queue_id, paid_call_ok, outcome)
+      VALUES (${effectiveUserId}, ${asin}, ${body?.queueId ?? null}, ${Boolean(paid)}, 'pending')
+    `.catch(() => {})
     if (
       paid &&
       paid.available === true &&
@@ -3754,6 +3783,16 @@ export async function POST(req: NextRequest) {
       ended_at = NULL
   `.catch(() => {})
   listingPublishSlotReserved = false
+
+  // Attribution: close out any open paid-verification row for this attempt as a win.
+  await sql`
+    UPDATE paid_verification_log
+    SET outcome = 'listed'
+    WHERE outcome = 'pending'
+      AND asin = ${asin}
+      AND user_id = ${effectiveUserId}
+      AND created_at > NOW() - INTERVAL '15 minutes'
+  `.catch(() => {})
 
   trialSlotReserved = false
   const latestTrialUsage = trialApplies ? await getTrialUsage(effectiveUserId) : null
