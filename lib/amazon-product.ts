@@ -552,16 +552,18 @@ async function fetchProductFromSearch(asin: string, fallbackImage?: string) {
 async function fetchProductFromScraperApi(
   asin: string,
   fallbackImage?: string,
-  quotaBucket: 'structured-product' | 'structured-product-listing' = 'structured-product'
+  quotaBucket: 'structured-product' | 'structured-product-listing' = 'structured-product',
+  preReserved?: { logId: number } | null
 ): Promise<ValidatedAmazonProduct | null> {
   const key = String(process.env.SCRAPERAPI_KEY || '').trim()
   if (!key) return null
 
   // Atomic fail-closed reservation: the slot is claimed (and counted) BEFORE the
   // paid call goes out. The old check-then-act throttle raced under concurrent
-  // lambdas and failed OPEN when the usage read errored.
+  // lambdas and failed OPEN when the usage read errored. Callers that already
+  // hold a reservation (listing fallback) pass it in instead of double-reserving.
   const { reserveQuotaSlot, settleQuotaReservation } = await import('@/lib/quota-tracker')
-  const reservation = await reserveQuotaSlot('scraperapi', quotaBucket)
+  const reservation = preReserved ? { ok: true as const, logId: preReserved.logId } : await reserveQuotaSlot('scraperapi', quotaBucket)
   if (!reservation.ok) return null
 
   const startedAt = Date.now()
@@ -619,12 +621,20 @@ async function fetchProductFromScraperApi(
   }
 }
 
-// Listing-time verification fallback. Draws from the RESERVED 40/day sub-bucket
+// Listing-time verification fallback. Draws from the RESERVED listing sub-bucket
 // (carved out of the unchanged 160/day product-call cap) so enrichment can never
-// starve the listing gate and vice versa. Returns the full structured read; the
-// caller must still enforce every listing gate on the result.
-export async function fetchListingVerificationFromScraperApi(asin: string): Promise<ValidatedAmazonProduct | null> {
-  return fetchProductFromScraperApi(asin, undefined, 'structured-product-listing')
+// starve the listing gate and vice versa. Returns the structured read PLUS the
+// reservation's usage-log id so the caller can attribute the spend exactly.
+// reservedLogId === null means NO paid call was made (cap reached / no key).
+// The caller must still enforce every listing gate on the result.
+export async function fetchListingVerificationFromScraperApi(
+  asin: string
+): Promise<{ product: ValidatedAmazonProduct | null; reservedLogId: number | null }> {
+  const { reserveQuotaSlot } = await import('@/lib/quota-tracker')
+  const reservation = await reserveQuotaSlot('scraperapi', 'structured-product-listing')
+  if (!reservation.ok) return { product: null, reservedLogId: null }
+  const product = await fetchProductFromScraperApi(asin, undefined, 'structured-product-listing', { logId: reservation.logId })
+  return { product, reservedLogId: reservation.logId }
 }
 
 async function fetchProductFromScrape(asin: string, fallbackImage?: string) {

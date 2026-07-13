@@ -2282,6 +2282,17 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  // Exact-row attribution for a paid verification spent on this request.
+  let paidAttributionId: number | null = null
+  const finalizePaidAttribution = async (outcome: string) => {
+    if (paidAttributionId === null) return
+    await sql`
+      UPDATE paid_verification_log
+      SET outcome = ${outcome.slice(0, 60)}
+      WHERE id = ${paidAttributionId} AND outcome = 'pending'
+    `.catch(() => {})
+  }
+
   let liveAvailability: Awaited<ReturnType<typeof checkAmazonLiveAvailability>>
 
   // A pool/cache record is never proof of a current supplier price. Trusted,
@@ -2322,14 +2333,19 @@ export async function POST(req: NextRequest) {
     }
 
     const { fetchListingVerificationFromScraperApi } = await import('@/lib/amazon-product')
-    const paid = await fetchListingVerificationFromScraperApi(asin).catch(() => null)
-    // Attribution: record that a paid verification was spent on this ASIN/job.
-    // recordListingFailure stamps the outcome on failure; the success path stamps
-    // 'listed'. Rows stuck at 'pending' = spent credit with no verdict (a bug).
-    await sql`
-      INSERT INTO paid_verification_log (user_id, asin, queue_id, paid_call_ok, outcome)
-      VALUES (${effectiveUserId}, ${asin}, ${body?.queueId ?? null}, ${Boolean(paid)}, 'pending')
-    `.catch(() => {})
+    const paidResult = await fetchListingVerificationFromScraperApi(asin).catch(() => ({ product: null, reservedLogId: null }))
+    const paid = paidResult.product
+    // Attribution row ONLY when a reservation actually succeeded (credit spent),
+    // linked to the exact usage-log/reservation id and queue job. Finalized with
+    // awaited writes on every exit path below; 'pending' rows = a bug.
+    if (paidResult.reservedLogId !== null) {
+      const attrRows = await queryRows<{ id: number }>`
+        INSERT INTO paid_verification_log (user_id, asin, queue_id, usage_log_id, paid_call_ok, outcome)
+        VALUES (${effectiveUserId}, ${asin}, ${body?.queueId ?? null}, ${paidResult.reservedLogId}, ${Boolean(paid)}, 'pending')
+        RETURNING id
+      `.catch(() => [])
+      paidAttributionId = attrRows[0]?.id ?? null
+    }
     if (
       paid &&
       paid.available === true &&
@@ -2360,7 +2376,8 @@ export async function POST(req: NextRequest) {
     }
 
     const errorCode = liveAvailability.reason === 'CHECK_FAILED' ? 'AMAZON_LIVE_CHECK_FAILED' : 'PRODUCT_UNAVAILABLE'
-    recordListingFailure({
+    await finalizePaidAttribution(errorCode)
+    await recordListingFailure({
       userId: effectiveUserId,
       asin,
       niche: body?.niche,
@@ -2393,7 +2410,8 @@ export async function POST(req: NextRequest) {
     const similarity = queuedWords.size > 0 ? overlap / queuedWords.size : 1
     if (similarity < 0.42) {
       await markSourceAsinRejected()
-      recordListingFailure({
+      await finalizePaidAttribution('ASIN_MISMATCH')
+      await recordListingFailure({
         userId: effectiveUserId,
         asin,
         niche: body?.niche,
@@ -2651,6 +2669,16 @@ export async function POST(req: NextRequest) {
               SET active = FALSE, last_seen_at = NOW(), source_quality = 'reject'
               WHERE UPPER(asin) = UPPER(${asin})
             `.catch(() => {})
+            await finalizePaidAttribution('PRICE_BELOW_MARKET')
+            await recordListingFailure({
+              userId: effectiveUserId,
+              asin,
+              niche: body?.niche,
+              errorCode: 'PRICE_BELOW_MARKET',
+              errorMessage: `Listing price $${finalEbayPrice.toFixed(2)} well below eBay median ~$${median.toFixed(2)} — stale source cost suspected.`,
+              stage: 'market_price_check',
+              source: isCron ? 'cron' : 'manual',
+            }).catch(() => {})
             return apiError(
               `Blocked — your listing price ($${finalEbayPrice.toFixed(2)}) is well below similar eBay listings (~$${median.toFixed(2)}). The Amazon cost in your queue is likely outdated. Removed from queue automatically.`,
               { status: 400, code: 'PRICE_BELOW_MARKET' }
@@ -3784,15 +3812,8 @@ export async function POST(req: NextRequest) {
   `.catch(() => {})
   listingPublishSlotReserved = false
 
-  // Attribution: close out any open paid-verification row for this attempt as a win.
-  await sql`
-    UPDATE paid_verification_log
-    SET outcome = 'listed'
-    WHERE outcome = 'pending'
-      AND asin = ${asin}
-      AND user_id = ${effectiveUserId}
-      AND created_at > NOW() - INTERVAL '15 minutes'
-  `.catch(() => {})
+  // Attribution: close out this request's paid-verification row as a win (exact id).
+  await finalizePaidAttribution('listed')
 
   trialSlotReserved = false
   const latestTrialUsage = trialApplies ? await getTrialUsage(effectiveUserId) : null

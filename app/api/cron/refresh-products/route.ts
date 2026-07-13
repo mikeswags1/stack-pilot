@@ -1339,7 +1339,8 @@ export async function GET(req: NextRequest) {
   // doubled the same refresh/audit work. TTL matches maxDuration so a crashed run
   // can never wedge the schedule.
   const lockName = `refresh-products:${runMode}`
-  if (!(await tryAcquireCronLock(lockName, 290))) {
+  const lockToken = await tryAcquireCronLock(lockName, 290)
+  if (!lockToken) {
     return apiOk({ success: true, skipped: 'overlapping_run_in_progress', mode: runMode })
   }
 
@@ -1370,7 +1371,7 @@ export async function GET(req: NextRequest) {
         message: item.recommendedAction,
       })),
     }).catch(() => {})
-    await releaseCronLock(lockName)
+    await releaseCronLock(lockName, lockToken)
     return apiOk({ success: true, ...report })
   }
 
@@ -1393,7 +1394,7 @@ export async function GET(req: NextRequest) {
       FROM listed_asins
       WHERE ended_at IS NULL AND ebay_listing_id IS NOT NULL
     `.catch(() => [])
-    await releaseCronLock(lockName)
+    await releaseCronLock(lockName, lockToken)
     return apiOk({ success: true, mode: 'listingAuditOnly', ...report, coverage: coverage[0] || null, durationMs: Date.now() - startedAt })
   }
 

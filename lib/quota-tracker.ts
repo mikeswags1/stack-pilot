@@ -142,6 +142,7 @@ export async function ensureQuotaTables() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `.catch(() => {})
+  await sql`ALTER TABLE paid_verification_log ADD COLUMN IF NOT EXISTS usage_log_id BIGINT`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS paid_verification_log_pending_idx ON paid_verification_log (user_id, asin, created_at DESC) WHERE outcome = 'pending'`.catch(() => {})
 
   // Atomic quota counters — the enforcement source of truth for paid calls.

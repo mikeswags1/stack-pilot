@@ -18,7 +18,12 @@ function jitterRetryMinutes() {
 // verdicts (wrong product, duplicate, policy, images, profit, unavailable) will fail
 // identically every time — retrying them burns queue slots and, with the paid
 // verification fallback, real credits.
-const RETRYABLE_CODES = new Set(['AMAZON_LIVE_CHECK_FAILED', 'EBAY_API_FAIL', 'QUOTA_EXCEEDED'])
+const RETRYABLE_CODES = new Set([
+  'AMAZON_LIVE_CHECK_FAILED', // free read blocked AND paid bucket empty — next hour may differ
+  'EBAY_API_QUOTA_EXCEEDED',  // the code list-product actually emits for eBay quota (429)
+  'EBAY_API_FAIL',            // transient Trading API errors
+  'QUOTA_EXCEEDED',           // provider-level quota signal from quota-tracker
+])
 function isRetryableFailure(code: string | undefined, message: string) {
   if (code && RETRYABLE_CODES.has(code)) return true
   if (code) return false // any other explicit verdict is deterministic
@@ -116,7 +121,8 @@ async function processAutoListingUser(req: NextRequest, userId: number): Promise
   // actually holds across the run.
   const leaseKey = `auto_listing:${userId}`
   const { tryAcquireCronLock, releaseCronLock } = await import('@/lib/cron-lock')
-  if (!(await tryAcquireCronLock(leaseKey, 290))) return { skipped: 'locked' }
+  const leaseToken = await tryAcquireCronLock(leaseKey, 290)
+  if (!leaseToken) return { skipped: 'locked' }
 
   const startedAt = Date.now()
   const report: Record<string, unknown> = {}
@@ -226,7 +232,7 @@ async function processAutoListingUser(req: NextRequest, userId: number): Promise
     report.durationMs = Date.now() - startedAt
     return report
   } finally {
-    await releaseCronLock(leaseKey)
+    await releaseCronLock(leaseKey, leaseToken)
   }
 }
 
