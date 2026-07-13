@@ -63,6 +63,14 @@ const overlaps = await sql(`
   GROUP BY 1 ORDER BY 2 DESC
 `, [HOURS]).catch(() => [])
 
+// Attributed paid verifications: every paid listing-check with its final outcome.
+const attribution = await sql(`
+  SELECT outcome, COUNT(*)::int AS n
+  FROM paid_verification_log
+  WHERE created_at > NOW() - ($1 || ' hours')::interval
+  GROUP BY 1 ORDER BY 2 DESC
+`, [HOURS]).catch(() => [])
+
 const account = await fetch(`https://api.scraperapi.com/account?api_key=${env.SCRAPERAPI_KEY}`, { signal: AbortSignal.timeout(15000) })
   .then(r => r.json()).catch(() => null)
 
@@ -85,4 +93,11 @@ for (const r of queueFailures) console.log(`  ${String(r.n).padStart(5)}  ${r.re
 if (overlaps.length) {
   console.log(`\nsource-engine runs by mode:`)
   for (const r of overlaps) console.log(`  ${String(r.runs).padStart(5)}  ${r.mode}`)
+}
+if (attribution.length) {
+  const attributedListed = attribution.find(r => r.outcome === 'listed')?.n || 0
+  const attributedTotal = attribution.reduce((a, r) => a + r.n, 0)
+  console.log(`\nPaid verification attribution (${attributedTotal} paid checks):`)
+  for (const r of attribution) console.log(`  ${String(r.n).padStart(5)}  ${r.outcome}`)
+  console.log(`  Attributed credits per listed: ${attributedListed > 0 ? Math.round(attributedTotal * CREDITS_PER_CALL / attributedListed) : 'n/a'}`)
 }
