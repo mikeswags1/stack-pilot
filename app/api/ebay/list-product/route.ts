@@ -1928,7 +1928,30 @@ function buildXml(params: {
 }
 
 // ── Route handler ────────────────────────────────────────────────────────────
+// Request-scoped paid-verification attribution state, shared between the handler
+// and the guaranteed finalizer in POST.
+type PaidAttribution = { id: number | null; outcome: string | null }
+
 export async function POST(req: NextRequest) {
+  const attribution: PaidAttribution = { id: null, outcome: null }
+  try {
+    return await handleListProductPost(req, attribution)
+  } finally {
+    // GUARANTEED finalizer: whatever path the handler exits through — return,
+    // throw, or a gate that predates instrumentation — a paid attempt can never
+    // remain 'pending'. Exits that knew their verdict already stamped it (the
+    // WHERE outcome = 'pending' guard makes this a no-op in that case).
+    if (attribution.id !== null) {
+      await sql`
+        UPDATE paid_verification_log
+        SET outcome = ${attribution.outcome || 'unattributed_exit'}
+        WHERE id = ${attribution.id} AND outcome = 'pending'
+      `.catch(() => {})
+    }
+  }
+}
+
+async function handleListProductPost(req: NextRequest, attribution: PaidAttribution) {
   const cronSecret = process.env.CRON_SECRET
   const authHeader = req.headers.get('authorization') || ''
   const isCron = Boolean(cronSecret && authHeader === `Bearer ${cronSecret}`)
@@ -2282,14 +2305,16 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Exact-row attribution for a paid verification spent on this request.
-  let paidAttributionId: number | null = null
+  // Exact-row attribution for a paid verification spent on this request. Writes
+  // through the request-scoped `attribution` object so the guaranteed try/finally
+  // finalizer in POST always sees the latest id/outcome, even on uninstrumented exits.
   const finalizePaidAttribution = async (outcome: string) => {
-    if (paidAttributionId === null) return
+    attribution.outcome = outcome.slice(0, 60)
+    if (attribution.id === null) return
     await sql`
       UPDATE paid_verification_log
-      SET outcome = ${outcome.slice(0, 60)}
-      WHERE id = ${paidAttributionId} AND outcome = 'pending'
+      SET outcome = ${attribution.outcome}
+      WHERE id = ${attribution.id} AND outcome = 'pending'
     `.catch(() => {})
   }
 
@@ -2344,7 +2369,7 @@ export async function POST(req: NextRequest) {
         VALUES (${effectiveUserId}, ${asin}, ${body?.queueId ?? null}, ${paidResult.reservedLogId}, ${Boolean(paid)}, 'pending')
         RETURNING id
       `.catch(() => [])
-      paidAttributionId = attrRows[0]?.id ?? null
+      attribution.id = attrRows[0]?.id ?? null
     }
     if (
       paid &&

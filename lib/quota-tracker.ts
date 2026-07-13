@@ -299,14 +299,29 @@ export async function reserveQuotaSlot(
   const uid = userId ? Number(userId) : null
   try {
     const rows = await queryRows<{ day_count: number; hour_count: number }>`
+      WITH seed AS (
+        -- When today's counter row doesn't exist yet (fresh day, redeploy, or a
+        -- wiped table), initialize it from the usage log so pre-existing spend
+        -- always counts. Durable recurrence protection, not a one-off script.
+        SELECT
+          COUNT(*) FILTER (
+            WHERE created_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Los_Angeles') AT TIME ZONE 'America/Los_Angeles'
+          )::int AS day_used,
+          COUNT(*) FILTER (WHERE created_at >= date_trunc('hour', NOW()))::int AS hour_used
+        FROM api_usage_log
+        WHERE provider = ${provider} AND call_name = ${callName.slice(0, 60)}
+          AND created_at > NOW() - INTERVAL '25 hours'
+      )
       INSERT INTO quota_counters (provider, call_name, day_key, hour_key, day_count, hour_count)
-      VALUES (
+      SELECT
         ${provider},
         ${callName.slice(0, 60)},
         (NOW() AT TIME ZONE 'America/Los_Angeles')::date::text,
         to_char(NOW(), 'YYYY-MM-DD-HH24'),
-        1, 1
-      )
+        seed.day_used + 1,
+        seed.hour_used + 1
+      FROM seed
+      WHERE seed.day_used < ${rule.dailyHardLimit} AND seed.hour_used < ${rule.hourlyHardLimit}
       ON CONFLICT (provider, call_name, day_key) DO UPDATE SET
         day_count = quota_counters.day_count + 1,
         hour_count = CASE
