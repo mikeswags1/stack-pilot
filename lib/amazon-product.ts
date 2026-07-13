@@ -549,13 +549,20 @@ async function fetchProductFromSearch(asin: string, fallbackImage?: string) {
 // RapidAPI). Returns clean price / availability_status / sold_by / ships_from / images.
 // Quota-gated: getThrottleState blocks at 90% of the 600-requests/day cap, and every call
 // (success or fail) is logged to api_usage_log so a runaway loop can't drain the month.
-async function fetchProductFromScraperApi(asin: string, fallbackImage?: string): Promise<ValidatedAmazonProduct | null> {
+async function fetchProductFromScraperApi(
+  asin: string,
+  fallbackImage?: string,
+  quotaBucket: 'structured-product' | 'structured-product-listing' = 'structured-product'
+): Promise<ValidatedAmazonProduct | null> {
   const key = String(process.env.SCRAPERAPI_KEY || '').trim()
   if (!key) return null
 
-  const { recordApiCall, getThrottleState } = await import('@/lib/quota-tracker')
-  const throttle = await getThrottleState('scraperapi', 'structured-product').catch(() => 'ok' as const)
-  if (throttle === 'block') return null
+  // Atomic fail-closed reservation: the slot is claimed (and counted) BEFORE the
+  // paid call goes out. The old check-then-act throttle raced under concurrent
+  // lambdas and failed OPEN when the usage read errored.
+  const { reserveQuotaSlot, settleQuotaReservation } = await import('@/lib/quota-tracker')
+  const reservation = await reserveQuotaSlot('scraperapi', quotaBucket)
+  if (!reservation.ok) return null
 
   const startedAt = Date.now()
   try {
@@ -563,11 +570,11 @@ async function fetchProductFromScraperApi(asin: string, fallbackImage?: string):
     const res = await fetch(url, { signal: AbortSignal.timeout(25000) })
 
     if (res.status === 401 || res.status === 403 || res.status === 429) {
-      recordApiCall({ provider: 'scraperapi', callName: 'structured-product', success: false, durationMs: Date.now() - startedAt, errorCode: 'QUOTA_EXCEEDED', errorMessage: `HTTP ${res.status}` }).catch(() => {})
+      await settleQuotaReservation(reservation.logId, { success: false, durationMs: Date.now() - startedAt, errorCode: 'QUOTA_EXCEEDED', errorMessage: `HTTP ${res.status}` })
       return null
     }
     if (!res.ok) {
-      recordApiCall({ provider: 'scraperapi', callName: 'structured-product', success: false, durationMs: Date.now() - startedAt, errorCode: `HTTP_${res.status}` }).catch(() => {})
+      await settleQuotaReservation(reservation.logId, { success: false, durationMs: Date.now() - startedAt, errorCode: `HTTP_${res.status}` })
       return null
     }
 
@@ -586,7 +593,7 @@ async function fetchProductFromScraperApi(asin: string, fallbackImage?: string):
       normalizeImageUrl((data as Record<string, unknown>).main_image),
     ])
 
-    recordApiCall({ provider: 'scraperapi', callName: 'structured-product', success: true, durationMs: Date.now() - startedAt }).catch(() => {})
+    await settleQuotaReservation(reservation.logId, { success: true, durationMs: Date.now() - startedAt })
     return toProduct({
       asin,
       title: sanitizeTitle(data.name || data.title),
@@ -607,9 +614,17 @@ async function fetchProductFromScraperApi(asin: string, fallbackImage?: string):
       source: 'api',
     })
   } catch (err) {
-    recordApiCall({ provider: 'scraperapi', callName: 'structured-product', success: false, durationMs: Date.now() - startedAt, errorCode: 'NETWORK', errorMessage: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200) }).catch(() => {})
+    await settleQuotaReservation(reservation.logId, { success: false, durationMs: Date.now() - startedAt, errorCode: 'NETWORK', errorMessage: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200) })
     return null
   }
+}
+
+// Listing-time verification fallback. Draws from the RESERVED 40/day sub-bucket
+// (carved out of the unchanged 160/day product-call cap) so enrichment can never
+// starve the listing gate and vice versa. Returns the full structured read; the
+// caller must still enforce every listing gate on the result.
+export async function fetchListingVerificationFromScraperApi(asin: string): Promise<ValidatedAmazonProduct | null> {
+  return fetchProductFromScraperApi(asin, undefined, 'structured-product-listing')
 }
 
 async function fetchProductFromScrape(asin: string, fallbackImage?: string) {
@@ -675,37 +690,65 @@ export async function warmAmazonProductCache(
   // quota only on proven-strong categories.
   const allowedNiches = (options.niches || []).filter((n) => typeof n === 'string' && n.length > 0)
   const useNicheFilter = allowedNiches.length > 0
+
+  // Enrichment attempt memory: without it, an ASIN whose enrichment fails (dead page,
+  // bot-block, no images) has no cache row, so every run re-selected and RE-PAID for
+  // the same dead product. Claiming via UPDATE...SKIP LOCKED also stops two overlapping
+  // enrichment runs from buying the same ASIN twice.
+  await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS enrich_attempts INTEGER NOT NULL DEFAULT 0`.catch(() => {})
+  await sql`ALTER TABLE product_source_items ADD COLUMN IF NOT EXISTS next_enrich_after TIMESTAMPTZ`.catch(() => {})
+
   const rows = useNicheFilter
     ? await queryRows<{ asin: string; image_url: string | null }>`
-        SELECT psi.asin, psi.image_url
-        FROM product_source_items psi
-        LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
-        WHERE psi.active = TRUE
-          AND apc.asin IS NULL
-          AND psi.profit >= 4
-          AND psi.roi >= 25
-          AND psi.risk <> 'HIGH'
-          AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
-          AND psi.image_url IS NOT NULL
-          AND psi.image_url <> ''
-          AND psi.source_niche = ANY(${allowedNiches}::text[])
-        ORDER BY psi.master_score DESC NULLS LAST, psi.total_score DESC NULLS LAST, psi.last_seen_at DESC
-        LIMIT ${limit}
+        WITH picked AS (
+          SELECT psi.asin
+          FROM product_source_items psi
+          LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
+          WHERE psi.active = TRUE
+            AND apc.asin IS NULL
+            AND psi.profit >= 4
+            AND psi.roi >= 25
+            AND psi.risk <> 'HIGH'
+            AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
+            AND psi.image_url IS NOT NULL
+            AND psi.image_url <> ''
+            AND (psi.next_enrich_after IS NULL OR psi.next_enrich_after <= NOW())
+            AND psi.source_niche = ANY(${allowedNiches}::text[])
+          ORDER BY psi.master_score DESC NULLS LAST, psi.total_score DESC NULLS LAST, psi.last_seen_at DESC
+          LIMIT ${limit}
+          FOR UPDATE OF psi SKIP LOCKED
+        )
+        UPDATE product_source_items p
+        SET enrich_attempts = COALESCE(p.enrich_attempts, 0) + 1,
+            next_enrich_after = NOW() + INTERVAL '30 minutes'
+        FROM picked
+        WHERE p.asin = picked.asin
+        RETURNING p.asin, p.image_url
       `.catch(() => [])
     : await queryRows<{ asin: string; image_url: string | null }>`
-        SELECT psi.asin, psi.image_url
-        FROM product_source_items psi
-        LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
-        WHERE psi.active = TRUE
-          AND apc.asin IS NULL
-          AND psi.profit >= 4
-          AND psi.roi >= 25
-          AND psi.risk <> 'HIGH'
-          AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
-          AND psi.image_url IS NOT NULL
-          AND psi.image_url <> ''
-        ORDER BY psi.master_score DESC NULLS LAST, psi.total_score DESC NULLS LAST, psi.last_seen_at DESC
-        LIMIT ${limit}
+        WITH picked AS (
+          SELECT psi.asin
+          FROM product_source_items psi
+          LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
+          WHERE psi.active = TRUE
+            AND apc.asin IS NULL
+            AND psi.profit >= 4
+            AND psi.roi >= 25
+            AND psi.risk <> 'HIGH'
+            AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
+            AND psi.image_url IS NOT NULL
+            AND psi.image_url <> ''
+            AND (psi.next_enrich_after IS NULL OR psi.next_enrich_after <= NOW())
+          ORDER BY psi.master_score DESC NULLS LAST, psi.total_score DESC NULLS LAST, psi.last_seen_at DESC
+          LIMIT ${limit}
+          FOR UPDATE OF psi SKIP LOCKED
+        )
+        UPDATE product_source_items p
+        SET enrich_attempts = COALESCE(p.enrich_attempts, 0) + 1,
+            next_enrich_after = NOW() + INTERVAL '30 minutes'
+        FROM picked
+        WHERE p.asin = picked.asin
+        RETURNING p.asin, p.image_url
       `.catch(() => [])
 
   if (rows.length === 0) return { warmed: 0, failed: 0, enrichedWithImages: 0 }
@@ -725,15 +768,38 @@ export async function warmAmazonProductCache(
         }).catch(() => null)
       )
     )
-    for (const result of results) {
-      if (result.status === 'fulfilled' && result.value) {
+    for (let index = 0; index < batch.length; index++) {
+      const row = batch[index]
+      const result = results[index]
+      const product = result?.status === 'fulfilled' ? result.value : null
+      // Only a live-source read produces a cache row (fallback/cache merges don't) —
+      // anything else leaves the item unenriched and must back off, not retry-loop.
+      const trulyEnriched = Boolean(product && product.source !== 'fallback' && product.source !== 'cache')
+      if (product) {
         warmed++
-        // Track "real" enrichment vs fallback (we want products with >=2 images for list-ready)
-        if (result.value.source !== 'fallback' && (result.value.images?.length || 0) >= 2) {
+        if (product.source !== 'fallback' && (product.images?.length || 0) >= 2) {
           enrichedWithImages++
         }
       } else {
         failed++
+      }
+      if (trulyEnriched) {
+        await sql`
+          UPDATE product_source_items
+          SET enrich_attempts = 0, next_enrich_after = NULL
+          WHERE asin = ${row.asin}
+        `.catch(() => {})
+      } else {
+        // Exponential cooldown: 1h, 2h, 4h ... capped at 48h. Attempts was already
+        // incremented at claim time, so first failure = 2^0 = 1 hour.
+        await sql`
+          UPDATE product_source_items
+          SET next_enrich_after = NOW() + LEAST(
+            INTERVAL '48 hours',
+            INTERVAL '1 hour' * POWER(2, LEAST(GREATEST(enrich_attempts - 1, 0), 6))
+          )
+          WHERE asin = ${row.asin}
+        `.catch(() => {})
       }
     }
     // Throttle to reduce Amazon bot detection. Last batch doesn't need to sleep.

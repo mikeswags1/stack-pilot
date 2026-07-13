@@ -11,6 +11,7 @@ import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getNetProfit, getRecommendedE
 import { getSeasonalQueryExpansions, loadActiveCustomSourceNicheQueries, mergeTrendingNicheQueries } from '@/lib/source-niches'
 import { getNicheStockRepairTargets, getSourceEngineIntelligenceSummary, getWeakSourceNiches, recordSourceEngineRun, runSourceSelfHealing } from '@/lib/source-intelligence'
 import { getTitleMatch } from '@/lib/amazon-mapping'
+import { tryAcquireCronLock } from '@/lib/cron-lock'
 
 export const maxDuration = 300
 
@@ -1126,8 +1127,16 @@ async function auditActiveAmazonListings(limit = 24, riskFirst = false): Promise
 
   let available = 0, ended = 0, failed = 0, skipped = 0
   const BATCH = 4
+  // Circuit breaker: when Amazon is bot-blocking this runner, every read in the
+  // batch comes back CHECK_FAILED. Hammering through the remaining rows just
+  // deepens the block and stamps check_failed on listings that were fine.
+  // After this many CONSECUTIVE failed reads, stop the run and let the 30-min
+  // retry cooldown act as the cool-off window.
+  const BREAKER_THRESHOLD = 8
+  let consecutiveCheckFailures = 0
+  let breakerTripped = false
 
-  for (let i = 0; i < rows.length; i += BATCH) {
+  for (let i = 0; i < rows.length && !breakerTripped; i += BATCH) {
     const batch = rows.slice(i, i + BATCH)
     const checks = await Promise.allSettled(
       batch.map((row) =>
@@ -1137,6 +1146,8 @@ async function auditActiveAmazonListings(limit = 24, riskFirst = false): Promise
         })
       )
     )
+    // Gentle pacing between mini-batches — burst patterns are what trip Amazon's blocker.
+    if (i + BATCH < rows.length) await new Promise((r) => setTimeout(r, 1500))
 
     for (let index = 0; index < batch.length; index++) {
       const row = batch[index]
@@ -1147,6 +1158,9 @@ async function auditActiveAmazonListings(limit = 24, riskFirst = false): Promise
       }
 
       const check = result.value
+      // Any decisive read (ok OR explicit-unavailable) proves Amazon is answering —
+      // only CHECK_FAILED runs the breaker counter up.
+      if (check.ok || check.reason !== 'CHECK_FAILED') consecutiveCheckFailures = 0
       if (check.ok) {
         const titleMatch = getTitleMatch(row.title || '', check.title)
         if (
@@ -1214,6 +1228,12 @@ async function auditActiveAmazonListings(limit = 24, riskFirst = false): Promise
             AND ebay_listing_id = ${row.ebay_listing_id}
         `.catch(() => {})
         skipped++
+        consecutiveCheckFailures++
+        if (consecutiveCheckFailures >= BREAKER_THRESHOLD) {
+          breakerTripped = true
+          console.warn(`[listing-audit] circuit breaker: ${consecutiveCheckFailures} consecutive CHECK_FAILED reads — Amazon is blocking this runner, stopping batch (${i + index + 1}/${rows.length} attempted)`)
+          break
+        }
         continue
       }
 
@@ -1294,6 +1314,15 @@ export async function GET(req: NextRequest) {
     : sourceOnly ? 'sourceOnly' : stockWeak ? 'stockWeak' : backgroundCatalog ? 'backgroundCatalog' : catalogRefresh ? 'catalog' : fullRefresh ? 'full' : 'rolling'
   const runTrigger = autopilotRepair ? 'source-autopilot' : isVercelCron ? 'vercel-cron' : authHeader ? 'cron-secret' : 'manual'
   if (autopilotRepair) report.autopilot = true
+
+  // Overlap guard: identical run modes may not execute concurrently. A slow run
+  // holding into the next tick (or two same-minute schedule collisions) previously
+  // doubled the same refresh/audit work. TTL matches maxDuration so a crashed run
+  // can never wedge the schedule.
+  const lockName = `refresh-products:${runMode}`
+  if (!(await tryAcquireCronLock(lockName, 290))) {
+    return apiOk({ success: true, skipped: 'overlapping_run_in_progress', mode: runMode })
+  }
 
   const finalizeReport = async (nichesAttempted: string[] = []) => {
     const selfHealing = await runSourceSelfHealing({ applyScores: true, deactivateWeak: true }).catch(() => null)

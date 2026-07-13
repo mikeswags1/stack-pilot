@@ -40,8 +40,8 @@
   },
   "crons": [
     {
-      "path": "/api/cron/refresh-products?listingAuditOnly=1&auditLimit=60",
-      "schedule": "*/10 * * * *"
+      "path": "/api/cron/refresh-products?listingAuditOnly=1&auditLimit=40",
+      "schedule": "4,14,24,34,44,54 * * * *"
     },
     {
       "path": "/api/cron/reprice-agent?urgentOnly=1",
@@ -49,19 +49,19 @@
     },
     {
       "path": "/api/cron/refresh-products?sourceOnly=1&autopilot=1&repairBatch=8&auditLimit=60",
-      "schedule": "*/30 * * * *"
+      "schedule": "8,38 * * * *"
     },
     {
       "path": "/api/cron/refresh-products?stockWeak=1&wait=1&batch=10&auditLimit=60",
-      "schedule": "0 * * * *"
+      "schedule": "22 * * * *"
     },
     {
       "path": "/api/cron/refresh-products?backgroundCatalog=1&wait=1&batch=4&auditLimit=60",
-      "schedule": "0 */2 * * *"
+      "schedule": "52 */2 * * *"
     },
     {
       "path": "/api/cron/refresh-products?full=1&wait=1&auditLimit=60",
-      "schedule": "0 */8 * * *"
+      "schedule": "46 */8 * * *"
     },
     {
       "path": "/api/cron/auto-listing-tick?limit=40",
@@ -69,7 +69,7 @@
     },
     {
       "path": "/api/cron/source-agent",
-      "schedule": "0 * * * *"
+      "schedule": "18 * * * *"
     },
     {
       "path": "/api/cron/reprice-agent",
@@ -97,7 +97,7 @@
     },
     {
       "path": "/api/cron/replenish-ready-queue?platformTarget=300&rawTarget=5000",
-      "schedule": "0 * * * *"
+      "schedule": "11 * * * *"
     },
     {
       "path": "/api/cron/demand-scout?seedsPerRun=8&perSeed=21",

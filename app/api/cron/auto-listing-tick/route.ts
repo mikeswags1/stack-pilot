@@ -6,7 +6,7 @@ import { getTopAutoListingCandidates } from '@/lib/auto-listing/scoring'
 import { acquireNextDueJob, markCompleted, markFailed } from '@/lib/auto-listing/queue'
 import { fillQueueIfNeeded, enforceMaxPerHour, canScheduleMoreToday } from '@/lib/auto-listing/scheduler'
 import { logAutoListingEvent } from '@/lib/auto-listing/logging'
-import { sql, queryRows } from '@/lib/db'
+import { queryRows } from '@/lib/db'
 
 export const maxDuration = 300
 
@@ -97,12 +97,13 @@ async function processAutoListingUser(req: NextRequest, userId: number): Promise
 
   const accountId = settings.selected_account_id ?? null
 
-  // Lease/lock per user so cron retries do not double-run.
+  // Lease/lock per user so cron retries do not double-run. NOTE: session advisory
+  // locks (pg_try_advisory_lock) are useless over the serverless HTTP driver — the
+  // session ends with the statement, releasing the lock instantly. The TTL lock row
+  // actually holds across the run.
   const leaseKey = `auto_listing:${userId}`
-  const leaseRows = await queryRows<{ ok: boolean }>`
-    SELECT pg_try_advisory_lock(hashtext(${leaseKey})) AS ok
-  `.catch(() => [])
-  if (!leaseRows[0]?.ok) return { skipped: 'locked' }
+  const { tryAcquireCronLock, releaseCronLock } = await import('@/lib/cron-lock')
+  if (!(await tryAcquireCronLock(leaseKey, 290))) return { skipped: 'locked' }
 
   const startedAt = Date.now()
   const report: Record<string, unknown> = {}
@@ -209,7 +210,7 @@ async function processAutoListingUser(req: NextRequest, userId: number): Promise
     report.durationMs = Date.now() - startedAt
     return report
   } finally {
-    await sql`SELECT pg_advisory_unlock(hashtext(${leaseKey}))`.catch(() => {})
+    await releaseCronLock(leaseKey)
   }
 }
 

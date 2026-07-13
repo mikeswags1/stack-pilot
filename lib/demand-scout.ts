@@ -362,20 +362,35 @@ async function searchAmazonViaScraperApi(query: string): Promise<{ asin: string;
   const key = String(process.env.SCRAPERAPI_KEY || '').trim()
   if (!key) return null
 
-  const { recordApiCall, getThrottleState } = await import('@/lib/quota-tracker')
-  const throttle = await getThrottleState('scraperapi', 'structured-search').catch(() => 'ok' as const)
-  if (throttle === 'block') return null
+  // Normalized-search cache: identical queries within 7 days reuse the stored result
+  // instead of paying again. Scout seeds overlap heavily run-to-run.
+  const normalizedQuery = query.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 200)
+  await ensureAmazonSearchCache()
+  const cached = await queryRows<{ result: Record<string, unknown> | null }>`
+    SELECT result FROM amazon_search_cache
+    WHERE query = ${normalizedQuery} AND created_at > NOW() - INTERVAL '7 days'
+    LIMIT 1
+  `.catch(() => [])
+  if (cached.length > 0) {
+    const hit = cached[0].result as { asin?: string; title?: string; price?: number; imageUrl?: string; rating?: number; reviewCount?: number } | null
+    return hit && hit.asin ? (hit as { asin: string; title: string; price: number; imageUrl: string; rating?: number; reviewCount?: number }) : null
+  }
+
+  // Atomic fail-closed reservation — the slot is claimed before the paid call.
+  const { reserveQuotaSlot, settleQuotaReservation } = await import('@/lib/quota-tracker')
+  const reservation = await reserveQuotaSlot('scraperapi', 'structured-search')
+  if (!reservation.ok) return null
 
   const startedAt = Date.now()
   const url = `https://api.scraperapi.com/structured/amazon/search?api_key=${key}&query=${encodeURIComponent(query)}&country=us`
   const res = await fetch(url, { signal: AbortSignal.timeout(25000) }).catch(() => null)
   if (!res || !res.ok) {
-    recordApiCall({ provider: 'scraperapi', callName: 'structured-search', success: false, durationMs: Date.now() - startedAt, errorCode: res ? `HTTP_${res.status}` : 'NETWORK' }).catch(() => {})
+    await settleQuotaReservation(reservation.logId, { success: false, durationMs: Date.now() - startedAt, errorCode: res ? `HTTP_${res.status}` : 'NETWORK' })
     return null
   }
   type Hit = { asin?: string; name?: string; price?: number; price_string?: string; image?: string; stars?: number; total_reviews?: number; has_prime?: boolean; type?: string }
   const j = (await res.json().catch(() => null)) as { results?: Hit[] } | null
-  recordApiCall({ provider: 'scraperapi', callName: 'structured-search', success: true, durationMs: Date.now() - startedAt }).catch(() => {})
+  await settleQuotaReservation(reservation.logId, { success: true, durationMs: Date.now() - startedAt })
 
   const toCandidate = (p: Hit) => {
     const asin = String(p?.asin || '').toUpperCase().trim()
@@ -397,9 +412,27 @@ async function searchAmazonViaScraperApi(query: string): Promise<{ asin: string;
   }
   const results = (j?.results || []).slice(0, 8)
   // Prime results first — they're the only ones that pass our fulfillment rules.
-  for (const p of results) { if (p?.has_prime) { const c = toCandidate(p); if (c) return c } }
-  for (const p of results) { const c = toCandidate(p); if (c) return c }
-  return null
+  let picked: { asin: string; title: string; price: number; imageUrl: string; rating?: number; reviewCount?: number } | null = null
+  for (const p of results) { if (p?.has_prime) { const c = toCandidate(p); if (c) { picked = c; break } } }
+  if (!picked) { for (const p of results) { const c = toCandidate(p); if (c) { picked = c; break } } }
+  // Cache hits AND misses: a query that returned nothing stays worthless for days —
+  // caching the null saves the repeat credit.
+  await sql`
+    INSERT INTO amazon_search_cache (query, result, created_at)
+    VALUES (${normalizedQuery}, ${JSON.stringify(picked)}, NOW())
+    ON CONFLICT (query) DO UPDATE SET result = ${JSON.stringify(picked)}, created_at = NOW()
+  `.catch(() => {})
+  return picked
+}
+
+async function ensureAmazonSearchCache() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS amazon_search_cache (
+      query TEXT PRIMARY KEY,
+      result JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `.catch(() => {})
 }
 
 // ── Observability — every candidate's full pipeline trace is written here so we
@@ -478,8 +511,30 @@ function isViableProduct(amazonPrice: number, ebayMinPrice: number, title: strin
 }
 
 export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: number } = {}) {
-  const seedsPerRun = Math.max(1, Math.min(options.seedsPerRun ?? 6, 20))
+  let seedsPerRun = Math.max(1, Math.min(options.seedsPerRun ?? 6, 20))
   const perSeed = Math.max(5, Math.min(options.perSeed ?? 15, 30))
+
+  // Pool-health governor: paid discovery only earns its credits when the ready pool
+  // is thin. With hundreds of enriched, auto-listable candidates already waiting,
+  // full-throttle hunting just buys inventory the pipeline can't consume yet.
+  // Above the threshold we drop to 1 exploratory seed (keeps the seed map alive);
+  // discovery snaps back automatically as the pool drains.
+  const POOL_HEALTHY_THRESHOLD = 600
+  const poolDepth = await queryRows<{ n: number }>`
+    SELECT COUNT(*)::int AS n
+    FROM product_source_items psi
+    JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
+    WHERE psi.active = TRUE
+      AND COALESCE(psi.source_quality, 'candidate') <> 'reject'
+      AND COALESCE(apc.available, TRUE) <> FALSE
+      AND jsonb_typeof(apc.images) = 'array'
+      AND jsonb_array_length(apc.images) >= 2
+  `.catch(() => [{ n: 0 }])
+  const readyDepth = Number(poolDepth[0]?.n || 0)
+  if (readyDepth >= POOL_HEALTHY_THRESHOLD) {
+    seedsPerRun = 1
+    console.log(`[demand-scout] pool healthy (${readyDepth} enriched candidates >= ${POOL_HEALTHY_THRESHOLD}) — throttling to 1 seed this run`)
+  }
 
   const token = await getEbayAppToken()
   if (!token) return { discovered: 0, considered: 0, inserted: 0, alreadyKnown: 0, skipped: 0, seeds: 0, runId: null }

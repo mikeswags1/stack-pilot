@@ -64,7 +64,13 @@ export const QUOTA_RULES = {
     // audit sweep combined) — on pace to exhaust the tank by ~Jul 20 and then PAUSE for
     // two weeks. These caps land the remaining 37k credits exactly on the Aug 3 reset:
     // ~330 requests/day total ≈ 1,650 credits/day. Slower but never stops.
-    'structured-product':        { dailyHardLimit: 160,  hourlyHardLimit: 40,   warnPct: 0.70, blockPct: 0.90 },
+    // 7/13 partition (total UNCHANGED at 160 product-calls/day): 40 of the 160 are
+    // carved out as a listing-time fallback bucket. Amazon bot-blocks ~95% of free
+    // page reads from Vercel, so the LIVE-price listing gate was rejecting nearly
+    // every autopilot listing. The fallback pays 1 verified read ONLY when a listing
+    // is otherwise ready to post — the highest-yield paid call in the whole pipeline.
+    'structured-product':        { dailyHardLimit: 120,  hourlyHardLimit: 30,   warnPct: 0.70, blockPct: 0.90 },
+    'structured-product-listing': { dailyHardLimit: 40,  hourlyHardLimit: 10,   warnPct: 0.85, blockPct: 1.0 },
     'structured-search':         { dailyHardLimit: 120,  hourlyHardLimit: 40,   warnPct: 0.70, blockPct: 0.90 },
     Other:                       { dailyHardLimit: 60,   hourlyHardLimit: 20,   warnPct: 0.70, blockPct: 0.90 },
   },
@@ -218,6 +224,77 @@ export async function trackApiCall<T>(
     }).catch(() => {})
     throw err
   }
+}
+
+// ────────────────────────────── Atomic reservation ──────────────────────────────
+
+export type QuotaReservation = { ok: true; logId: number } | { ok: false; reason: 'daily_cap' | 'hourly_cap' | 'error' }
+
+/**
+ * Atomically reserve one quota slot BEFORE making a paid call. Fail-closed:
+ * if the reservation cannot be recorded, the caller must not make the call.
+ *
+ * The advisory xact lock serializes reservations per provider+call so two
+ * concurrent lambdas cannot both squeeze through the last slot. The usage row
+ * is inserted as part of the reservation (marked 'reserved'), so a crash after
+ * reserving still counts against the cap — we never under-count paid spend.
+ * Call settleQuotaReservation afterwards to stamp success/duration.
+ */
+export async function reserveQuotaSlot(
+  provider: ApiProvider,
+  callName: string,
+  userId?: number | string
+): Promise<QuotaReservation> {
+  await ensureQuotaTables()
+  const rule = getRule(provider, callName)
+  const uid = userId ? Number(userId) : null
+  try {
+    const rows = await queryRows<{ id: number; daily: number; hourly: number }>`
+      WITH lock AS (
+        SELECT pg_advisory_xact_lock(hashtext(${'quota:' + provider + ':' + callName}))
+      ),
+      usage AS (
+        SELECT
+          COUNT(*) FILTER (WHERE created_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Los_Angeles') AT TIME ZONE 'America/Los_Angeles')::int AS daily,
+          COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour')::int AS hourly
+        FROM api_usage_log, lock
+        WHERE provider = ${provider} AND call_name = ${callName.slice(0, 60)}
+          AND created_at > NOW() - INTERVAL '25 hours'
+      ),
+      ins AS (
+        INSERT INTO api_usage_log (provider, call_name, user_id, success, error_code)
+        SELECT ${provider}, ${callName.slice(0, 60)}, ${Number.isFinite(uid as number) ? uid : null}, TRUE, 'reserved'
+        FROM usage
+        WHERE usage.daily < ${rule.dailyHardLimit} AND usage.hourly < ${rule.hourlyHardLimit}
+        RETURNING id
+      )
+      SELECT ins.id, usage.daily, usage.hourly FROM usage LEFT JOIN ins ON TRUE
+    `
+    const row = rows[0]
+    if (!row) return { ok: false, reason: 'error' }
+    if (row.id === null || row.id === undefined) {
+      return { ok: false, reason: Number(row.daily) >= rule.dailyHardLimit ? 'daily_cap' : 'hourly_cap' }
+    }
+    return { ok: true, logId: Number(row.id) }
+  } catch {
+    // Fail-closed: if we cannot prove there is budget, there is no budget.
+    return { ok: false, reason: 'error' }
+  }
+}
+
+/** Stamp the outcome onto a previously reserved slot. The row already counts against quota either way. */
+export async function settleQuotaReservation(
+  logId: number,
+  outcome: { success: boolean; durationMs?: number; errorCode?: string; errorMessage?: string }
+): Promise<void> {
+  await sql`
+    UPDATE api_usage_log
+    SET success = ${outcome.success},
+        duration_ms = ${outcome.durationMs ?? null},
+        error_code = ${outcome.errorCode?.slice(0, 60) || null},
+        error_message = ${outcome.errorMessage?.slice(0, 500) || null}
+    WHERE id = ${logId}
+  `.catch(() => {})
 }
 
 // ────────────────────────────── Read / aggregate ──────────────────────────────

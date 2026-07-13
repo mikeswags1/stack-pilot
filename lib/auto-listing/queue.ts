@@ -42,14 +42,23 @@ export async function enqueueCandidates(userId: string | number, accountId: numb
   for (let i = 0; i < candidates.length; i += 1) {
     const c = candidates[i]
     const at = scheduleAt(i).toISOString()
+    // Insert-time guard (mirrors the publish gate): never enqueue an ASIN that is
+    // live on ANY account or already waiting in ANY user's queue. The selector
+    // filters these too, but stale candidate batches can outlive a competing insert.
     const res = await sql`
       INSERT INTO auto_listing_queue (
         user_id, account_id, asin, source_niche, category_id,
         score, score_breakdown, selected_reason, status, scheduled_at, attempts, updated_at
       )
-      VALUES (
+      SELECT
         ${userId}, ${accountId}, ${c.asin}, ${c.sourceNiche}, ${c.categoryId || null},
         ${c.score}, ${JSON.stringify(c.scoreBreakdown)}, ${c.selectedReason}, 'queued', ${at}, 0, NOW()
+      WHERE NOT EXISTS (
+        SELECT 1 FROM listed_asins la WHERE la.asin = ${c.asin} AND la.ended_at IS NULL
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM auto_listing_queue q
+        WHERE q.asin = ${c.asin} AND q.status IN ('queued','processing','retry')
       )
       ON CONFLICT DO NOTHING
       RETURNING id
@@ -104,7 +113,14 @@ export async function acquireNextDueJob(userId: string | number) {
         -- cloud tick idle overnight while jobs sat future-dated (user woke to ~20
         -- listings); a local "pull-forward" hack papered over it but died with the
         -- laptop. This makes the accelerator cloud-native.
-        AND (scheduled_at IS NULL OR scheduled_at <= NOW() + INTERVAL '24 hours')
+        --
+        -- EXCEPT retries: markFailed sets scheduled_at as a deliberate backoff
+        -- (10-35 min). Pulling those forward re-attempted failures ~0.4s later,
+        -- turning every transient error into an instant burst of wasted attempts.
+        AND (
+          (status = 'queued' AND (scheduled_at IS NULL OR scheduled_at <= NOW() + INTERVAL '24 hours'))
+          OR (status = 'retry' AND (scheduled_at IS NULL OR scheduled_at <= NOW()))
+        )
         AND created_at > NOW() - (${QUEUE_ENTRY_TTL_HOURS} || ' hours')::interval
       ORDER BY score DESC, scheduled_at ASC NULLS FIRST, created_at ASC
       LIMIT 1

@@ -2289,6 +2289,39 @@ export async function POST(req: NextRequest) {
     fallbackImage: validatedAmazon.imageUrl || imageUrl,
   })
 
+  // Paid verification fallback — INCONCLUSIVE free reads only. Amazon bot-blocks
+  // most direct page reads from this runner (CHECK_FAILED ≠ unavailable), which
+  // left the LIVE-price gate rejecting listings that were perfectly safe. One
+  // reserved structured-product call settles it. The gate is NOT weakened: the
+  // paid read must EXPLICITLY confirm a live buy-box price, availability, and
+  // Amazon-fast fulfillment — and the ASIN/title-match check below still runs on
+  // the result. A confirmed-unavailable free read never reaches this path.
+  if (!liveAvailability.ok && liveAvailability.reason === 'CHECK_FAILED') {
+    const { fetchListingVerificationFromScraperApi } = await import('@/lib/amazon-product')
+    const paid = await fetchListingVerificationFromScraperApi(asin).catch(() => null)
+    if (
+      paid &&
+      paid.available === true &&
+      Number(paid.amazonPrice) > 0 &&
+      paid.fastFulfillment === true &&
+      paid.title
+    ) {
+      liveAvailability = {
+        ok: true,
+        asin,
+        title: paid.title,
+        amazonPrice: Number(paid.amazonPrice),
+        imageUrl: paid.imageUrl || validatedAmazon.imageUrl,
+        images: Array.isArray(paid.images) && paid.images.length > 0 ? paid.images : validatedAmazon.images,
+        primeEligible: paid.primeEligible ?? null,
+        deliveryDaysMax: null,
+        fastFulfillment: paid.fastFulfillment ?? null,
+        fulfillmentSummary: paid.fulfillmentSummary ?? null,
+        checkedAt: new Date().toISOString(),
+      }
+    }
+  }
+
   if (!liveAvailability.ok) {
     const confirmedUnavailable = liveAvailability.reason !== 'CHECK_FAILED'
     if (confirmedUnavailable) {
