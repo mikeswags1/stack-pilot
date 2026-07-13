@@ -69,8 +69,12 @@ export const QUOTA_RULES = {
     // page reads from Vercel, so the LIVE-price listing gate was rejecting nearly
     // every autopilot listing. The fallback pays 1 verified read ONLY when a listing
     // is otherwise ready to post — the highest-yield paid call in the whole pipeline.
-    'structured-product':        { dailyHardLimit: 120,  hourlyHardLimit: 30,   warnPct: 0.70, blockPct: 0.90 },
-    'structured-product-listing': { dailyHardLimit: 40,  hourlyHardLimit: 10,   warnPct: 0.85, blockPct: 1.0 },
+    // 7/13 second rebalance (total STILL 160/day, 40/hr combined): the enriched pool
+    // is deep (900+) while the listing gate — the only step that converts pool into
+    // live listings — was starved at 40/day. Listing conversion now gets the majority.
+    // Snap back toward enrichment when the pool thins.
+    'structured-product':        { dailyHardLimit: 60,   hourlyHardLimit: 12,   warnPct: 0.70, blockPct: 0.90 },
+    'structured-product-listing': { dailyHardLimit: 100, hourlyHardLimit: 28,   warnPct: 0.85, blockPct: 1.0 },
     'structured-search':         { dailyHardLimit: 120,  hourlyHardLimit: 40,   warnPct: 0.70, blockPct: 0.90 },
     Other:                       { dailyHardLimit: 60,   hourlyHardLimit: 20,   warnPct: 0.70, blockPct: 0.90 },
   },
