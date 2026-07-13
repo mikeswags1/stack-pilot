@@ -719,13 +719,13 @@ export async function GET(req: NextRequest) {
         COUNT(*)::int AS active_listings,
         COUNT(*) FILTER (WHERE amazon_available = FALSE)::int AS marked_unavailable,
         COUNT(*) FILTER (
-          WHERE amazon_status_checked_at IS NULL
-            OR amazon_status_checked_at < NOW() - INTERVAL '24 hours'
+          WHERE amazon_price_verified_at IS NULL
+            OR amazon_price_verified_at < NOW() - INTERVAL '24 hours'
         )::int AS due_for_audit,
         COUNT(*) FILTER (
-          WHERE amazon_status_checked_at >= NOW() - INTERVAL '24 hours'
+          WHERE amazon_price_verified_at >= NOW() - INTERVAL '24 hours'
         )::int AS checked_24h,
-        MAX(amazon_status_checked_at) AS last_checked_at
+        MAX(amazon_price_verified_at) AS last_checked_at
       FROM listed_asins
       WHERE ended_at IS NULL
     `.catch(() => []),

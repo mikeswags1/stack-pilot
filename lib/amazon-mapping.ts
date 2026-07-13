@@ -92,7 +92,7 @@ function hasQuantityConflict(ebayTitle: string, candidateTitle: string) {
   return true
 }
 
-function getTitleMatch(ebayTitle: string, candidateTitle: string) {
+export function getTitleMatch(ebayTitle: string, candidateTitle: string) {
   const ebayWords = new Set(getLookupWords(ebayTitle))
   const candidateWords = new Set(getLookupWords(candidateTitle))
   if (ebayWords.size === 0 || candidateWords.size === 0) {

@@ -60,6 +60,28 @@ const candidates = latest.proposals
 console.log(`Mode: ${APPLY ? 'APPLY (will hit eBay)' : 'DRY-RUN (no eBay calls)'}`)
 console.log(`Selected ${candidates.length} worst overpricers from latest proposal\n`)
 
+// HARD NET-PROFIT FLOOR GUARD (2026-06-10). On May 31-Jun 1 this script cut 118
+// listings below cost because it trusted comp-min prices with no profit check
+// (see COLLAB.md). Mirrors getNetProfit()/priceForNetProfit() in
+// lib/listing-pricing.ts. NEVER remove this guard.
+const MIN_NET_PROFIT = Number(env.MIN_NET_PROFIT || '5')
+const FLOOR_FEE_RATE = 0.136, FLOOR_BUFFER = 0.015
+const FLOOR_PROMO = Number(env.PROMOTED_AD_RATE || '0.06')
+const FLOOR_TAX = Number(env.AMAZON_SOURCE_TAX_RATE || '0.07')
+async function netFloorFor(listingId) {
+  const rows = await sql(
+    `SELECT la.amazon_price, apc.amazon_price AS cache_price
+     FROM listed_asins la
+     LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(la.asin)
+     WHERE la.ebay_listing_id = $1 LIMIT 1`, [listingId])
+  const r = rows[0]
+  if (!r) return null
+  const cost = Number(r.cache_price) > 0 ? Number(r.cache_price) : Number(r.amazon_price)
+  if (!(cost > 0)) return null
+  const landed = cost * (1 + FLOOR_TAX)
+  return (landed + 0.4 + MIN_NET_PROFIT) / (1 - FLOOR_FEE_RATE - FLOOR_BUFFER - FLOOR_PROMO)
+}
+
 async function reviseStartPrice(itemId, newPrice) {
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
@@ -91,6 +113,16 @@ for (const c of candidates) {
   const reason = `Reprice down from $${oldPrice} to $${newPrice} (was ${c.ratio.toFixed(2)}× competitor min $${c.comp_min}; ${c.comp_count} competitors)`
 
   console.log(`${c.ebay_listing_id}  $${oldPrice} → $${newPrice}  (${c.ratio.toFixed(1)}× → ${(newPrice / c.comp_min).toFixed(2)}×)  ${c.title?.slice(0, 40)}`)
+
+  const netFloor = await netFloorFor(c.ebay_listing_id)
+  if (netFloor == null) {
+    console.log('  ⛔ SKIP — Amazon cost unknown, cannot verify profit')
+    continue
+  }
+  if (Number(newPrice) < netFloor) {
+    console.log(`  ⛔ SKIP — $${newPrice} is below the $${MIN_NET_PROFIT} net-profit floor price $${netFloor.toFixed(2)}`)
+    continue
+  }
 
   let ack = 'DRY_RUN', longMsg = '', applied = false
   if (APPLY) {

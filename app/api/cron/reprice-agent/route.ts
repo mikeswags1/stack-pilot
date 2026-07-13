@@ -13,6 +13,7 @@ export async function GET(req: NextRequest) {
   if (!authed) return apiError('Unauthorized', { status: 401, code: 'UNAUTHORIZED' })
 
   const dryRun = req.nextUrl.searchParams.get('dryRun') === '1'
+  const urgentOnly = req.nextUrl.searchParams.get('urgentOnly') === '1'
   const userIdParam = req.nextUrl.searchParams.get('userId')
   const userId = userIdParam ? Number(userIdParam) : undefined
 
@@ -26,6 +27,6 @@ export async function GET(req: NextRequest) {
     return apiOk({ ok: true, skipped: 'ebay_quota_throttled' })
   }
 
-  const result = await runRepriceAgent({ dryRun, userId })
+  const result = await runRepriceAgent({ dryRun, userId, urgentOnly })
   return apiOk({ ok: true, ...result })
 }

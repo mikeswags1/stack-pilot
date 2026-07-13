@@ -2231,8 +2231,11 @@ export async function POST(req: NextRequest) {
           fulfillmentSummary: cached.fulfillmentSummary ?? validatedAmazon.fulfillmentSummary ?? null,
         }
 
-        // Persist the merged result so future lookups hit the cache
-        saveCachedAmazonProduct(validatedAmazon).catch(() => {})
+        // Cache-only supplementation is not a live verification. Saving it here
+        // would refresh updated_at and make a stale price look current.
+        if (validatedAmazon.source !== 'cache' && validatedAmazon.source !== 'fallback') {
+          saveCachedAmazonProduct(validatedAmazon).catch(() => {})
+        }
       }
     } catch { /* cache lookup is best-effort — never block on failure */ }
   }
@@ -2279,36 +2282,12 @@ export async function POST(req: NextRequest) {
 
   let liveAvailability: Awaited<ReturnType<typeof checkAmazonLiveAvailability>>
 
-  if (trusted) {
-    // Use the already-validated cache/pool data as the availability result
-    if (!validatedAmazon.available) {
-      liveAvailability = {
-        ok: false,
-        asin,
-        reason: 'UNAVAILABLE' as const,
-        title: validatedAmazon.title,
-        amazonPrice: validatedAmazon.amazonPrice,
-        imageUrl: validatedAmazon.imageUrl,
-        images: validatedAmazon.images,
-        checkedAt: new Date().toISOString(),
-      }
-    } else {
-      liveAvailability = {
-        ok: true,
-        asin,
-        title: validatedAmazon.title,
-        amazonPrice: validatedAmazon.amazonPrice,
-        imageUrl: validatedAmazon.imageUrl,
-        images: validatedAmazon.images,
-        checkedAt: new Date().toISOString(),
-      }
-    }
-  } else {
-    liveAvailability = await checkAmazonLiveAvailability(asin, {
-      fallbackTitle: validatedAmazon.title || title,
-      fallbackImage: validatedAmazon.imageUrl || imageUrl,
-    })
-  }
+  // A pool/cache record is never proof of a current supplier price. Trusted,
+  // bulk, and autopilot modes must pass the same live-read gate as manual listings.
+  liveAvailability = await checkAmazonLiveAvailability(asin, {
+    fallbackTitle: validatedAmazon.title || title,
+    fallbackImage: validatedAmazon.imageUrl || imageUrl,
+  })
 
   if (!liveAvailability.ok) {
     const confirmedUnavailable = liveAvailability.reason !== 'CHECK_FAILED'
@@ -3685,8 +3664,8 @@ export async function POST(req: NextRequest) {
 
   await ensureListedAsinsFinancialColumns()
   await sql`
-    INSERT INTO listed_asins (user_id, asin, title, ebay_listing_id, amazon_price, ebay_price, ebay_fee_rate, amazon_image_url, amazon_images, amazon_snapshot, niche, category_id, amazon_available, amazon_status_reason, amazon_status_checked_at, image_count, image_quality_warning)
-    VALUES (${effectiveUserId}, ${asin}, ${listingTitle.slice(0, 200)}, ${listingId}, ${listingAmazonPrice.toFixed(2)}, ${price}, ${EBAY_DEFAULT_FEE_RATE}, ${primarySourceImage}, ${JSON.stringify(filteredImages)}, ${JSON.stringify({
+    INSERT INTO listed_asins (user_id, asin, title, ebay_listing_id, amazon_price, amazon_verified_price, ebay_price, ebay_fee_rate, amazon_image_url, amazon_images, amazon_snapshot, niche, category_id, amazon_available, amazon_status_reason, amazon_status_checked_at, amazon_price_verified_at, amazon_price_verification_source, image_count, image_quality_warning)
+    VALUES (${effectiveUserId}, ${asin}, ${listingTitle.slice(0, 200)}, ${listingId}, ${listingAmazonPrice.toFixed(2)}, ${listingAmazonPrice.toFixed(2)}, ${price}, ${EBAY_DEFAULT_FEE_RATE}, ${primarySourceImage}, ${JSON.stringify(filteredImages)}, ${JSON.stringify({
       asin,
       title: listingTitle,
       amazonPrice: listingAmazonPrice,
@@ -3701,11 +3680,12 @@ export async function POST(req: NextRequest) {
       source: validatedAmazon.source,
       imageQualityWarning,
       amazonUrl: `https://www.amazon.com/dp/${asin}`,
-    })}, ${niche}, ${finalCategoryId}, TRUE, 'available', NOW(), ${filteredImages.length}, ${imageQualityWarning})
+    })}, ${niche}, ${finalCategoryId}, TRUE, 'available', NOW(), NOW(), 'amazon_buy_box', ${filteredImages.length}, ${imageQualityWarning})
     ON CONFLICT (user_id, asin) DO UPDATE SET
       ebay_listing_id = ${listingId},
       title = ${listingTitle.slice(0, 200)},
       amazon_price = ${listingAmazonPrice.toFixed(2)},
+      amazon_verified_price = ${listingAmazonPrice.toFixed(2)},
       ebay_price = ${price},
       ebay_fee_rate = ${EBAY_DEFAULT_FEE_RATE},
       amazon_image_url = ${primarySourceImage},
@@ -3731,6 +3711,8 @@ export async function POST(req: NextRequest) {
       amazon_available = TRUE,
       amazon_status_reason = 'available',
       amazon_status_checked_at = NOW(),
+      amazon_price_verified_at = NOW(),
+      amazon_price_verification_source = 'amazon_buy_box',
       image_count = ${filteredImages.length},
       image_quality_warning = ${imageQualityWarning},
       listed_at = NOW(),

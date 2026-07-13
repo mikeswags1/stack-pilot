@@ -785,7 +785,12 @@ export async function fetchAmazonProductByAsin(
 
   const merged = mergeProducts(asin, [scrapeResult, scraperApiResult, apiResult, searchResult, cached], options)
   if (merged) {
-    await saveCachedAmazonProduct(merged)
+    // Returning cached/fallback data is useful to callers, but it is not a live
+    // verification. Do not refresh cache.updated_at unless a live source actually
+    // supplied the selected product; otherwise stale costs masquerade as current.
+    if (['scrape', 'api', 'search'].includes(merged.source)) {
+      await saveCachedAmazonProduct(merged)
+    }
     return merged
   }
 

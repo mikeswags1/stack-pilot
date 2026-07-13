@@ -3,6 +3,7 @@
 
 import { chooseBestListingTitle, isWeakListingTitle } from '@/lib/listing-quality'
 import { evaluateAmazonFulfillmentText } from '@/lib/amazon-fulfillment'
+import { extractAmazonAvailabilityScope, extractAmazonBuyBoxPrice, extractAmazonPurchaseScope } from '@/lib/amazon-price-parser'
 
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -201,25 +202,7 @@ export async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct |
     }
     if (!title) return null
 
-    let price = 0
-    const pricePatterns = [
-      /"priceAmount":(\d+\.?\d*)/,
-      /class="a-price-whole">(\d[\d,]*)</,
-      /"price":"?\$?([\d,]+\.?\d*)"/,
-      /id="priceblock_ourprice"[^>]*>\s*\$?([\d,]+\.?\d*)/,
-      /id="priceblock_dealprice"[^>]*>\s*\$?([\d,]+\.?\d*)/,
-      /"buyingPrice":"?\$?([\d,]+\.?\d*)"/,
-    ]
-    for (const pattern of pricePatterns) {
-      const match = html.match(pattern)
-      if (match) {
-        const value = parseFloat(match[1].replace(/,/g, ''))
-        if (value > 0) {
-          price = value
-          break
-        }
-      }
-    }
+    const price = extractAmazonBuyBoxPrice(html)
 
     let images = dedupeImages([
       ...extractDynamicImageUrls(html),
@@ -293,7 +276,10 @@ export async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct |
     }
     if (bestSellerRank && (bestSellerRank < 1 || bestSellerRank > 5_000_000)) bestSellerRank = undefined
 
-    const availabilityText = html.toLowerCase()
+    // Stock/Prime phrases in carousels and related-product widgets do not describe
+    // this ASIN. Restrict all purchase-state signals to the product buy box.
+    const purchaseScope = extractAmazonPurchaseScope(html)
+    const availabilityText = extractAmazonAvailabilityScope(html).toLowerCase()
     const hasUnavailableSignal =
       availabilityText.includes('currently unavailable') ||
       availabilityText.includes('no featured offers available') ||
@@ -301,8 +287,8 @@ export async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct |
       availabilityText.includes('temporarily out of stock') ||
       availabilityText.includes('not currently available')
     const hasBuyBox =
-      /id="add-to-cart-button"|name="submit\.add-to-cart"|id="buy-now-button"|name="submit\.buy-now"/i.test(html)
-    const fulfillment = evaluateAmazonFulfillmentText(html)
+      /id="add-to-cart-button"|name="submit\.add-to-cart"|id="buy-now-button"|name="submit\.buy-now"/i.test(purchaseScope)
+    const fulfillment = evaluateAmazonFulfillmentText(purchaseScope)
     const available = !hasUnavailableSignal && !fulfillment.blockedOrSlow && hasBuyBox && price > 0
 
     return {

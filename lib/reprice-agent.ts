@@ -1,6 +1,7 @@
 import { queryRows, sql } from '@/lib/db'
 import { getValidEbayAccessToken } from '@/lib/ebay-auth'
 import { EBAY_DEFAULT_FEE_RATE, MIN_NET_PROFIT, getNetProfit, getRecommendedEbayPrice, priceForNetProfit } from '@/lib/listing-pricing'
+import { recordApiCall } from '@/lib/quota-tracker'
 
 const REPRICE_MIN_DELTA_USD = 0.5
 const REPRICE_MIN_DELTA_PCT = 3
@@ -15,6 +16,7 @@ type RepriceRow = {
   ebay_fee_rate: string | number | null
   current_amazon_price: string | number | null
   below_net_floor_at: string | null
+  amazon_price_verified_at: string | null
 }
 
 function escapeXml(value: string) {
@@ -34,6 +36,8 @@ async function ensureRepriceColumns() {
   // flagged listings as URGENT: they jump the rotation, bypass the 2h cooldown, and the
   // flag clears once the price is lifted back above the floor.
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS below_net_floor_at TIMESTAMPTZ`.catch(() => {})
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_price_verified_at TIMESTAMPTZ`.catch(() => {})
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_verified_price NUMERIC(10,2)`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS listed_asins_reprice_idx ON listed_asins (ended_at, last_repriced_at)`.catch(() => {})
 }
 
@@ -60,7 +64,8 @@ async function reviseEbayPrice(
   listingId: string,
   accessToken: string,
   newPrice: number,
-  appId: string
+  appId: string,
+  userId: number
 ): Promise<boolean> {
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
@@ -71,24 +76,32 @@ async function reviseEbayPrice(
   </Item>
 </ReviseFixedPriceItemRequest>`
 
-  const res = await fetch('https://api.ebay.com/ws/api.dll', {
-    method: 'POST',
-    headers: {
-      'X-EBAY-API-CALL-NAME': 'ReviseFixedPriceItem',
-      'X-EBAY-API-SITEID': '0',
-      'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
-      'X-EBAY-API-APP-NAME': appId,
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'text/xml',
-    },
-    body: xml,
-    signal: AbortSignal.timeout(10000),
-  })
-  const text = await res.text()
-  return /<Ack>(Success|Warning)<\/Ack>/i.test(text)
+  const startedAt = Date.now()
+  try {
+    const res = await fetch('https://api.ebay.com/ws/api.dll', {
+      method: 'POST',
+      headers: {
+        'X-EBAY-API-CALL-NAME': 'ReviseFixedPriceItem',
+        'X-EBAY-API-SITEID': '0',
+        'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+        'X-EBAY-API-APP-NAME': appId,
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'text/xml',
+      },
+      body: xml,
+      signal: AbortSignal.timeout(10000),
+    })
+    const text = await res.text()
+    const ok = /<Ack>(Success|Warning)<\/Ack>/i.test(text)
+    recordApiCall({ provider: 'ebay', callName: 'ReviseFixedPriceItem', userId, success: ok, durationMs: Date.now() - startedAt, errorCode: ok ? undefined : 'EBAY_API_FAIL' }).catch(() => {})
+    return ok
+  } catch (error) {
+    recordApiCall({ provider: 'ebay', callName: 'ReviseFixedPriceItem', userId, success: false, durationMs: Date.now() - startedAt, errorCode: 'NETWORK', errorMessage: error instanceof Error ? error.message : String(error) }).catch(() => {})
+    return false
+  }
 }
 
-export async function runRepriceAgent(options: { dryRun?: boolean; userId?: number } = {}) {
+export async function runRepriceAgent(options: { dryRun?: boolean; userId?: number; urgentOnly?: boolean } = {}) {
   const startedAt = Date.now()
   await ensureRepriceColumns()
   await ensureRepriceLogTable()
@@ -102,10 +115,10 @@ export async function runRepriceAgent(options: { dryRun?: boolean; userId?: numb
           la.amazon_price AS listed_amazon_price,
           la.ebay_price,
           la.ebay_fee_rate,
-          COALESCE(NULLIF(apc.amazon_price, 0), la.amazon_price) AS current_amazon_price,
-          la.below_net_floor_at
+          la.amazon_verified_price AS current_amazon_price,
+          la.below_net_floor_at,
+          la.amazon_price_verified_at
         FROM listed_asins la
-        LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(la.asin)
         WHERE la.ended_at IS NULL
           AND la.ebay_listing_id IS NOT NULL
           AND la.asin IS NOT NULL
@@ -113,13 +126,11 @@ export async function runRepriceAgent(options: { dryRun?: boolean; userId?: numb
           AND la.amazon_price > 0
           AND la.ebay_price IS NOT NULL
           AND la.ebay_price > 0
-          -- A cache row with amazon_price = 0 was written by a bot-blocked scrape:
-          -- BOTH its price and its available flag are noise. Treat the row as
-          -- unknown and fall back to the list-time cost so the listing still
-          -- gets repriced (0.00 is not NULL, so plain COALESCE excluded ~2,170
-          -- live listings from repricing entirely).
-          AND (COALESCE(apc.available, TRUE) <> FALSE OR apc.amazon_price = 0)
-          AND COALESCE(NULLIF(apc.amazon_price, 0), la.amazon_price) > 0
+          -- Reprice only from a successful exact-ASIN live verification. Cache
+          -- metadata writes and failed attempts cannot make a price eligible.
+          AND la.amazon_price_verified_at > NOW() - INTERVAL '7 days'
+          AND la.amazon_verified_price > 0
+          AND (${!options.urgentOnly} OR la.below_net_floor_at IS NOT NULL)
           AND (la.last_repriced_at IS NULL OR la.last_repriced_at < NOW() - INTERVAL '2 hours' OR la.below_net_floor_at IS NOT NULL)
           AND la.user_id = ${options.userId}
         ORDER BY (la.below_net_floor_at IS NOT NULL) DESC, la.last_repriced_at ASC NULLS FIRST
@@ -133,10 +144,10 @@ export async function runRepriceAgent(options: { dryRun?: boolean; userId?: numb
           la.amazon_price AS listed_amazon_price,
           la.ebay_price,
           la.ebay_fee_rate,
-          COALESCE(NULLIF(apc.amazon_price, 0), la.amazon_price) AS current_amazon_price,
-          la.below_net_floor_at
+          la.amazon_verified_price AS current_amazon_price,
+          la.below_net_floor_at,
+          la.amazon_price_verified_at
         FROM listed_asins la
-        LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(la.asin)
         WHERE la.ended_at IS NULL
           AND la.ebay_listing_id IS NOT NULL
           AND la.asin IS NOT NULL
@@ -144,13 +155,11 @@ export async function runRepriceAgent(options: { dryRun?: boolean; userId?: numb
           AND la.amazon_price > 0
           AND la.ebay_price IS NOT NULL
           AND la.ebay_price > 0
-          -- A cache row with amazon_price = 0 was written by a bot-blocked scrape:
-          -- BOTH its price and its available flag are noise. Treat the row as
-          -- unknown and fall back to the list-time cost so the listing still
-          -- gets repriced (0.00 is not NULL, so plain COALESCE excluded ~2,170
-          -- live listings from repricing entirely).
-          AND (COALESCE(apc.available, TRUE) <> FALSE OR apc.amazon_price = 0)
-          AND COALESCE(NULLIF(apc.amazon_price, 0), la.amazon_price) > 0
+          -- Reprice only from a successful exact-ASIN live verification. Cache
+          -- metadata writes and failed attempts cannot make a price eligible.
+          AND la.amazon_price_verified_at > NOW() - INTERVAL '7 days'
+          AND la.amazon_verified_price > 0
+          AND (${!options.urgentOnly} OR la.below_net_floor_at IS NOT NULL)
           AND (la.last_repriced_at IS NULL OR la.last_repriced_at < NOW() - INTERVAL '2 hours' OR la.below_net_floor_at IS NOT NULL)
         ORDER BY (la.below_net_floor_at IS NOT NULL) DESC, la.last_repriced_at ASC NULLS FIRST
         LIMIT ${MAX_PER_RUN}
@@ -200,7 +209,7 @@ export async function runRepriceAgent(options: { dryRun?: boolean; userId?: numb
     if (options.dryRun) { revised++; continue }
 
     try {
-      const ok = await reviseEbayPrice(row.ebay_listing_id, token, optimalPrice, appId)
+      const ok = await reviseEbayPrice(row.ebay_listing_id, token, optimalPrice, appId, userId)
       if (ok) {
         revised++
         await sql`

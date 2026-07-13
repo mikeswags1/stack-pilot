@@ -4,12 +4,13 @@ import { getValidEbayAccessToken } from '@/lib/ebay-auth'
 import { queryRows, sql } from '@/lib/db'
 import { scrapeAmazonSearch } from '@/lib/amazon-scrape'
 import { deactivateUnavailableProductSourcesFromCache, ensureProductSourceTables, rebuildProductSourceFromCache, repriceProductSourceItems, refreshProductSourcePrices } from '@/lib/product-source-engine'
-import { warmAmazonProductCache, fetchProductDetailsFromApi } from '@/lib/amazon-product'
+import { warmAmazonProductCache } from '@/lib/amazon-product'
 import { checkAmazonLiveAvailability } from '@/lib/amazon-availability'
 import { getListingPolicyFlags, hasBlockedListingPolicyFlag } from '@/lib/listing-policy'
 import { EBAY_DEFAULT_FEE_RATE, getListingMetrics, getNetProfit, getRecommendedEbayPrice, MIN_NET_PROFIT } from '@/lib/listing-pricing'
 import { getSeasonalQueryExpansions, loadActiveCustomSourceNicheQueries, mergeTrendingNicheQueries } from '@/lib/source-niches'
 import { getNicheStockRepairTargets, getSourceEngineIntelligenceSummary, getWeakSourceNiches, recordSourceEngineRun, runSourceSelfHealing } from '@/lib/source-intelligence'
+import { getTitleMatch } from '@/lib/amazon-mapping'
 
 export const maxDuration = 300
 
@@ -844,6 +845,13 @@ async function ensureListingAvailabilityAuditColumns() {
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_available BOOLEAN`.catch(() => {})
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_status_reason TEXT`.catch(() => {})
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_status_checked_at TIMESTAMPTZ`.catch(() => {})
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_price_verified_at TIMESTAMPTZ`.catch(() => {})
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_verified_price NUMERIC(10,2)`.catch(() => {})
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_price_verification_source TEXT`.catch(() => {})
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_prime_eligible BOOLEAN`.catch(() => {})
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_fast_fulfillment BOOLEAN`.catch(() => {})
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_fulfillment_verified_at TIMESTAMPTZ`.catch(() => {})
+  await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_fulfillment_summary TEXT`.catch(() => {})
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_unavailable_confirmed_count INTEGER NOT NULL DEFAULT 0`.catch(() => {})
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_unavailable_first_seen_at TIMESTAMPTZ`.catch(() => {})
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS amazon_unavailable_last_seen_at TIMESTAMPTZ`.catch(() => {})
@@ -853,6 +861,7 @@ async function ensureListingAvailabilityAuditColumns() {
   // active-listing profit monitor (reprice up or end).
   await sql`ALTER TABLE listed_asins ADD COLUMN IF NOT EXISTS below_net_floor_at TIMESTAMPTZ`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS listed_asins_amazon_status_idx ON listed_asins (ended_at, amazon_status_checked_at)`.catch(() => {})
+  await sql`CREATE INDEX IF NOT EXISTS listed_asins_price_verified_idx ON listed_asins (ended_at, amazon_price_verified_at)`.catch(() => {})
   await sql`CREATE INDEX IF NOT EXISTS listed_asins_amazon_unavailable_confirmed_idx ON listed_asins (ended_at, amazon_available, amazon_unavailable_confirmed_count, amazon_unavailable_first_seen_at)`.catch(() => {})
 }
 
@@ -954,8 +963,8 @@ async function syncUnavailableListings(): Promise<{ ended: number; failed: numbe
     }
 
     for (const listing of listings) {
-      const reverified = await fetchProductDetailsFromApi(listing.asin).catch(() => null)
-      if (reverified && reverified.available === true) {
+      const reverified = await checkAmazonLiveAvailability(listing.asin).catch(() => null)
+      if (reverified?.ok) {
         // Was a false positive — undo the cache flag and skip the end
         await sql`
           UPDATE amazon_product_cache
@@ -975,7 +984,9 @@ async function syncUnavailableListings(): Promise<{ ended: number; failed: numbe
         reverifiedSkipped++
         continue
       }
-      if (!reverified || reverified.available !== false || reverified.source !== 'api') {
+      // End only when the same exact-ASIN, scoped Amazon page check explicitly
+      // confirms unavailable again. Blocked/no-price/ambiguous reads stay live.
+      if (!reverified || reverified.ok || reverified.reason !== 'UNAVAILABLE') {
         reverifiedSkipped++
         continue
       }
@@ -1030,7 +1041,7 @@ async function closeUnavailableLocalOnlyListings() {
   return rows.length
 }
 
-async function auditActiveAmazonListings(limit = 24): Promise<{
+async function auditActiveAmazonListings(limit = 24, riskFirst = false): Promise<{
   checked: number
   available: number
   ended: number
@@ -1063,8 +1074,8 @@ async function auditActiveAmazonListings(limit = 24): Promise<{
     tier: number
   }>`
     WITH tiers AS (
-      SELECT user_id, ebay_listing_id, asin, title, amazon_image_url, ebay_price,
-        amazon_status_checked_at,
+      SELECT id, user_id, ebay_listing_id, asin, title, amazon_image_url, amazon_price, ebay_price,
+        amazon_status_checked_at, amazon_price_verified_at,
         CASE
           WHEN sold_at > NOW() - INTERVAL '30 days'
             OR COALESCE(watch_count, 0) > 0
@@ -1075,16 +1086,38 @@ async function auditActiveAmazonListings(limit = 24): Promise<{
       FROM listed_asins
       WHERE ended_at IS NULL
         AND ebay_listing_id IS NOT NULL
+        AND ebay_listing_id <> ''
         AND asin IS NOT NULL
+    ), candidates AS (
+      SELECT id, tier
+      FROM tiers
+      WHERE (
+           amazon_price_verified_at IS NULL
+        OR (tier = 1 AND amazon_price_verified_at < NOW() - INTERVAL '6 hours')
+        OR (tier = 2 AND amazon_price_verified_at < NOW() - INTERVAL '48 hours')
+        OR (tier = 3 AND amazon_price_verified_at < NOW() - INTERVAL '7 days')
+      )
+        -- Failed/blocked attempts are not verification, but a short retry cooldown
+        -- prevents one unreadable ASIN from monopolizing every batch.
+        AND (amazon_status_checked_at IS NULL OR amazon_status_checked_at < NOW() - INTERVAL '30 minutes')
+      ORDER BY CASE
+                 WHEN ${riskFirst} AND amazon_price > 0 AND ebay_price > 0
+                   THEN amazon_price / ebay_price
+                 ELSE 0
+               END DESC,
+               tier ASC,
+               amazon_price_verified_at ASC NULLS FIRST,
+               amazon_status_checked_at ASC NULLS FIRST
+      FOR UPDATE SKIP LOCKED
+      LIMIT ${auditLimit}
     )
-    SELECT user_id, ebay_listing_id, asin, title, amazon_image_url, ebay_price, tier
-    FROM tiers
-    WHERE amazon_status_checked_at IS NULL
-       OR (tier = 1 AND amazon_status_checked_at < NOW() - INTERVAL '6 hours')
-       OR (tier = 2 AND amazon_status_checked_at < NOW() - INTERVAL '48 hours')
-       OR (tier = 3 AND amazon_status_checked_at < NOW() - INTERVAL '7 days')
-    ORDER BY tier ASC, amazon_status_checked_at ASC NULLS FIRST
-    LIMIT ${auditLimit}
+    UPDATE listed_asins la
+    SET amazon_status_checked_at = NOW(),
+        amazon_status_reason = 'check_in_progress'
+    FROM candidates
+    WHERE la.id = candidates.id
+    RETURNING la.user_id, la.ebay_listing_id, la.asin, la.title,
+              la.amazon_image_url, la.ebay_price, candidates.tier
   `.catch(() => [])
 
   if (rows.length === 0) {
@@ -1115,6 +1148,23 @@ async function auditActiveAmazonListings(limit = 24): Promise<{
 
       const check = result.value
       if (check.ok) {
+        const titleMatch = getTitleMatch(row.title || '', check.title)
+        if (
+          titleMatch.score < 0.58 ||
+          titleMatch.queryCoverage < 0.45 ||
+          titleMatch.importantCoverage < 0.5 ||
+          titleMatch.quantityConflict
+        ) {
+          await sql`
+            UPDATE listed_asins
+            SET amazon_status_reason = 'asin_mismatch',
+                amazon_status_checked_at = NOW()
+            WHERE user_id = ${row.user_id}
+              AND ebay_listing_id = ${row.ebay_listing_id}
+          `.catch(() => {})
+          failed++
+          continue
+        }
         // NET-PROFIT DRIFT FLAG (2026-06-11): with the FRESH Amazon price in hand,
         // check whether this listing still clears the take-home floor at its current
         // eBay price. This is how the $13 camera ($9 source that netted $0.57) and
@@ -1134,9 +1184,16 @@ async function auditActiveAmazonListings(limit = 24): Promise<{
         await sql`
           UPDATE listed_asins
           SET amazon_available = TRUE,
-              amazon_status_reason = 'available',
+              amazon_status_reason = ${check.fastFulfillment === true ? 'available' : 'fulfillment_unverified'},
               amazon_status_checked_at = NOW(),
               amazon_price = ${check.amazonPrice},
+              amazon_verified_price = ${check.amazonPrice},
+              amazon_price_verified_at = NOW(),
+              amazon_price_verification_source = 'amazon_buy_box',
+              amazon_prime_eligible = ${check.primeEligible ?? null},
+              amazon_fast_fulfillment = ${check.fastFulfillment ?? null},
+              amazon_fulfillment_verified_at = ${check.fastFulfillment === true ? new Date().toISOString() : null},
+              amazon_fulfillment_summary = ${check.fulfillmentSummary || null},
               amazon_unavailable_confirmed_count = 0,
               amazon_unavailable_first_seen_at = NULL,
               amazon_unavailable_last_seen_at = NULL,
@@ -1215,6 +1272,7 @@ export async function GET(req: NextRequest) {
   const startedAt = Date.now()
   const report: Record<string, unknown> = {}
   const rollingRefresh = req.nextUrl.searchParams.get('rolling') === '1'
+  const listingAuditOnly = req.nextUrl.searchParams.get('listingAuditOnly') === '1'
   const sourceOnly = req.nextUrl.searchParams.get('sourceOnly') === '1'
   const autopilotRepair = req.nextUrl.searchParams.get('autopilot') === '1'
   const stockWeak = req.nextUrl.searchParams.get('stockWeak') === '1'
@@ -1265,6 +1323,28 @@ export async function GET(req: NextRequest) {
       })),
     }).catch(() => {})
     return apiOk({ success: true, ...report })
+  }
+
+  // Dedicated free-only safety sweep. This path makes no paid product/search API
+  // calls and exists so the 6k-listing store can converge on verified prices
+  // without weakening ScraperAPI's hard daily cap.
+  if (listingAuditOnly) {
+    report.amazonListingAudit = await auditActiveAmazonListings(requestedAuditLimit, true).catch(() => 'error')
+    const coverage = await queryRows<{
+      active: number
+      verified_7d: number
+      never_verified: number
+      below_floor: number
+    }>`
+      SELECT
+        COUNT(*)::int AS active,
+        COUNT(*) FILTER (WHERE amazon_price_verified_at > NOW() - INTERVAL '7 days')::int AS verified_7d,
+        COUNT(*) FILTER (WHERE amazon_price_verified_at IS NULL)::int AS never_verified,
+        COUNT(*) FILTER (WHERE below_net_floor_at IS NOT NULL)::int AS below_floor
+      FROM listed_asins
+      WHERE ended_at IS NULL AND ebay_listing_id IS NOT NULL
+    `.catch(() => [])
+    return apiOk({ success: true, mode: 'listingAuditOnly', ...report, coverage: coverage[0] || null, durationMs: Date.now() - startedAt })
   }
 
   if (sourceOnly) {

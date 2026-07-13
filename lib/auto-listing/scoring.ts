@@ -75,9 +75,12 @@ export async function getTopAutoListingCandidates(userId: string | number, setti
       AND jsonb_typeof(apc.images) = 'array'
       AND jsonb_array_length(apc.images) >= 2
       AND (${nicheFilter} = FALSE OR psi.source_niche = ANY(${allowedNiches}::text[]))
+      -- Exclude ASINs active for ANY user, not just this one: the publish gate blocks
+      -- cross-user duplicates platform-wide, so selecting another user's live ASIN
+      -- guarantees an ALREADY_LISTED failure loop that eats queue slots forever.
       AND NOT EXISTS (
         SELECT 1 FROM listed_asins la
-        WHERE la.user_id = ${userId} AND la.asin = psi.asin AND la.ended_at IS NULL
+        WHERE la.asin = psi.asin AND la.ended_at IS NULL
       )
     ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC NULLS LAST
     LIMIT ${Math.max(10, Math.min(1200, fetchLimit))}

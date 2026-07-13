@@ -11,6 +11,10 @@ export type AmazonLiveAvailability =
       amazonPrice: number
       imageUrl?: string
       images: string[]
+      primeEligible?: boolean | null
+      deliveryDaysMax?: number | null
+      fastFulfillment?: boolean | null
+      fulfillmentSummary?: string | null
       checkedAt: string
     }
   | {
@@ -21,6 +25,10 @@ export type AmazonLiveAvailability =
       amazonPrice?: number
       imageUrl?: string
       images?: string[]
+      primeEligible?: boolean | null
+      deliveryDaysMax?: number | null
+      fastFulfillment?: boolean | null
+      fulfillmentSummary?: string | null
       checkedAt: string
     }
 
@@ -126,6 +134,10 @@ export async function checkAmazonLiveAvailability(
       amazonPrice,
       imageUrl: images[0],
       images,
+      primeEligible: scraped.primeEligible,
+      deliveryDaysMax: scraped.deliveryDaysMax,
+      fastFulfillment: scraped.fastFulfillment,
+      fulfillmentSummary: scraped.fulfillmentSummary,
       checkedAt,
     }
   }
@@ -139,6 +151,10 @@ export async function checkAmazonLiveAvailability(
       amazonPrice,
       imageUrl: images[0],
       images,
+      primeEligible: scraped.primeEligible,
+      deliveryDaysMax: scraped.deliveryDaysMax,
+      fastFulfillment: scraped.fastFulfillment,
+      fulfillmentSummary: scraped.fulfillmentSummary,
       checkedAt,
     }
   }
@@ -150,6 +166,10 @@ export async function checkAmazonLiveAvailability(
     amazonPrice,
     imageUrl: images[0],
     images,
+    primeEligible: scraped.primeEligible,
+    deliveryDaysMax: scraped.deliveryDaysMax,
+    fastFulfillment: scraped.fastFulfillment,
+    fulfillmentSummary: scraped.fulfillmentSummary,
     checkedAt,
   }
 }
