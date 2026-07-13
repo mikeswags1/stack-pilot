@@ -723,18 +723,18 @@ export async function GET(req: NextRequest) {
   // Defer niche weights until after cache check â€” avoids eBay API call when cache is warm
   let nicheWeights = new Map<string, number>()
 
-  // â”€â”€ Load ALL users' active ASINs (cross-user deduplication) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // Blocks any ASIN already live on eBay by ANY account on the platform.
-  // This prevents two users from listing the same product and competing with each other.
-  // If a listing ends (sold out or removed), that ASIN becomes available again for everyone.
+  // Load THIS user's active ASINs (per-account deduplication).
+  // Duplicate scope changed 2026-07-13 (owner request): both remaining stores belong
+  // to the same operator, so an ASIN live on one account stays available to the other.
+  // Same-account duplicates remain blocked.
   let listedAsins = new Set<string>()
   let listedTitles: string[] = []
   try {
     const listedRows = await withTimeout(
-      queryRows<{ asin: string; title: string | null; is_mine: boolean }>`
-        SELECT asin, title, (user_id = ${session.user.id}) AS is_mine
+      queryRows<{ asin: string; title: string | null }>`
+        SELECT asin, title
         FROM listed_asins
-        WHERE ended_at IS NULL
+        WHERE ended_at IS NULL AND user_id = ${session.user.id}
         ORDER BY listed_at DESC
         LIMIT 2000
       `,
@@ -742,8 +742,7 @@ export async function GET(req: NextRequest) {
       []
     )
     listedAsins = new Set(listedRows.map((r) => String(r.asin).toUpperCase()))
-    // Only use titles from this user's listings for fuzzy-match blocking
-    listedTitles = listedRows.filter(r => r.is_mine).map((r) => String(r.title || '')).filter(Boolean)
+    listedTitles = listedRows.map((r) => String(r.title || '')).filter(Boolean)
   } catch { /* table may not exist yet */ }
 
   // eBay rejects "you already have this item" by matching product identity, not just
@@ -1190,7 +1189,7 @@ export async function GET(req: NextRequest) {
     // batch). Fall back to the live source engine — it returns a stable, already-de-staled pool of
     // hundreds-ready. Generous timeout because this only runs on the slow fallback path.
     const liveProducts = await withTimeout(
-      loadProductSourceProducts({ limit: 160, excludeAsins }),
+      loadProductSourceProducts({ limit: 160, excludeAsins, forUserId: session.user.id }),
       40_000,
       [] as Product[],
     )
@@ -1216,7 +1215,7 @@ export async function GET(req: NextRequest) {
     distributionSeed,
   }))
   const sourceEngineProducts = await withTimeout(
-    loadProductSourceProducts({ niche: continuousMode ? undefined : niche, limit: sourceEnginePoolLimit, excludeAsins }),
+    loadProductSourceProducts({ niche: continuousMode ? undefined : niche, limit: sourceEnginePoolLimit, excludeAsins, forUserId: session.user.id }),
     sourceEngineTimeoutMs,
     []
   )

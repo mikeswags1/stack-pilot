@@ -75,12 +75,15 @@ export async function getTopAutoListingCandidates(userId: string | number, setti
       AND jsonb_typeof(apc.images) = 'array'
       AND jsonb_array_length(apc.images) >= 2
       AND (${nicheFilter} = FALSE OR psi.source_niche = ANY(${allowedNiches}::text[]))
-      -- Exclude ASINs active for ANY user, not just this one: the publish gate blocks
-      -- cross-user duplicates platform-wide, so selecting another user's live ASIN
-      -- guarantees an ALREADY_LISTED failure loop that eats queue slots forever.
+      -- Exclude ASINs THIS user already has live. Duplicate scope is per account
+      -- (2026-07-13, owner request): the same product may run on both of the
+      -- owner's stores. CRITICAL: this scope must stay IDENTICAL to the publish
+      -- gate's dupe check in list-product — when the selector is looser than the
+      -- gate, selected candidates fail ALREADY_LISTED in an infinite retry loop
+      -- (that mismatch once collapsed listing throughput 336/day -> 18/day).
       AND NOT EXISTS (
         SELECT 1 FROM listed_asins la
-        WHERE la.asin = psi.asin AND la.ended_at IS NULL
+        WHERE la.user_id = ${userId} AND la.asin = psi.asin AND la.ended_at IS NULL
       )
     ORDER BY psi.intelligence_score DESC NULLS LAST, psi.total_score DESC NULLS LAST
     LIMIT ${Math.max(10, Math.min(1200, fetchLimit))}

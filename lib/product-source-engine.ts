@@ -935,8 +935,11 @@ export async function refreshProductSourcePrices(options: { limit?: number; stal
   return { updated, unchanged, failed }
 }
 
-export async function loadProductSourceProducts(options: { niche?: string | null; limit?: number; excludeAsins?: Set<string> | string[] } = {}) {
+export async function loadProductSourceProducts(options: { niche?: string | null; limit?: number; excludeAsins?: Set<string> | string[]; forUserId?: number | string | null } = {}) {
   await ensureProductSourceTables()
+  const forUserIdParam = options.forUserId !== undefined && options.forUserId !== null && Number.isFinite(Number(options.forUserId))
+    ? Number(options.forUserId)
+    : null
   const limit = Math.max(1, Math.min(900, options.limit || 120))
   // Fetch a MUCH wider candidate window than `limit` before the JS quality filters
   // run (stale-title, distinct-images, policy, economics). Those filters can reject
@@ -1018,10 +1021,14 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND jsonb_typeof(apc.images) = 'array'
                 AND jsonb_array_length(apc.images) >= 2
                 AND UPPER(psi.asin) <> ALL(${excludeArray}::text[])
-                AND NOT EXISTS (
+                -- Duplicate scope is PER ACCOUNT (2026-07-13): only exclude ASINs the
+                -- requesting user has live. With no forUserId (shared snapshot), skip the
+                -- exclusion — each caller re-filters against its own user's listings.
+                AND (${forUserIdParam}::int IS NULL OR NOT EXISTS (
                   SELECT 1 FROM listed_asins la
-                  WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
-                )
+                  WHERE la.user_id = ${forUserIdParam}::int
+                    AND UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
+                ))
               ORDER BY
                 -- Priority 1: cached + ≥2 images sit at the top so dashboard top-30 is all list-ready
                 (CASE WHEN apc.asin IS NOT NULL AND jsonb_typeof(apc.images) = 'array' AND jsonb_array_length(apc.images) >= 2 THEN 0 ELSE 1 END),
@@ -1087,10 +1094,14 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND apc.asin IS NOT NULL
                 AND jsonb_typeof(apc.images) = 'array'
                 AND jsonb_array_length(apc.images) >= 2
-                AND NOT EXISTS (
+                -- Duplicate scope is PER ACCOUNT (2026-07-13): only exclude ASINs the
+                -- requesting user has live. With no forUserId (shared snapshot), skip the
+                -- exclusion — each caller re-filters against its own user's listings.
+                AND (${forUserIdParam}::int IS NULL OR NOT EXISTS (
                   SELECT 1 FROM listed_asins la
-                  WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
-                )
+                  WHERE la.user_id = ${forUserIdParam}::int
+                    AND UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
+                ))
               ORDER BY
                 -- Priority 1: cached + ≥2 images sit at the top so dashboard top-30 is all list-ready
                 (CASE WHEN apc.asin IS NOT NULL AND jsonb_typeof(apc.images) = 'array' AND jsonb_array_length(apc.images) >= 2 THEN 0 ELSE 1 END),
@@ -1157,10 +1168,14 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND jsonb_typeof(apc.images) = 'array'
                 AND jsonb_array_length(apc.images) >= 2
                 AND UPPER(psi.asin) <> ALL(${excludeArray}::text[])
-                AND NOT EXISTS (
+                -- Duplicate scope is PER ACCOUNT (2026-07-13): only exclude ASINs the
+                -- requesting user has live. With no forUserId (shared snapshot), skip the
+                -- exclusion — each caller re-filters against its own user's listings.
+                AND (${forUserIdParam}::int IS NULL OR NOT EXISTS (
                   SELECT 1 FROM listed_asins la
-                  WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
-                )
+                  WHERE la.user_id = ${forUserIdParam}::int
+                    AND UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
+                ))
               ORDER BY
                 -- Priority 1: cached + ≥2 images sit at the top so dashboard top-30 is all list-ready
                 (CASE WHEN apc.asin IS NOT NULL AND jsonb_typeof(apc.images) = 'array' AND jsonb_array_length(apc.images) >= 2 THEN 0 ELSE 1 END),
@@ -1225,10 +1240,14 @@ export async function loadProductSourceProducts(options: { niche?: string | null
                 AND apc.asin IS NOT NULL
                 AND jsonb_typeof(apc.images) = 'array'
                 AND jsonb_array_length(apc.images) >= 2
-                AND NOT EXISTS (
+                -- Duplicate scope is PER ACCOUNT (2026-07-13): only exclude ASINs the
+                -- requesting user has live. With no forUserId (shared snapshot), skip the
+                -- exclusion — each caller re-filters against its own user's listings.
+                AND (${forUserIdParam}::int IS NULL OR NOT EXISTS (
                   SELECT 1 FROM listed_asins la
-                  WHERE UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
-                )
+                  WHERE la.user_id = ${forUserIdParam}::int
+                    AND UPPER(la.asin) = UPPER(psi.asin) AND la.ended_at IS NULL
+                ))
               ORDER BY
                 -- Priority 1: cached + ≥2 images sit at the top so dashboard top-30 is all list-ready
                 (CASE WHEN apc.asin IS NOT NULL AND jsonb_typeof(apc.images) = 'array' AND jsonb_array_length(apc.images) >= 2 THEN 0 ELSE 1 END),

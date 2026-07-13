@@ -1751,10 +1751,13 @@ async function reserveListingPublishSlot(args: {
     is_mine: boolean | null
   }>`
     WITH existing AS (
-      SELECT ebay_listing_id, (user_id = ${args.userId}) AS is_mine
+      -- Duplicate scope is per account (2026-07-13): only THIS user's active copy
+      -- blocks the reservation; the other account may carry the same ASIN.
+      SELECT ebay_listing_id, TRUE AS is_mine
       FROM listed_asins
       WHERE UPPER(asin) = ${normalizedAsin}
         AND ended_at IS NULL
+        AND user_id = ${args.userId}
       LIMIT 1
     ),
     reserved AS (
@@ -2006,22 +2009,21 @@ export async function POST(req: NextRequest) {
     return apiError('Enter a valid eBay price before publishing.', { status: 400, code: 'INVALID_LISTING_PRICE' })
   }
 
-  // Reject if this ASIN is already active anywhere on StackPilot. Product Finder
-  // filters cross-user duplicates, but publish is the final gate for stale tabs,
-  // direct API calls, and background listing paths.
-  const existingListing = await queryRows<{ ebay_listing_id: string; is_mine: boolean }>`
-    SELECT ebay_listing_id, (user_id = ${effectiveUserId}) AS is_mine
+  // Reject if this ASIN is already active on THIS account. Duplicates are scoped
+  // per account (2026-07-13, owner request): both remaining stores belong to the
+  // same operator, so the same Amazon source may be listed once on each account.
+  // Same-account duplicates stay blocked — eBay's duplicate policy is per store.
+  const existingListing = await queryRows<{ ebay_listing_id: string }>`
+    SELECT ebay_listing_id
     FROM listed_asins
     WHERE asin = ${String(asin).toUpperCase()} AND ended_at IS NULL
+      AND user_id = ${effectiveUserId}
     LIMIT 1
   `.catch(() => [])
   if (existingListing.length > 0) {
     const listingId = existingListing[0].ebay_listing_id
-    const message = existingListing[0].is_mine
-      ? `This product (ASIN ${asin}) is already listed on your eBay store (listing #${listingId}). Duplicate listings are blocked to protect your account.`
-      : `This product (ASIN ${asin}) is already active on another StackPilot listing. Duplicate platform listings are blocked so sellers do not compete with the same Amazon source.`
     return apiError(
-      message,
+      `This product (ASIN ${asin}) is already listed on your eBay store (listing #${listingId}). Duplicate listings are blocked to protect your account.`,
       { status: 409, code: 'ALREADY_LISTED' }
     )
   }
@@ -3459,11 +3461,11 @@ export async function POST(req: NextRequest) {
   })
   if (!publishReservation.ok) {
     await releaseReservedTrialSlot()
-    const message = publishReservation.isMine
-      ? publishReservation.listingId
-        ? `This product (ASIN ${asin}) is already listed on your eBay store (listing #${publishReservation.listingId}). Duplicate listings are blocked to protect your account.`
-        : `This product (ASIN ${asin}) is already being listed by another in-progress request. Duplicate listings are blocked to protect your account.`
-      : `This product (ASIN ${asin}) is already active on another StackPilot listing. Duplicate platform listings are blocked so sellers do not compete with the same Amazon source.`
+    // Reservation scope is per account (2026-07-13) — a conflict is always this
+    // user's own active copy or an in-flight request on this account.
+    const message = publishReservation.listingId
+      ? `This product (ASIN ${asin}) is already listed on your eBay store (listing #${publishReservation.listingId}). Duplicate listings are blocked to protect your account.`
+      : `This product (ASIN ${asin}) is already being listed by another in-progress request. Duplicate listings are blocked to protect your account.`
     return apiError(message, { status: 409, code: 'ALREADY_LISTED' })
   }
   listingPublishSlotReserved = true

@@ -42,9 +42,10 @@ export async function enqueueCandidates(userId: string | number, accountId: numb
   for (let i = 0; i < candidates.length; i += 1) {
     const c = candidates[i]
     const at = scheduleAt(i).toISOString()
-    // Insert-time guard (mirrors the publish gate): never enqueue an ASIN that is
-    // live on ANY account or already waiting in ANY user's queue. The selector
-    // filters these too, but stale candidate batches can outlive a competing insert.
+    // Insert-time guard (mirrors the publish gate, per-account scope 2026-07-13):
+    // never enqueue an ASIN this user already has live or already waiting in THEIR
+    // queue. The selector filters these too, but stale candidate batches can
+    // outlive a competing insert. Scope must stay identical to the publish gate.
     const res = await sql`
       INSERT INTO auto_listing_queue (
         user_id, account_id, asin, source_niche, category_id,
@@ -54,11 +55,12 @@ export async function enqueueCandidates(userId: string | number, accountId: numb
         ${userId}, ${accountId}, ${c.asin}, ${c.sourceNiche}, ${c.categoryId || null},
         ${c.score}, ${JSON.stringify(c.scoreBreakdown)}, ${c.selectedReason}, 'queued', ${at}, 0, NOW()
       WHERE NOT EXISTS (
-        SELECT 1 FROM listed_asins la WHERE la.asin = ${c.asin} AND la.ended_at IS NULL
+        SELECT 1 FROM listed_asins la
+        WHERE la.user_id = ${userId} AND la.asin = ${c.asin} AND la.ended_at IS NULL
       )
       AND NOT EXISTS (
         SELECT 1 FROM auto_listing_queue q
-        WHERE q.asin = ${c.asin} AND q.status IN ('queued','processing','retry')
+        WHERE q.user_id = ${userId} AND q.asin = ${c.asin} AND q.status IN ('queued','processing','retry')
       )
       ON CONFLICT DO NOTHING
       RETURNING id
