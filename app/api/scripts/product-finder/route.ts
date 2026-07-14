@@ -11,6 +11,7 @@ import { loadProductSourceProducts, upsertProductSourceItems } from '@/lib/produ
 import { getListingPolicyFlags, hasBlockedListingPolicyFlag } from '@/lib/listing-policy'
 import { isWeakListingTitle } from '@/lib/listing-quality'
 import { getSeasonalQueryExpansions, getSourcingTrendMultiplier, loadActiveCustomSourceNicheQueries, mergeTrendingNicheQueries } from '@/lib/source-niches'
+import { decodeHtmlEntitiesDeep } from '@/lib/html-entities'
 
 export const maxDuration = 60
 export const dynamic = 'force-dynamic'
@@ -88,7 +89,7 @@ type LightweightEbayOrder = {
 }
 
 function normalizeTitle(value: string) {
-  return value
+  return decodeHtmlEntitiesDeep(value)
     .toLowerCase()
     .replace(/&/g, ' and ')
     .replace(/[^a-z0-9]+/g, ' ')

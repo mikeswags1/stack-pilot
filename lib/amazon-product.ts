@@ -2,6 +2,7 @@ import { queryRows, sql } from '@/lib/db'
 import { scrapeAmazonProduct, scrapeAmazonSearch } from '@/lib/amazon-scrape'
 import { getRapidApiKey } from '@/lib/rapidapi'
 import { evaluateAmazonFulfillmentText } from '@/lib/amazon-fulfillment'
+import { decodeHtmlEntitiesDeep } from '@/lib/html-entities'
 
 type FetchAmazonProductOptions = {
   asin: string
@@ -62,7 +63,7 @@ function parseAmazonPrice(value: unknown) {
 }
 
 function sanitizeTitle(value: unknown) {
-  return String(value || '')
+  return decodeHtmlEntitiesDeep(value)
     .replace(/\s+/g, ' ')
     .trim()
 }

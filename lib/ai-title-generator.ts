@@ -12,6 +12,7 @@
 
 import { queryRows, sql } from '@/lib/db'
 import { isGenericFallbackListingTitle } from '@/lib/listing-quality'
+import { decodeHtmlEntitiesDeep } from '@/lib/html-entities'
 
 const CACHE_TTL_DAYS = 30
 const TITLE_PROMPT_VERSION = 'competitor-v2'
@@ -150,7 +151,7 @@ async function callOpenAi(userPrompt: string) {
 
 function sanitizeAiTitle(raw: string): string {
   if (!raw) return ''
-  let title = raw
+  let title = decodeHtmlEntitiesDeep(raw)
     .replace(/^["'`]+|["'`]+$/g, '') // strip wrapping quotes
     .replace(/^title:\s*/i, '')      // strip "Title: " prefix if Claude added it
     .replace(/[<>"]/g, '')
@@ -195,7 +196,7 @@ export async function getCachedAiTitle(asin: string): Promise<string | null> {
       AND model LIKE ${`%:${TITLE_PROMPT_VERSION}`}
     LIMIT 1
   `.catch(() => [])
-  const title = rows[0]?.ai_title || null
+  const title = rows[0]?.ai_title ? sanitizeAiTitle(rows[0].ai_title) : null
   if (title && isGenericFallbackListingTitle(title)) return null
   return title
 }

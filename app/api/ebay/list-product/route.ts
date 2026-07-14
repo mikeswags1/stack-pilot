@@ -18,6 +18,7 @@ import { getListingPolicyBlockReason, getListingPolicyFlags, hasBlockedListingPo
 import { chooseBestListingTitle, isWeakListingTitle } from '@/lib/listing-quality'
 import { stripLeadingBrand } from '@/lib/brand-strip'
 import { getRapidApiKey } from '@/lib/rapidapi'
+import { decodeHtmlEntitiesDeep, hasEncodedTitleArtifact } from '@/lib/html-entities'
 
 // ── VeRO Protection ──────────────────────────────────────────────────────────
 // VERO / brand protection is handled entirely by lib/listing-policy.ts
@@ -393,17 +394,7 @@ function dedupeSpecEntries(values: Array<[string, string]>) {
 }
 
 function decodeAllEntities(input: string): string {
-  return input
-    .replace(/&#0*34;?/g, '"')
-    .replace(/&#0*39;?/g, "'")
-    .replace(/&#0*38;?/g, '&')
-    .replace(/&#0*60;?/g, '<')
-    .replace(/&#0*62;?/g, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&apos;/gi, "'")
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
+  return decodeHtmlEntitiesDeep(input)
     .replace(/&#\d+;/g, ' ')   // strip any remaining numeric entities
     .replace(/&[a-z]+;/gi, ' ') // strip any remaining named entities
 }
@@ -2509,17 +2500,12 @@ async function handleListProductPost(req: NextRequest, attribution: PaidAttribut
   const listingTitle = chooseBestListingTitle([validatedAmazon.title, title]) || title
   const listingAmazonPrice = validatedAmazon.amazonPrice
 
-  const cleanTitle = listingTitle
-    // Decode HTML entities first so &quot; → " then gets stripped cleanly
-    .replace(/&quot;|&#34;/gi, '"')
-    .replace(/&amp;|&#38;/gi, '&')
-    .replace(/&lt;|&#60;/gi, '<')
-    .replace(/&gt;|&#62;/gi, '>')
+  const cleanTitle = decodeHtmlEntitiesDeep(listingTitle)
+    // Entity decoding above keeps this plain text; buildXml() performs the sole XML escape.
     // Strip Amazon-specific badges and labels that must never appear on eBay
     .replace(/\[?\b(amazon[''']?s?\s+choice|overall\s+pick|#?\s*1\s+best\s+seller|best\s+seller|limited\s+time\s+deal|climate\s+pledge\s+friendly|small\s+business|sponsored|top\s+brand|highly\s+rated|deal\s+of\s+the\s+day)\b\]?/gi, '')
     .replace(/[^\x20-\x7E]/g, '')
     .replace(/[<>"]/g, '')
-    .replace(/&/g, '&amp;')
     .replace(/\s*[-|,]\s*(Pack of|Pack|Count|Piece|Pcs|Units?|Set of)\s*\d+/gi, '')
     .replace(/\s{2,}/g, ' ')
     .trim()
@@ -2628,7 +2614,18 @@ async function handleListProductPost(req: NextRequest, attribution: PaidAttribut
         competitorTitles: competitorTitleSignals.titles,
         competitorKeywords: competitorTitleSignals.keywords,
       }).catch(() => null)
-  const safeTitle = aiTitle && !isWeakListingTitle(aiTitle) ? aiTitle : ruleBasedTitle
+  const safeTitle = decodeHtmlEntitiesDeep(
+    aiTitle && !isWeakListingTitle(aiTitle) ? aiTitle : ruleBasedTitle
+  )
+
+  // Keep titles as plain text until buildXml() escapes them exactly once. Blocking
+  // residue here prevents a malformed upstream/cache value from reaching eBay.
+  if (hasEncodedTitleArtifact(safeTitle)) {
+    return apiError(
+      'Blocked because the title still contains encoded HTML text. StackPilot will retry with a clean title.',
+      { status: 400, code: 'ENCODED_TITLE_BLOCKED' }
+    )
+  }
 
   if (isWeakListingTitle(safeTitle)) {
     return apiError(
@@ -3534,7 +3531,7 @@ async function handleListProductPost(req: NextRequest, attribution: PaidAttribut
   const publishReservation = await reserveListingPublishSlot({
     userId: effectiveUserId,
     asin,
-    title: listingTitle,
+    title: safeTitle,
     amazonPrice: listingAmazonPrice,
     ebayPrice: Number(price),
     imageUrl: primarySourceImage,
@@ -3782,7 +3779,7 @@ async function handleListProductPost(req: NextRequest, attribution: PaidAttribut
   await ensureListedAsinsFinancialColumns()
   await sql`
     INSERT INTO listed_asins (user_id, asin, title, ebay_listing_id, amazon_price, amazon_verified_price, ebay_price, ebay_fee_rate, amazon_image_url, amazon_images, amazon_snapshot, niche, category_id, amazon_available, amazon_status_reason, amazon_status_checked_at, amazon_price_verified_at, amazon_price_verification_source, image_count, image_quality_warning)
-    VALUES (${effectiveUserId}, ${asin}, ${listingTitle.slice(0, 200)}, ${listingId}, ${listingAmazonPrice.toFixed(2)}, ${listingAmazonPrice.toFixed(2)}, ${price}, ${EBAY_DEFAULT_FEE_RATE}, ${primarySourceImage}, ${JSON.stringify(filteredImages)}, ${JSON.stringify({
+    VALUES (${effectiveUserId}, ${asin}, ${safeTitle}, ${listingId}, ${listingAmazonPrice.toFixed(2)}, ${listingAmazonPrice.toFixed(2)}, ${price}, ${EBAY_DEFAULT_FEE_RATE}, ${primarySourceImage}, ${JSON.stringify(filteredImages)}, ${JSON.stringify({
       asin,
       title: listingTitle,
       amazonPrice: listingAmazonPrice,
@@ -3800,7 +3797,7 @@ async function handleListProductPost(req: NextRequest, attribution: PaidAttribut
     })}, ${niche}, ${finalCategoryId}, TRUE, 'available', NOW(), NOW(), 'amazon_buy_box', ${filteredImages.length}, ${imageQualityWarning})
     ON CONFLICT (user_id, asin) DO UPDATE SET
       ebay_listing_id = ${listingId},
-      title = ${listingTitle.slice(0, 200)},
+      title = ${safeTitle},
       amazon_price = ${listingAmazonPrice.toFixed(2)},
       amazon_verified_price = ${listingAmazonPrice.toFixed(2)},
       ebay_price = ${price},

@@ -1,3 +1,5 @@
+import { decodeHtmlEntitiesDeep } from '@/lib/html-entities'
+
 const AMAZON_BADGE_PATTERN =
   /\[?\b(amazon['']?s?\s+choice|overall\s+pick|#?\s*1\s+best\s+seller|best\s+seller|limited\s+time\s+deal|climate\s+pledge\s+friendly|small\s+business|sponsored|top\s+brand|highly\s+rated|deal\s+of\s+the\s+day)\b\]?/gi
 
@@ -26,17 +28,8 @@ const GENERIC_FALLBACK_TITLE_PATTERNS = [
   /\bpremium\s+industrial\s+equipment\b/i,
 ]
 
-function decodeTitleEntities(input: string) {
-  return input
-    .replace(/&quot;|&#34;/gi, '"')
-    .replace(/&amp;|&#38;/gi, '&')
-    .replace(/&lt;|&#60;/gi, '<')
-    .replace(/&gt;|&#62;/gi, '>')
-    .replace(/&#39;|&apos;/gi, "'")
-}
-
 export function cleanListingTitleCandidate(value: unknown) {
-  return decodeTitleEntities(String(value || ''))
+  return decodeHtmlEntitiesDeep(value)
     .replace(AMAZON_BADGE_PATTERN, '')
     .replace(/\bvisit\s+the\s+.+?\s+store\b/gi, '')
     .replace(/<[^>]*>/g, ' ')

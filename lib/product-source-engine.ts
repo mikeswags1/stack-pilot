@@ -5,6 +5,7 @@ import { scrapeAmazonProduct } from '@/lib/amazon-scrape'
 import { getRapidApiKey } from '@/lib/rapidapi'
 import { getListingTitleQuality, isWeakListingTitle } from '@/lib/listing-quality'
 import { getSourcingTrendMultiplier, getSourcingTrendSignals } from '@/lib/source-niches'
+import { decodeHtmlEntitiesDeep } from '@/lib/html-entities'
 
 /** Minimum master score for a product to enter the active pool. Below this = auto-reject. */
 const MIN_MASTER_SCORE = 38
@@ -153,11 +154,9 @@ function parseNumber(value: unknown) {
 }
 
 function normalizeComparableTitle(value: string) {
-  return String(value || '')
+  return decodeHtmlEntitiesDeep(value)
     .toLowerCase()
     .replace(/&/g, ' and ')
-    .replace(/&#x27;|&#39;|&apos;/g, "'")
-    .replace(/&quot;/g, '"')
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\b(pack|set|piece|pcs|count|for|with|and|the|a|an|of|to|in)\b/g, ' ')
     .replace(/\s+/g, ' ')

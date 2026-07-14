@@ -4,6 +4,8 @@
 // the 80-char title. We strip that leading brand while KEEPING recognized brands people
 // actually search (iPhone, Nike…) and never mangling normal product-word-led titles.
 
+import { decodeHtmlEntitiesDeep } from '@/lib/html-entities'
+
 const GENERIC_BRAND_VALUES = new Set([
   'replacement', 'compatible', 'universal', 'generic', 'new', 'brand', 'for', 'unbranded',
 ])
@@ -88,12 +90,7 @@ export function stripLeadingBrand(title: string, brandSpec?: string): string {
 // Decode entities, drop Amazon-only badges, strip non-ASCII / XML-hostile chars, collapse
 // whitespace. The shared front half of turning a raw Amazon title into an eBay title.
 function sanitizeRawTitle(rawTitle: string): string {
-  return (rawTitle || '')
-    .replace(/&quot;|&#34;/gi, '"')
-    .replace(/&#x27;|&#39;|&apos;/gi, "'")
-    .replace(/&amp;|&#38;/gi, '&')
-    .replace(/&lt;|&#60;/gi, '<')
-    .replace(/&gt;|&#62;/gi, '>')
+  return decodeHtmlEntitiesDeep(rawTitle)
     .replace(/\[?\b(amazon['’]?s?\s+choice|overall\s+pick|#?\s*1\s+best\s+seller|best\s+seller|limited\s+time\s+deal|climate\s+pledge\s+friendly|small\s+business|sponsored|top\s+brand|highly\s+rated|deal\s+of\s+the\s+day)\b\]?/gi, '')
     .replace(/[^\x20-\x7E]/g, '')
     .replace(/[<>"]/g, '')

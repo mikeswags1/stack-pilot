@@ -64,6 +64,11 @@ export function ScriptsTab({
   const [retitleCount, setRetitleCount] = useState<number>(0)
   const [retitleSamples, setRetitleSamples] = useState<Array<{ before: string; after: string }>>([])
   const [retitleMessage, setRetitleMessage] = useState<string | null>(null)
+  const [symbolState, setSymbolState] = useState<'idle' | 'previewing' | 'ready' | 'running' | 'done' | 'error'>('idle')
+  const [symbolCount, setSymbolCount] = useState<number>(0)
+  const [symbolSamples, setSymbolSamples] = useState<Array<{ account?: string; ebayListingId: string; before: string; after: string }>>([])
+  const [symbolMessage, setSymbolMessage] = useState<string | null>(null)
+  const [symbolVerifiedClean, setSymbolVerifiedClean] = useState(false)
 
   const handleEndLoss = async () => {
     if (lossState === 'idle' || lossState === 'error' || lossState === 'done') {
@@ -146,6 +151,66 @@ export function ScriptsTab({
     } catch {
       setRetitleState('error')
       setRetitleMessage('Request failed. Check your eBay connection.')
+    }
+  }
+
+  const handleBrokenTitleSymbols = async () => {
+    // First click reads every live title directly from each connected eBay account.
+    // Confirmation performs another complete live scan before changing Title only.
+    if (symbolState === 'idle' || symbolState === 'error' || symbolState === 'done') {
+      setSymbolState('previewing')
+      setSymbolMessage(null)
+      setSymbolSamples([])
+      setSymbolVerifiedClean(false)
+      try {
+        const res = await fetch('/api/ebay/repair-title-entities', { cache: 'no-store' })
+        const data = await res.json()
+        const count = Number(data.count || 0)
+        setSymbolCount(count)
+        setSymbolSamples(Array.isArray(data.samples) ? data.samples : [])
+        setSymbolMessage(data.message || data.error?.message || (res.ok ? 'Preview complete.' : 'Something went wrong.'))
+        if (!res.ok) {
+          setSymbolState('error')
+        } else if (count === 0) {
+          setSymbolVerifiedClean(true)
+          setSymbolState('done')
+        } else {
+          setSymbolState('ready')
+        }
+      } catch {
+        setSymbolState('error')
+        setSymbolMessage('Request failed. Check your eBay connection.')
+      }
+      return
+    }
+
+    if (symbolState !== 'ready' || symbolCount <= 0) return
+    setSymbolState('running')
+    setSymbolMessage(`Repairing up to ${Math.min(symbolCount, 50)} live title${symbolCount === 1 ? '' : 's'} on eBay...`)
+    try {
+      const res = await fetch('/api/ebay/repair-title-entities', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed: true }),
+      })
+      const data = await res.json()
+      const remaining = Number(data.remaining || 0)
+      setSymbolCount(remaining)
+      setSymbolSamples([])
+      setSymbolMessage(data.message || data.error?.message || (res.ok ? 'Repair complete.' : 'Something went wrong.'))
+      setSymbolVerifiedClean(Boolean(data.verifiedClean))
+      if (!res.ok) {
+        setSymbolState('error')
+      } else if (remaining > 0) {
+        setSymbolState('ready')
+      } else {
+        // If final verification could not finish, this returns to a fresh full scan
+        // on the next click instead of claiming the store is clean.
+        setSymbolState('done')
+      }
+    } catch {
+      setSymbolState('error')
+      setSymbolMessage('Request failed. Check your eBay connection.')
     }
   }
 
@@ -408,6 +473,61 @@ export function ScriptsTab({
             </button>
             {lossState === 'ready' && lossCount > 0 ? (
               <button className="btn btn-ghost btn-sm" style={{ width: '100%', marginTop: '8px' }} onClick={() => { setLossState('idle'); setLossMessage(null); setLossSamples([]) }}>
+                Cancel
+              </button>
+            ) : null}
+          </div>
+
+          {/* Repair literal HTML/entity codes accidentally shown to eBay buyers. */}
+          <div className="card" style={{ padding: '28px', border: symbolState === 'ready' && symbolCount > 0 ? '1px solid rgba(63,185,80,0.45)' : undefined }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px', gap: '12px' }}>
+              <div style={{ fontFamily: 'var(--serif)', fontSize: '20px', fontWeight: 600, color: 'var(--txt)' }}>Fix Broken Title Symbols</div>
+              <span style={{ padding: '3px 10px', borderRadius: '20px', fontSize: '8px', fontWeight: 700, background: 'rgba(63,185,80,0.10)', color: 'var(--grn)', border: '1px solid rgba(63,185,80,0.28)' }}>
+                Title Repair
+              </span>
+            </div>
+            <div style={{ fontSize: '13px', color: 'var(--sil)', marginBottom: '22px', lineHeight: 1.6 }}>
+              Finds titles showing broken codes like #x27 instead of an apostrophe, then fixes only those symbols. It scans every connected eBay account live and never changes the product, price, images, brand, or keywords. Click once to preview, again to repair.
+            </div>
+            {symbolMessage ? (
+              <div style={{ marginBottom: '12px', fontSize: '12px', color: symbolState === 'error' ? 'var(--red)' : symbolState === 'done' && symbolVerifiedClean ? 'var(--grn)' : 'var(--gold)', padding: '8px 12px', borderRadius: '8px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                {symbolMessage}
+              </div>
+            ) : null}
+            {symbolState === 'ready' && symbolSamples.length > 0 ? (
+              <div style={{ marginBottom: '12px', maxHeight: '180px', overflow: 'auto', fontSize: '11px', color: 'var(--dim)', lineHeight: 1.5 }}>
+                <div style={{ color: 'var(--sil)', marginBottom: '6px', fontWeight: 600 }}>Live eBay preview (before → after):</div>
+                {symbolSamples.map((sample) => (
+                  <div key={`${sample.ebayListingId}:${sample.after}`} style={{ marginBottom: '7px' }}>
+                    {sample.account ? <div style={{ color: 'var(--dim)', fontSize: '9px' }}>{sample.account}</div> : null}
+                    <div style={{ color: 'var(--red)', textDecoration: 'line-through', opacity: 0.7 }}>{sample.before}</div>
+                    <div style={{ color: 'var(--grn)' }}>{sample.after}</div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            <button
+              className={`btn btn-sm ${symbolState === 'ready' && symbolCount > 0 ? 'btn-primary' : 'btn-ghost'}`}
+              disabled={symbolState === 'previewing' || symbolState === 'running'}
+              onClick={handleBrokenTitleSymbols}
+              style={{ width: '100%' }}
+            >
+              {symbolState === 'previewing'
+                ? 'Scanning every live title...'
+                : symbolState === 'running'
+                  ? 'Fixing broken symbols...'
+                  : symbolState === 'ready' && symbolCount > 0
+                    ? `Confirm — Fix ${symbolCount} Title${symbolCount === 1 ? '' : 's'}`
+                    : symbolState === 'done' && symbolVerifiedClean
+                      ? 'Verified Clean — Scan Again'
+                      : symbolState === 'done'
+                        ? 'Scan Again to Verify'
+                        : symbolState === 'error'
+                          ? 'Try Full Scan Again'
+                          : 'Preview Broken Title Symbols'}
+            </button>
+            {symbolState === 'ready' && symbolCount > 0 ? (
+              <button className="btn btn-ghost btn-sm" style={{ width: '100%', marginTop: '8px' }} onClick={() => { setSymbolState('idle'); setSymbolCount(0); setSymbolSamples([]); setSymbolMessage(null); setSymbolVerifiedClean(false) }}>
                 Cancel
               </button>
             ) : null}

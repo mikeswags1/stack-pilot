@@ -4,6 +4,7 @@
 import { chooseBestListingTitle, isWeakListingTitle } from '@/lib/listing-quality'
 import { evaluateAmazonFulfillmentText } from '@/lib/amazon-fulfillment'
 import { extractAmazonAvailabilityScope, extractAmazonBuyBoxPrice, extractAmazonPurchaseScope } from '@/lib/amazon-price-parser'
+import { decodeHtmlEntitiesDeep } from '@/lib/html-entities'
 
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -53,13 +54,7 @@ function stripTags(s: string): string {
 }
 
 function decodeHtmlEntities(input: string): string {
-  return input
-    .replace(/&quot;/g, '"')
-    .replace(/&#34;/g, '"')
-    .replace(/&amp;/g, '&')
-    .replace(/&#38;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
+  return decodeHtmlEntitiesDeep(input)
     .replace(/&#x2F;/g, '/')
     .replace(/\\u0026/g, '&')
     .replace(/\\\//g, '/')
@@ -293,7 +288,7 @@ export async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct |
 
     return {
       asin,
-      title: stripTags(title),
+      title: stripTags(decodeHtmlEntities(title)),
       price,
       images,
       features,

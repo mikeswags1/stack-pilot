@@ -1,3 +1,5 @@
+import { decodeHtmlEntitiesDeep } from '@/lib/html-entities'
+
 export type ListingPolicySeverity = 'block' | 'review'
 
 export type ListingPolicyFlag = {
@@ -72,7 +74,7 @@ const MARKETPLACE_COPY_RULES: PolicyRule[] = [
 ]
 
 function normalizePolicyText(value: string) {
-  return value
+  return decodeHtmlEntitiesDeep(value)
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/&/g, ' and ')
