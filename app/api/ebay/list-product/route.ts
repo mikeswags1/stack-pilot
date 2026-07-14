@@ -1932,6 +1932,21 @@ export async function POST(req: NextRequest) {
     // throw, or a gate that predates instrumentation — a paid attempt can never
     // remain 'pending'. Exits that knew their verdict already stamped it (the
     // WHERE outcome = 'pending' guard makes this a no-op in that case).
+    // When the exit path didn't set a verdict, borrow it from the failure this
+    // request just logged (uninstrumented gates all record a listing failure) —
+    // day one showed 49% of paid checks exiting through such paths.
+    if (attribution.id !== null && !attribution.outcome) {
+      const logged = await queryRows<{ error_code: string }>`
+        SELECT lfl.error_code
+        FROM paid_verification_log pvl
+        JOIN listing_failure_log lfl
+          ON lfl.asin = pvl.asin AND lfl.user_id = pvl.user_id AND lfl.created_at >= pvl.created_at
+        WHERE pvl.id = ${attribution.id}
+        ORDER BY lfl.created_at DESC
+        LIMIT 1
+      `.catch(() => [])
+      if (logged[0]?.error_code) attribution.outcome = logged[0].error_code.slice(0, 60)
+    }
     if (attribution.id !== null) {
       await sql`
         UPDATE paid_verification_log
