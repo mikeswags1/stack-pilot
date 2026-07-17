@@ -520,6 +520,9 @@ export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: 
   // Above the threshold we drop to 1 exploratory seed (keeps the seed map alive);
   // discovery snaps back automatically as the pool drains.
   const POOL_HEALTHY_THRESHOLD = 600
+  // Pool depth counts only candidates NOT already live somewhere: without the
+  // exclusion, a store that consumed its whole pool still read as "healthy 900+"
+  // and the governor starved discovery down to 6 listable products (2026-07-17).
   const poolDepth = await queryRows<{ n: number }>`
     SELECT COUNT(*)::int AS n
     FROM product_source_items psi
@@ -529,6 +532,10 @@ export async function runDemandScout(options: { seedsPerRun?: number; perSeed?: 
       AND COALESCE(apc.available, TRUE) <> FALSE
       AND jsonb_typeof(apc.images) = 'array'
       AND jsonb_array_length(apc.images) >= 2
+      AND NOT EXISTS (
+        SELECT 1 FROM listed_asins la
+        WHERE la.asin = psi.asin AND la.ended_at IS NULL
+      )
   `.catch(() => [{ n: 0 }])
   const readyDepth = Number(poolDepth[0]?.n || 0)
   if (readyDepth >= POOL_HEALTHY_THRESHOLD) {
