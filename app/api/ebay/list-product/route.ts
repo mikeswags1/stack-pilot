@@ -3852,6 +3852,12 @@ async function handleListProductPost(req: NextRequest, attribution: PaidAttribut
   // Attribution: close out this request's paid-verification row as a win (exact id).
   await finalizePaidAttribution('listed')
 
+  // Promoted Listings auto-enrollment (owner directive 2026-07-16: all listings at
+  // the campaign rate). Fire-and-forget — never blocks or fails the listing.
+  import('@/lib/promoted-listings')
+    .then(({ enrollListingInPromotedCampaign }) => enrollListingInPromotedCampaign(effectiveUserId, listingId))
+    .catch(() => {})
+
   trialSlotReserved = false
   const latestTrialUsage = trialApplies ? await getTrialUsage(effectiveUserId) : null
 
