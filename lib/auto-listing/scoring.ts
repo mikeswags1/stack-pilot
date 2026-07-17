@@ -48,13 +48,14 @@ export async function getTopAutoListingCandidates(userId: string | number, setti
     last_seen_at: string
     ebay_competitor_count: number | null
     listing_outcome_score: string | number | null
+    ebay_sold_velocity: string | number | null
     cached_bsr: number | null
   }>`
     SELECT
       psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price, psi.profit, psi.roi,
       psi.image_url, psi.risk, psi.sales_volume, psi.rating, psi.review_count, psi.total_score,
       psi.intelligence_score, psi.source_quality, psi.raw, psi.last_seen_at,
-      psi.ebay_competitor_count, psi.listing_outcome_score,
+      psi.ebay_competitor_count, psi.listing_outcome_score, psi.ebay_sold_velocity,
       apc.best_seller_rank AS cached_bsr
     FROM product_source_items psi
     LEFT JOIN amazon_product_cache apc ON UPPER(apc.asin) = UPPER(psi.asin)
@@ -137,6 +138,12 @@ export async function getTopAutoListingCandidates(userId: string | number, setti
         ? competitors <= 10 ? 4 : competitors <= 30 ? 0 : competitors <= 75 ? -8 : competitors <= 150 ? -16 : -25
         : 0
 
+      // PROVEN eBay demand: items the scout observed actually SELLING on eBay
+      // (sold velocity from Browse data) jump the queue. This is the strongest
+      // sell-probability signal we have — stronger than any Amazon-side proxy.
+      const soldVelocity = parseNumber(r.ebay_sold_velocity)
+      const velocityBoost = soldVelocity >= 10 ? 30 : soldVelocity >= 3 ? 20 : soldVelocity >= 1 ? 12 : 0
+
       // Outcome multiplier: products that historically list and stay active score higher
       const outcomeMult = r.listing_outcome_score !== null && r.listing_outcome_score !== undefined
         ? clamp(Number(r.listing_outcome_score), 0.60, 1.25)
@@ -154,6 +161,7 @@ export async function getTopAutoListingCandidates(userId: string | number, setti
         staleness: (stalenessPenalty - 1) * 30,
         bsr: bsrBoost,
         competition: competitionPenalty,
+        provenDemand: velocityBoost,
       }
 
       const scoreRaw = Object.values(scoreBreakdown).reduce((a, b) => a + b, 0) * riskMult * qualityMultiplier * outcomeMult
