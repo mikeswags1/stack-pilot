@@ -73,11 +73,12 @@ export const QUOTA_RULES = {
     // is deep (900+) while the listing gate — the only step that converts pool into
     // live listings — was starved at 40/day. Listing conversion now gets the majority.
     // Snap back toward enrichment when the pool thins.
-    // 7/14 hourly smoothing (daily totals UNCHANGED): 28/hr let the listing bucket
-    // burn its whole day by 4am Pacific and then stall for 20 hours. 6/hr spreads
-    // the same 100 checks across the day — steadier listing flow, same spend.
-    'structured-product':        { dailyHardLimit: 60,   hourlyHardLimit: 6,    warnPct: 0.70, blockPct: 0.90 },
-    'structured-product-listing': { dailyHardLimit: 100, hourlyHardLimit: 6,    warnPct: 0.85, blockPct: 1.0 },
+    // 7/15 BEAST MODE (owner directive, explicit): burn the remaining ~29k credits
+    // for maximum listing throughput NOW. ~3,600 credits/day = tank empty ~Jul 23,
+    // then paid checks pause until the Aug 3 reset unless the plan is upgraded.
+    // Every safety gate unchanged — this raises VOLUME only.
+    'structured-product':        { dailyHardLimit: 100,  hourlyHardLimit: 10,   warnPct: 0.90, blockPct: 1.0 },
+    'structured-product-listing': { dailyHardLimit: 500, hourlyHardLimit: 30,   warnPct: 0.90, blockPct: 1.0 },
     'structured-search':         { dailyHardLimit: 120,  hourlyHardLimit: 40,   warnPct: 0.70, blockPct: 0.90 },
     Other:                       { dailyHardLimit: 60,   hourlyHardLimit: 20,   warnPct: 0.70, blockPct: 0.90 },
   },
