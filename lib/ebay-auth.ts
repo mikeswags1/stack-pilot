@@ -9,10 +9,17 @@ export const EBAY_OAUTH_SCOPES = [
   'https://api.ebay.com/oauth/api_scope/sell.account.readonly',
   'https://api.ebay.com/oauth/api_scope/sell.marketing',
   'https://api.ebay.com/oauth/api_scope/sell.marketing.readonly',
+  // Offers-to-watchers (Negotiation API) — added 2026-07-17 so the app can send
+  // margin-safe discount offers to interested buyers automatically. Takes effect
+  // after the user reconnects their eBay account (consent screen re-approval).
+  'https://api.ebay.com/oauth/api_scope/sell.negotiation',
 ]
 
 const EBAY_REFRESH_FALLBACK_SCOPES = EBAY_OAUTH_SCOPES.filter(
-  (scope) => !scope.includes('/sell.analytics.readonly') && !scope.includes('/sell.marketing')
+  (scope) =>
+    !scope.includes('/sell.analytics.readonly') &&
+    !scope.includes('/sell.marketing') &&
+    !scope.includes('/sell.negotiation')
 )
 
 export const EBAY_MINIMAL_OAUTH_SCOPES = [
