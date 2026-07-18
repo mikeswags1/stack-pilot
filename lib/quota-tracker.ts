@@ -73,14 +73,13 @@ export const QUOTA_RULES = {
     // is deep (900+) while the listing gate — the only step that converts pool into
     // live listings — was starved at 40/day. Listing conversion now gets the majority.
     // Snap back toward enrichment when the pool thins.
-    // 7/17 REFILL REBALANCE: max-burn starved the supply side — the store consumed
-    // its whole candidate pool (6 listable left) while enrichment sat at 40/day.
-    // Listing throughput is now bounded by NEW candidates/day, so the budget splits
-    // between making candidates (search+enrichment) and converting them (listing).
-    // Still ~3,500 credits/day total (owner accepted burn-to-empty ~Jul 23-24).
-    'structured-product':        { dailyHardLimit: 250,  hourlyHardLimit: 15,   warnPct: 0.90, blockPct: 1.0 },
-    'structured-product-listing': { dailyHardLimit: 350, hourlyHardLimit: 20,   warnPct: 0.90, blockPct: 1.0 },
-    'structured-search':         { dailyHardLimit: 100,  hourlyHardLimit: 20,   warnPct: 0.70, blockPct: 0.90 },
+    // 7/18 ABSOLUTE MAX (owner: "list as much as possible max out"): every pipe at
+    // its ceiling. ~6,000+ credits/day — tank empty ~Jul 22, paid checks pause
+    // until Aug 3 after that (owner has chosen speed over runway at every ask).
+    // Safety gates unchanged.
+    'structured-product':        { dailyHardLimit: 400,  hourlyHardLimit: 25,   warnPct: 0.90, blockPct: 1.0 },
+    'structured-product-listing': { dailyHardLimit: 700, hourlyHardLimit: 40,   warnPct: 0.90, blockPct: 1.0 },
+    'structured-search':         { dailyHardLimit: 150,  hourlyHardLimit: 25,   warnPct: 0.90, blockPct: 1.0 },
     Other:                       { dailyHardLimit: 60,   hourlyHardLimit: 20,   warnPct: 0.70, blockPct: 0.90 },
   },
 } satisfies Record<ApiProvider, Record<string, QuotaRule>>
