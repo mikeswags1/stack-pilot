@@ -73,13 +73,13 @@ export const QUOTA_RULES = {
     // is deep (900+) while the listing gate — the only step that converts pool into
     // live listings — was starved at 40/day. Listing conversion now gets the majority.
     // Snap back toward enrichment when the pool thins.
-    // 7/18 ABSOLUTE MAX (owner: "list as much as possible max out"): every pipe at
-    // its ceiling. ~6,000+ credits/day — tank empty ~Jul 22, paid checks pause
-    // until Aug 3 after that (owner has chosen speed over runway at every ask).
-    // Safety gates unchanged.
-    'structured-product':        { dailyHardLimit: 400,  hourlyHardLimit: 25,   warnPct: 0.90, blockPct: 1.0 },
-    'structured-product-listing': { dailyHardLimit: 700, hourlyHardLimit: 40,   warnPct: 0.90, blockPct: 1.0 },
-    'structured-search':         { dailyHardLimit: 150,  hourlyHardLimit: 25,   warnPct: 0.90, blockPct: 1.0 },
+    // 7/18 SPEND PAUSE (owner: "stop spending money"): ALL paid ScraperAPI calls
+    // halted — caps at 0 are fully enforced by the atomic counter (fail-closed).
+    // ~23k credits preserved on the account. Free safety sweeps keep running.
+    // To resume: restore daily/hourly limits here and unpause autopilot.
+    'structured-product':        { dailyHardLimit: 0,   hourlyHardLimit: 0,    warnPct: 0.90, blockPct: 1.0 },
+    'structured-product-listing': { dailyHardLimit: 0,  hourlyHardLimit: 0,    warnPct: 0.90, blockPct: 1.0 },
+    'structured-search':         { dailyHardLimit: 0,   hourlyHardLimit: 0,    warnPct: 0.90, blockPct: 1.0 },
     Other:                       { dailyHardLimit: 60,   hourlyHardLimit: 20,   warnPct: 0.70, blockPct: 0.90 },
   },
 } satisfies Record<ApiProvider, Record<string, QuotaRule>>
