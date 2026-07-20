@@ -1,32 +1,9 @@
 import { queryRows, sql } from '@/lib/db'
 
 export const TRENDING_NEW_NICHE_QUERIES: Record<string, string[]> = {
-  'Fourth of July': [
-    'fourth of july decorations outdoor',
-    '4th of july decorations outdoor',
-    'american flag bunting outdoor',
-    'patriotic tablecloth disposable',
-    'red white blue party decorations',
-    'patriotic string lights outdoor',
-    'american flag garden flags',
-    'fourth of july party supplies',
-    'patriotic paper plates napkins',
-    'red white blue balloons arch kit',
-    'patriotic serving trays',
-    'american flag toothpicks food picks',
-    'fourth of july yard signs',
-    'patriotic porch decor',
-    'red white blue glow sticks',
-    'patriotic cooler bag',
-    'fourth of july picnic blanket',
-    'patriotic pool floats',
-    'american flag car magnets',
-    'patriotic bandanas bulk',
-    'fourth of july photo booth props',
-    'patriotic mason jar lights',
-    'red white blue outdoor pillows',
-    'fourth of july grilling accessories',
-  ],
+  // 'Fourth of July' seed block REMOVED 2026-07-18 (owner: "Fourth of July is over.
+  // Like, come on."). Holiday seeds must be date-gated if ever reintroduced —
+  // sourcing seasonal merch AFTER the holiday buys dead inventory.
   'Golf Accessories': [
     'golf towel magnetic clip', 'golf ball marker divot tool', 'golf club brush cleaner',
     'golf rangefinder case', 'golf tee holder pouch', 'golf alignment sticks training',
@@ -173,7 +150,6 @@ export const TRENDING_EXISTING_NICHE_QUERY_ADDITIONS: Record<string, string[]> =
 const SEASONAL_TRENDING_TERMS = [
   'golf', 'pool', 'beach', 'summer', 'sun', 'patio', 'backyard', 'outdoor', 'camping',
   'travel', 'road trip', 'cooling', 'portable fan', 'pickleball', 'grill', 'garden',
-  'fourth of july', '4th of july', 'patriotic', 'american flag', 'red white blue',
 ]
 
 const VIRAL_GIFTABLE_TERMS = [
