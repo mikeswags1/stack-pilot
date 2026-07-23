@@ -87,23 +87,30 @@ export async function refreshEbayAccessToken(userId: string, refreshToken: strin
   }
 
   const credentials = Buffer.from(`${appId}:${certId}`).toString('base64')
-  const requestRefresh = (scopes: string[]) =>
-    fetch('https://api.ebay.com/identity/v1/oauth2/token', {
+  const requestRefresh = (scopes: string[] | null) => {
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+    })
+    // Omitting `scope` makes eBay grant EVERYTHING the user originally consented
+    // to — the safest default. Passing our current scope list breaks whenever the
+    // list grows past an old grant (adding sell.negotiation made every refresh
+    // fall back to the reduced set and silently DROP sell.marketing, which broke
+    // promoted-listings enrollment on 2026-07-21).
+    if (scopes) body.set('scope', scopes.join(' '))
+    return fetch('https://api.ebay.com/identity/v1/oauth2/token', {
       method: 'POST',
       headers: {
         Authorization: `Basic ${credentials}`,
         'Content-Type': 'application/x-www-form-urlencoded',
       },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: refreshToken,
-        scope: scopes.join(' '),
-      }),
+      body,
     })
+  }
 
   let response: Response
   try {
-    response = await requestRefresh(EBAY_OAUTH_SCOPES)
+    response = await requestRefresh(null)
   } catch {
     throw new EbayNetworkError()
   }
