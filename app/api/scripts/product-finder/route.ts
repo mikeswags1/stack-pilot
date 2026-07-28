@@ -731,15 +731,19 @@ export async function GET(req: NextRequest) {
   let listedAsins = new Set<string>()
   let listedTitles: string[] = []
   try {
+    // LIMIT must exceed the store's active-listing count: at 2000, everything the
+    // user listed before their most recent 2000 escaped the duplicate filter and
+    // showed up as "ready to list" again (2026-07-28: all 30 "ready" items were
+    // live since June). 12000 covers the 10k-listing goal with headroom.
     const listedRows = await withTimeout(
       queryRows<{ asin: string; title: string | null }>`
         SELECT asin, title
         FROM listed_asins
         WHERE ended_at IS NULL AND user_id = ${session.user.id}
         ORDER BY listed_at DESC
-        LIMIT 2000
+        LIMIT 12000
       `,
-      continuousMode ? 3000 : 1800,
+      continuousMode ? 5000 : 3000,
       []
     )
     listedAsins = new Set(listedRows.map((r) => String(r.asin).toUpperCase()))
