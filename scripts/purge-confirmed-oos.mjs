@@ -49,12 +49,21 @@ for (const r of rows) {
   const res = await fetch('https://api.ebay.com/ws/api.dll', { method: 'POST', headers: { 'X-EBAY-API-CALL-NAME': 'EndItem', 'X-EBAY-API-SITEID': '0', 'X-EBAY-API-COMPATIBILITY-LEVEL': '967', 'X-EBAY-API-APP-NAME': env.EBAY_APP_ID, 'Content-Type': 'text/xml' }, body: xml }).catch(() => null)
   const tx = res ? await res.text() : ''
   if (/exceeded usage limit/i.test(tx)) { console.log('eBay quota stop'); break }
-  if (/<Ack>Success<\/Ack>|<Ack>Warning<\/Ack>/.test(tx) || /already|ended|closed|not found/i.test(tx)) {
+  // STRICT success only (2026-07-30 lesson: the loose /already|ended|closed/ text
+  // match let a FAILED EndItem read as success — the listing stayed live on eBay
+  // for 16 days while the DB said ended, then sold unfulfillable). A Failure ack
+  // may only be treated as resolved when eBay EXPLICITLY says the item is already
+  // ended or does not exist.
+  const ack = tx.match(/<Ack>(.*?)<\/Ack>/)?.[1]
+  const longMsg = tx.match(/<LongMessage>(.*?)<\/LongMessage>/)?.[1] || ''
+  const alreadyGone = /already (been )?ended|has ended|item .*(was not found|is invalid|does not exist)/i.test(longMsg)
+  if (ack === 'Success' || ack === 'Warning' || alreadyGone) {
     ended++
     await sql(`UPDATE listed_asins SET ended_at=NOW(), amazon_status_reason='confirmed_oos_purge' WHERE ebay_listing_id=$1 AND ended_at IS NULL`, [r.ebay_listing_id])
-    receipts.push({ at: new Date().toISOString(), ...r })
+    receipts.push({ at: new Date().toISOString(), ack, alreadyGone, ...r })
   } else {
     failed++
+    console.log(`  END-FAIL ${r.ebay_listing_id}: ${longMsg.slice(0, 120) || tx.slice(0, 120)}`)
   }
   if (ended % 50 === 0 && ended > 0) console.log(`  ...${ended} ended`)
   await new Promise((x) => setTimeout(x, 200))
