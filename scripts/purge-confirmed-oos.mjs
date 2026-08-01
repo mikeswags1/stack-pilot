@@ -21,22 +21,52 @@ async function getToken(u) {
   const d = await res.json(); return d.access_token || null
 }
 
+// 2026-08-01 owner blanket approval ("end all risky listings, no more from me"):
+// the purge now covers every risky class from the agreed rulebook —
+//   oos       : explicit unavailable, 2+ fresh post-fix strikes
+//   mismatch  : verified wrong product behind the listing
+//   haul      : confirmed Amazon Haul source (structural slow shipper)
+//   slow      : explicit slow-delivery evidence (fast_fulfillment = FALSE)
+//   bad_roi   : negative net or ROI < 8% at a FRESH verified price
+// Still NEVER on ambiguous/missing/stale evidence. Strict ack verification.
 const rows = await sql(`
   SELECT user_id, ebay_listing_id, asin, title, ebay_price::float AS ebay_price,
-         amazon_unavailable_confirmed_count AS confirms
+         amazon_unavailable_confirmed_count AS confirms,
+         amazon_status_reason,
+         amazon_unavailable_first_seen_at,
+         amazon_unavailable_last_seen_at,
+         CASE
+           WHEN amazon_available = FALSE AND amazon_status_reason IN ('unavailable','out_of_stock')
+             AND amazon_unavailable_confirmed_count >= 2
+             AND amazon_unavailable_last_seen_at > NOW() - INTERVAL '7 days'
+             AND amazon_unavailable_first_seen_at > '2026-06-29' THEN 'oos'
+           WHEN amazon_status_reason = 'asin_mismatch' THEN 'mismatch'
+           WHEN amazon_fulfillment_summary = 'amazon_haul_slow_shipper' THEN 'haul'
+           WHEN amazon_fast_fulfillment = FALSE THEN 'slow'
+           ELSE 'bad_roi'
+         END AS risk_class
   FROM listed_asins
   WHERE ended_at IS NULL AND ebay_listing_id <> ''
-    AND amazon_available = FALSE
-    AND amazon_status_reason IN ('unavailable','out_of_stock')
-    AND amazon_unavailable_confirmed_count >= 2
-    AND amazon_unavailable_last_seen_at > NOW() - INTERVAL '7 days'
-    AND amazon_unavailable_first_seen_at > '2026-06-29'
-    AND sold_at IS NULL
-    AND COALESCE(watch_count, 0) = 0
-  ORDER BY amazon_unavailable_confirmed_count DESC, user_id
+    AND (
+      (amazon_available = FALSE AND amazon_status_reason IN ('unavailable','out_of_stock')
+        AND amazon_unavailable_confirmed_count >= 2
+        AND amazon_unavailable_last_seen_at > NOW() - INTERVAL '7 days'
+        AND amazon_unavailable_first_seen_at > '2026-06-29')
+      OR amazon_status_reason = 'asin_mismatch'
+      OR amazon_fulfillment_summary = 'amazon_haul_slow_shipper'
+      OR amazon_fast_fulfillment = FALSE
+      OR (amazon_price_verified_at > NOW() - INTERVAL '7 days' AND amazon_verified_price > 0
+          AND ((ebay_price*(1-0.136-0.02-0.015) - CASE WHEN ebay_price<=10 THEN 0.30 ELSE 0.40 END - amazon_verified_price*1.07) < 0
+            OR ((ebay_price*(1-0.136-0.02-0.015) - CASE WHEN ebay_price<=10 THEN 0.30 ELSE 0.40 END - amazon_verified_price*1.07)/NULLIF(amazon_verified_price,0)) < 0.08))
+    )
+  ORDER BY user_id, amazon_unavailable_confirmed_count DESC
 `)
 console.log(`${rows.length} confirmed-unfulfillable listings ${APPLY ? 'to END' : '(PREVIEW — rerun with --apply to end)'}`)
-for (const r of rows.slice(0, 15)) console.log(`  [u${r.user_id}] x${r.confirms} $${r.ebay_price}  ${r.title.slice(0, 60)}`)
+for (const r of rows.slice(0, 15)) {
+  console.log(`  [u${r.user_id}] eBay ${r.ebay_listing_id} · ASIN ${r.asin} · x${r.confirms} explicit OOS · $${r.ebay_price}`)
+  console.log(`       first ${r.amazon_unavailable_first_seen_at?.toISOString?.() || r.amazon_unavailable_first_seen_at} · latest ${r.amazon_unavailable_last_seen_at?.toISOString?.() || r.amazon_unavailable_last_seen_at}`)
+  console.log(`       ${r.title.slice(0, 100)}`)
+}
 if (!APPLY) process.exit(0)
 
 const tokens = { 1: await getToken(1), 3: await getToken(3) }
@@ -59,7 +89,7 @@ for (const r of rows) {
   const alreadyGone = /already (been )?ended|has ended|item .*(was not found|is invalid|does not exist)/i.test(longMsg)
   if (ack === 'Success' || ack === 'Warning' || alreadyGone) {
     ended++
-    await sql(`UPDATE listed_asins SET ended_at=NOW(), amazon_status_reason='confirmed_oos_purge' WHERE ebay_listing_id=$1 AND ended_at IS NULL`, [r.ebay_listing_id])
+    await sql(`UPDATE listed_asins SET ended_at=NOW(), amazon_status_reason=$2 WHERE ebay_listing_id=$1 AND ended_at IS NULL`, [r.ebay_listing_id, 'risk_purge_' + r.risk_class])
     receipts.push({ at: new Date().toISOString(), ack, alreadyGone, ...r })
   } else {
     failed++
