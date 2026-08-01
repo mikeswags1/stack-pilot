@@ -4,17 +4,20 @@
 //   - explicit "currently unavailable"/OOS text  -> unavailable evidence (+1 confirm)
 //   - buy box + price                            -> available, price verified
 //   - anything ambiguous/blocked                 -> NO CHANGE (never condemn on silence)
-// Then ends listings meeting the two-strike purge standard.
-// Run: node scripts/local-stock-monitor.mjs [batch=150] [--apply-purge]
+// Approval-only by default: this monitor records evidence but does not end listings.
+// After owner approval, the separate purge script can be run explicitly.
+// Run: node scripts/local-stock-monitor.mjs [batch=150]
 import { neon } from '@neondatabase/serverless'
 import fs from 'node:fs'
-import path from 'node:path'
 const env = Object.fromEntries(fs.readFileSync(new URL('../.env.local', import.meta.url), 'utf8').split(/\r?\n/)
   .filter(l => l.includes('=') && !l.trim().startsWith('#'))
   .map(l => { const i = l.indexOf('='); return [l.slice(0, i).trim(), l.slice(i + 1).trim().replace(/^"|"$/g, '')] }))
 const sql = neon(env.DATABASE_URL)
 const BATCH = Math.max(10, Math.min(500, Number(process.argv[2] || '150')))
-const APPLY_PURGE = process.argv.includes('--apply-purge')
+if (process.argv.includes('--apply-purge')) {
+  console.error('AUTO-PURGE DISABLED: review candidates with the owner, then run purge-confirmed-oos.mjs --apply only after explicit approval.')
+  process.exit(2)
+}
 
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
@@ -72,6 +75,14 @@ for (const r of rows) {
   //   fast=false : a delivery date 6+ days out
   //   otherwise  : null (no claim recorded)
   let fastFulfillment = null
+  let fulfillmentNote = null
+  // Amazon Haul fingerprints (2026-07-31, the conduit-wrench order): Haul is
+  // Amazon's budget storefront shipping from overseas in 1-2 WEEKS. Its pages
+  // carry distinctive copy no regular listing has. Explicit slow evidence.
+  const haulDetected =
+    /\d+%\s*of orders are delivered within \d+ days/i.test(html) ||
+    /FREE delivery[^<]{0,60}on orders over \$25/i.test(html) ||
+    /Ships by Amazon and sold by/i.test(html)
   const shipsFromAmazon = /Ships from\s*(?:<[^>]+>\s*)*Amazon(?:\.com)?\s*</i.test(scope) || /"shipsFrom"[^}]*Amazon/i.test(scope)
   const months = ['january','february','march','april','may','june','july','august','september','october','november','december']
   const dm = scope.match(/deliver[a-z]*\s+(?:[A-Za-z]+day,?\s+)?([A-Z][a-z]+)\s+(\d{1,2})/)
@@ -85,8 +96,9 @@ for (const r of rows) {
       deliveryDays = Math.round((d - now) / 86400000)
     }
   }
-  if (shipsFromAmazon || (deliveryDays !== null && deliveryDays <= 4)) fastFulfillment = true
-  else if (deliveryDays !== null && deliveryDays >= 6) fastFulfillment = false
+  if (haulDetected) { fastFulfillment = false; fulfillmentNote = 'amazon_haul_slow_shipper' }
+  else if (shipsFromAmazon || (deliveryDays !== null && deliveryDays <= 4)) fastFulfillment = true
+  else if (deliveryDays !== null && deliveryDays >= 6) { fastFulfillment = false; fulfillmentNote = `delivery_${deliveryDays}_days` }
 
   if (!pageGone && (captcha || !html || (!explicitOOS && !(hasBuyBox && price > 0)))) {
     blocked++
@@ -112,11 +124,12 @@ for (const r of rows) {
         amazon_price_verification_source = 'amazon_buy_box',
         amazon_fast_fulfillment = COALESCE($3, amazon_fast_fulfillment),
         amazon_fulfillment_verified_at = CASE WHEN $3 IS NOT NULL THEN NOW() ELSE amazon_fulfillment_verified_at END,
+        amazon_fulfillment_summary = COALESCE($5, amazon_fulfillment_summary),
         below_net_floor_at = CASE WHEN $4 THEN COALESCE(below_net_floor_at, NOW()) ELSE NULL END,
         amazon_unavailable_confirmed_count = 0,
         amazon_unavailable_first_seen_at = NULL, amazon_unavailable_last_seen_at = NULL
       WHERE ebay_listing_id = $1 AND ended_at IS NULL
-    `, [r.ebay_listing_id, price, fastFulfillment, belowFloor])
+    `, [r.ebay_listing_id, price, fastFulfillment, belowFloor, fulfillmentNote])
   }
   const done = inStock + oos + blocked
   if (done % 25 === 0) console.log(`  ${done}/${rows.length}  (${inStock} in-stock, ${oos} explicit-OOS, ${blocked} blocked/ambiguous)`)
@@ -124,11 +137,4 @@ for (const r of rows) {
 }
 console.log(`\nCHECKED: ${inStock} in-stock (price refreshed), ${oos} explicit-OOS evidence, ${blocked} blocked/no-change`)
 
-// Purge anything now meeting the two-strike standard.
-if (APPLY_PURGE) {
-  const { execSync } = await import('node:child_process')
-  try {
-    const out = execSync('node scripts/purge-confirmed-oos.mjs --apply', { cwd: path.resolve(new URL('..', import.meta.url).pathname.replace(/^\//, '')), encoding: 'utf8' })
-    console.log(out)
-  } catch (e) { console.log('purge step failed:', String(e).slice(0, 200)) }
-}
+console.log('\nAPPROVAL REQUIRED: no listings were ended. Run purge-confirmed-oos.mjs without --apply to preview candidates.')
