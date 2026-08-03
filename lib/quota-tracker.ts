@@ -73,13 +73,15 @@ export const QUOTA_RULES = {
     // is deep (900+) while the listing gate — the only step that converts pool into
     // live listings — was starved at 40/day. Listing conversion now gets the majority.
     // Snap back toward enrichment when the pool thins.
-    // 7/18 PLAN OF RECORD (owner): burn the ~23k remaining PAID-FOR credits at
-    // absolute max for listings, then pause all StackPilot memberships until
-    // orders justify resuming. When the account runs dry (~Jul 21-22) the
-    // fail-closed counters stop paid calls automatically — nothing to babysit.
-    'structured-product':        { dailyHardLimit: 400,  hourlyHardLimit: 25,   warnPct: 0.90, blockPct: 1.0 },
-    'structured-product-listing': { dailyHardLimit: 700, hourlyHardLimit: 40,   warnPct: 0.90, blockPct: 1.0 },
-    'structured-search':         { dailyHardLimit: 150,  hourlyHardLimit: 25,   warnPct: 0.90, blockPct: 1.0 },
+    // 8/3 MARATHON PLAN (fresh 100k credits; mission = 10k GOOD listings): a
+    // sustainable month-long pace instead of last cycle's 8-day drag race.
+    // ~3,150 credits/day = 630 calls/day lands the tank on the Sep 3 renewal with
+    // zero mid-month pause. Product bucket runs hot (600/day) for the first ~3
+    // days to bulk-verify the ~1,700 never-verified backlog, then drops to
+    // ~250/day for steady enrichment (see memory note).
+    'structured-product':        { dailyHardLimit: 600,  hourlyHardLimit: 40,   warnPct: 0.90, blockPct: 1.0 },
+    'structured-product-listing': { dailyHardLimit: 280, hourlyHardLimit: 14,   warnPct: 0.90, blockPct: 1.0 },
+    'structured-search':         { dailyHardLimit: 100,  hourlyHardLimit: 15,   warnPct: 0.90, blockPct: 1.0 },
     Other:                       { dailyHardLimit: 60,   hourlyHardLimit: 20,   warnPct: 0.70, blockPct: 0.90 },
   },
 } satisfies Record<ApiProvider, Record<string, QuotaRule>>
