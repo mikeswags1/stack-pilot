@@ -44,6 +44,7 @@ export async function getTopAutoListingCandidates(userId: string | number, setti
     total_score: string | number | null
     intelligence_score: string | number | null
     source_quality: string | null
+    source_provider: string | null
     raw: Record<string, unknown> | null
     last_seen_at: string
     ebay_competitor_count: number | null
@@ -54,7 +55,7 @@ export async function getTopAutoListingCandidates(userId: string | number, setti
     SELECT
       psi.asin, psi.title, psi.source_niche, psi.amazon_price, psi.ebay_price, psi.profit, psi.roi,
       psi.image_url, psi.risk, psi.sales_volume, psi.rating, psi.review_count, psi.total_score,
-      psi.intelligence_score, psi.source_quality, psi.raw, psi.last_seen_at,
+      psi.intelligence_score, psi.source_quality, psi.source_provider, psi.raw, psi.last_seen_at,
       psi.ebay_competitor_count, psi.listing_outcome_score, psi.ebay_sold_velocity,
       apc.best_seller_rank AS cached_bsr
     FROM product_source_items psi
@@ -144,6 +145,11 @@ export async function getTopAutoListingCandidates(userId: string | number, setti
       const soldVelocity = parseNumber(r.ebay_sold_velocity)
       const velocityBoost = soldVelocity >= 10 ? 30 : soldVelocity >= 3 ? 20 : soldVelocity >= 1 ? 12 : 0
 
+      // Scout-sourced candidates pass the live listing gates at ~2x the rate of
+      // legacy crawled ones (fresher matches, demand-anchored) — each paid check
+      // spent on them yields more listings. Strong queue preference.
+      const scoutBoost = r.source_provider === 'demand-scout' ? 25 : 0
+
       // Outcome multiplier: products that historically list and stay active score higher
       const outcomeMult = r.listing_outcome_score !== null && r.listing_outcome_score !== undefined
         ? clamp(Number(r.listing_outcome_score), 0.60, 1.25)
@@ -162,6 +168,7 @@ export async function getTopAutoListingCandidates(userId: string | number, setti
         bsr: bsrBoost,
         competition: competitionPenalty,
         provenDemand: velocityBoost,
+        scoutSourced: scoutBoost,
       }
 
       const scoreRaw = Object.values(scoreBreakdown).reduce((a, b) => a + b, 0) * riskMult * qualityMultiplier * outcomeMult
