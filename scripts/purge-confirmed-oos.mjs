@@ -47,6 +47,7 @@ const rows = await sql(`
          END AS risk_class
   FROM listed_asins
   WHERE ended_at IS NULL AND ebay_listing_id <> ''
+    AND user_id = 1 -- owner directive 2026-08-03: sterlinggoodsco only
     AND (
       (amazon_available = FALSE AND amazon_status_reason IN ('unavailable','out_of_stock')
         AND amazon_unavailable_confirmed_count >= 2

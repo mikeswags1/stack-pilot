@@ -31,6 +31,7 @@ const rows = await sql(`
   SELECT user_id, ebay_listing_id, asin, ebay_price::float AS ebay_price
   FROM listed_asins
   WHERE ended_at IS NULL AND ebay_listing_id <> '' AND asin ~ '^[A-Z0-9]{10}$'
+    AND user_id = 1 -- owner directive 2026-08-03: sterlinggoodsco only; friend's account closed out
   ORDER BY
     (amazon_available = FALSE) DESC,
     (sold_at IS NOT NULL OR COALESCE(watch_count,0) > 0) DESC,
@@ -79,11 +80,14 @@ for (const r of rows) {
   // Amazon Haul fingerprints (2026-07-31, the conduit-wrench order): Haul is
   // Amazon's budget storefront shipping from overseas in 1-2 WEEKS. Its pages
   // carry distinctive copy no regular listing has. Explicit slow evidence.
+  // Keep this narrow: "Ships by Amazon and sold by <merchant>" and the $25
+  // delivery threshold can also appear on ordinary marketplace offers. A false
+  // slow-shipping flag is especially costly because it can condemn a good listing.
   const haulDetected =
-    /\d+%\s*of orders are delivered within \d+ days/i.test(html) ||
-    /FREE delivery[^<]{0,60}on orders over \$25/i.test(html) ||
-    /Ships by Amazon and sold by/i.test(html)
+    /Amazon\s+Haul/i.test(html) ||
+    /\d+%\s*of (?:Amazon Haul )?orders are delivered within \d+ days/i.test(html)
   const shipsFromAmazon = /Ships from\s*(?:<[^>]+>\s*)*Amazon(?:\.com)?\s*</i.test(scope) || /"shipsFrom"[^}]*Amazon/i.test(scope)
+  const primeSignal = /aria-label="Amazon Prime"|alt="Amazon Prime"|\bPrime (?:FREE )?(?:One-Day|Two-Day|delivery|shipping)\b/i.test(scope)
   const months = ['january','february','march','april','may','june','july','august','september','october','november','december']
   const dm = scope.match(/deliver[a-z]*\s+(?:[A-Za-z]+day,?\s+)?([A-Z][a-z]+)\s+(\d{1,2})/)
   let deliveryDays = null
@@ -122,6 +126,7 @@ for (const r of rows) {
         amazon_status_checked_at = NOW(), amazon_price = $2,
         amazon_verified_price = $2, amazon_price_verified_at = NOW(),
         amazon_price_verification_source = 'amazon_buy_box',
+        amazon_prime_eligible = CASE WHEN $6 THEN TRUE ELSE amazon_prime_eligible END,
         amazon_fast_fulfillment = COALESCE($3, amazon_fast_fulfillment),
         amazon_fulfillment_verified_at = CASE WHEN $3 IS NOT NULL THEN NOW() ELSE amazon_fulfillment_verified_at END,
         amazon_fulfillment_summary = COALESCE($5, amazon_fulfillment_summary),
@@ -129,7 +134,7 @@ for (const r of rows) {
         amazon_unavailable_confirmed_count = 0,
         amazon_unavailable_first_seen_at = NULL, amazon_unavailable_last_seen_at = NULL
       WHERE ebay_listing_id = $1 AND ended_at IS NULL
-    `, [r.ebay_listing_id, price, fastFulfillment, belowFloor, fulfillmentNote])
+    `, [r.ebay_listing_id, price, fastFulfillment, belowFloor, fulfillmentNote, primeSignal || shipsFromAmazon])
   }
   const done = inStock + oos + blocked
   if (done % 25 === 0) console.log(`  ${done}/${rows.length}  (${inStock} in-stock, ${oos} explicit-OOS, ${blocked} blocked/ambiguous)`)
