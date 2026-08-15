@@ -73,15 +73,13 @@ export const QUOTA_RULES = {
     // is deep (900+) while the listing gate — the only step that converts pool into
     // live listings — was starved at 40/day. Listing conversion now gets the majority.
     // Snap back toward enrichment when the pool thins.
-    // 8/3 MARATHON PLAN (fresh 100k credits; mission = 10k GOOD listings): a
-    // sustainable month-long pace instead of last cycle's 8-day drag race.
-    // ~3,150 credits/day = 630 calls/day lands the tank on the Sep 3 renewal with
-    // zero mid-month pause. Product bucket runs hot (600/day) for the first ~3
-    // days to bulk-verify the ~1,700 never-verified backlog, then drops to
-    // ~250/day for steady enrichment (see memory note).
-    'structured-product':        { dailyHardLimit: 600,  hourlyHardLimit: 40,   warnPct: 0.90, blockPct: 1.0 },
-    'structured-product-listing': { dailyHardLimit: 280, hourlyHardLimit: 14,   warnPct: 0.90, blockPct: 1.0 },
-    'structured-search':         { dailyHardLimit: 100,  hourlyHardLimit: 15,   warnPct: 0.90, blockPct: 1.0 },
+    // 8/3 SUBSCRIPTION CANCELLED (owner): ScraperAPI plan fully cancelled, only
+    // ~1,000 credits (~200 calls) remain — banked as an EMERGENCY RESERVE for
+    // order rescues, not pipeline use. All automated paid calls halted; the free
+    // laptop scanner carries all monitoring. Do not raise without owner direction.
+    'structured-product':        { dailyHardLimit: 0,   hourlyHardLimit: 0,    warnPct: 0.90, blockPct: 1.0 },
+    'structured-product-listing': { dailyHardLimit: 0,  hourlyHardLimit: 0,    warnPct: 0.90, blockPct: 1.0 },
+    'structured-search':         { dailyHardLimit: 0,   hourlyHardLimit: 0,    warnPct: 0.90, blockPct: 1.0 },
     Other:                       { dailyHardLimit: 60,   hourlyHardLimit: 20,   warnPct: 0.70, blockPct: 0.90 },
   },
 } satisfies Record<ApiProvider, Record<string, QuotaRule>>
